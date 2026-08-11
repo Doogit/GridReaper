@@ -20,6 +20,17 @@ WATCHLIST_ALIAS_SOURCE = "watchlist_entities.csv"
 WATCHLIST_COLLISION_REASON = "seeded from watchlist_entities.csv"
 GENERATED_RELATIONSHIP_SOURCE = "gleif"
 
+# R7.2 allowed signal scopes for the MVP triggers. Hand-configured here, not
+# a CSV column: applied after the triggers upsert on every load, so a
+# fresh-from-seeds rebuild gets them too (a migration UPDATE would run before
+# trigger rows exist and be silently lost).
+TRIGGER_SCOPES = {
+    "leadership_change": ["account"],
+    "nerc_enforcement": ["account", "sector"],
+    "nerc_cip_revision": ["sector", "regulatory_calendar"],
+    "tsa_security_directive": ["sector", "regulatory_calendar"],
+}
+
 # Loaded in FK order: products + triggers precede indicator_map.
 # col_map renames a CSV column to its table column.
 # skip_cols are CSV columns normalized into side tables, not loaded directly.
@@ -120,6 +131,18 @@ def duplicated_values(rows, col):
         if value:
             counts[value] = counts.get(value, 0) + 1
     return {value for value, count in counts.items() if count > 1}
+
+
+def apply_trigger_scopes(conn):
+    """Set triggers.allowed_scopes for the MVP triggers (R7.2). Returns the
+    number of trigger rows updated."""
+    updated = 0
+    for trigger_id, scopes in TRIGGER_SCOPES.items():
+        cur = conn.execute(
+            "UPDATE triggers SET allowed_scopes = ? WHERE trigger_id = ?",
+            (json.dumps(scopes), trigger_id))
+        updated += cur.rowcount
+    return updated
 
 
 def apply_identifiers(conn):
@@ -234,6 +257,9 @@ def load(db_path=None):
         # empty CSV cells are refilled in the same transaction)
         ident_stats = apply_identifiers(conn)
 
+        # Hand-configured MVP trigger scopes (R7.2), after the triggers upsert
+        scopes_updated = apply_trigger_scopes(conn)
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -254,6 +280,7 @@ def load(db_path=None):
     print(f"entity_identifiers: {lei_n} lei + {qid_n} wikidata_qid filled "
           f"(source CSV had {ident_rows} rows; "
           f"{duplicate_skips} duplicate value(s) skipped)")
+    print(f"trigger allowed_scopes: {scopes_updated} MVP trigger(s) set")
 
     if skipped:
         print(f"\n{len(skipped)} row(s) skipped on FK warning:")
