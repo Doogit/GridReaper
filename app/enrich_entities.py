@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from app.db.connection import get_connection
 from app.resolve import normalize
 
-USER_AGENT = "GridReaper/0.1 (+https://github.com/Doogit/GridReaper)"
+USER_AGENT = "GridSignals/0.1 (+https://github.com/Doogit/GridSignals)"
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 GLEIF_API = "https://api.gleif.org/api/v1"
 GLEIF_SLEEP_S = 0.7   # stay well under GLEIF's 60 req/min

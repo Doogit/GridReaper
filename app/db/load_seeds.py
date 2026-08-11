@@ -1,4 +1,4 @@
-"""GridReaper seed loader.
+"""GridSignals seed loader.
 
 Applies schema migrations, then upserts the config CSVs from seeds/ into
 their tables. Idempotent: re-running refreshes config rather than
@@ -241,7 +241,7 @@ def load(db_path=None):
         raise
 
     # Report
-    print("=== GridReaper seed load ===")
+    print("=== GridSignals seed load ===")
     for table, loaded, source_m in summary:
         tag = ""
         if loaded != source_m:

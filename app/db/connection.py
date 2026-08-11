@@ -1,8 +1,8 @@
-"""GridReaper database connection helper."""
+"""GridSignals database connection helper."""
 import os
 import sqlite3
 
-DEFAULT_DB_PATH = "data/gridreaper.db"
+DEFAULT_DB_PATH = "data/gridsignals.db"
 
 
 def get_connection(db_path=DEFAULT_DB_PATH):

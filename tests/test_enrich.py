@@ -107,7 +107,7 @@ class TestLoadSeedRefresh(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             temp_seeds = os.path.join(td, "seeds")
             shutil.copytree(load_seeds.SEEDS_DIR, temp_seeds)
-            db_path = os.path.join(td, "gridreaper.db")
+            db_path = os.path.join(td, "gridsignals.db")
             rel_path = os.path.join(temp_seeds, "entity_relationships.csv")
             old_seeds_dir = load_seeds.SEEDS_DIR
             load_seeds.SEEDS_DIR = temp_seeds

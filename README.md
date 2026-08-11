@@ -1,4 +1,4 @@
-# GridReaper
+# GridSignals
 
 Monitor external events across US energy companies and flag when an account becomes more likely to buy a specific Microsoft security product — with a suggested play, license path, and draft outreach opener.
 
@@ -8,7 +8,7 @@ Stack: Python · SQLite · Streamlit. All data sources are free and read-only.
 
 ## How it works
 
-GridReaper ingests a broad set of free, public signals about US energy companies and turns the highest-signal events into scored, sourced cards. Each card maps an event to relevant Microsoft security products, resolves a licensing path, and drafts an outreach opener. Every claim carries a source link and an evidence-quality tag; nothing surfaces unsourced.
+GridSignals ingests a broad set of free, public signals about US energy companies and turns the highest-signal events into scored, sourced cards. Each card maps an event to relevant Microsoft security products, resolves a licensing path, and drafts an outreach opener. Every claim carries a source link and an evidence-quality tag; nothing surfaces unsourced.
 
 At MVP, two trigger types are **classified into cards** — regulatory actions (NERC/FERC/TSA) and leadership changes (new CISO/CIO/CTO). A wider set of sources — cyber incidents, ransomware activity, known-exploited vulnerabilities, and global news — is **ingested and stored** to build historical backfill, so later stages classify against history instead of starting cold.
 
@@ -51,7 +51,7 @@ Requires Python 3.11+ (standard library only — no third-party dependencies for
 python -m app.db.load_seeds
 ```
 
-This creates `data/gridreaper.db` (gitignored) and populates the config tables from `seeds/`. The command is idempotent — re-running refreshes rows rather than duplicating them.
+This creates `data/gridsignals.db` (gitignored) and populates the config tables from `seeds/`. The command is idempotent — re-running refreshes rows rather than duplicating them.
 
 ## Architecture
 
