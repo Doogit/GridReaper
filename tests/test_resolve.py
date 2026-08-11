@@ -24,10 +24,10 @@ ENTITIES = [
     ("E0007", "Constellation Energy", "0001868275", "CEG"),
     ("E0008", "PG&E", "0001004980", "PCG"),
     ("E0028", "TXNM Energy (PNM)", "0001108426", "TXNM"),
-    ("E0038", "Otter Tail", "0000075129", "OTTR"),
+    ("E0038", "Otter Tail", "0001466593", "OTTR"),
     ("E0046", "PNM Resources", "0000022767", "PNM"),
     ("E0092", "Range Resources", "0000315852", "RRC"),
-    ("E0093", "Chord Energy", "0001658566", "CHRD"),
+    ("E0093", "Chord Energy", "0001486159", "CHRD"),
     # synthetic near-twins for fuzzy-ambiguity cases
     ("EX001", "Delta Utilities", "", ""),
     ("EX002", "Delta Utility Services", "", ""),
