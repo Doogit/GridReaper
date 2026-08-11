@@ -1,0 +1,17 @@
+product_id,name,persona,licensing_model,keywords,energy_ot_flag
+def_endpoint,Defender for Endpoint (P1/P2),CISO/SecOps,E5 or standalone or Defender for Business,"EDR;XDR;endpoint;ASR;TVM",0
+def_identity,Defender for Identity,CISO/IAM lead,E5 or E5 Security add-on,"identity;AD;lateral movement;Kerberos",0
+def_office,Defender for Office 365 (P1/P2),CISO/messaging,E5 or standalone,"phishing;BEC;email security;safe links",0
+def_cloudapps,Defender for Cloud Apps (CASB),CISO/cloud,E5 or E5 Security add-on,"CASB;shadow IT;SaaS security",0
+def_cloud,Defender for Cloud,Cloud security/CISO,consumption per resource,"CSPM;multicloud;workload protection",0
+def_iot,Defender for IoT/OT,OT leader/CISO,OT site-based license,"ICS;SCADA;PLC;RTU;HMI;Purdue;CyberX;DNP3;Modbus",1
+sentinel,Microsoft Sentinel (SIEM/SOAR),SecOps/CISO,consumption GB/day + data lake,"SIEM;SOAR;KQL;data lake;log retention",1
+sec_copilot,Security Copilot + agents,SecOps/CISO,included E5/E7 (SCU pool) or SCU consumption,"Copilot;SCU;phishing triage agent;agentic SOC",0
+entra_suite,Entra Suite,IAM/CISO,Entra Suite add-on or E7,"Zero Trust;ZTNA;conditional access;VPN replacement;SSE",0
+entra_agentid,Entra Agent ID,IAM/CISO,foundational free; premium via Agent 365,"agent identity;agent blueprint;shadow AI",0
+agent365,Agent 365,CISO/CIO/AI governance,E7 or $15 standalone add-on,"agent registry;shadow AI;agent governance",0
+purview,Purview family,Compliance/CISO/DPO,E5 Compliance or Purview Suite add-on or consumption,"DLP;insider risk;sensitivity labels;eDiscovery;DSPM",0
+intune,Intune,IT/endpoint/CISO,E3/E5 or Intune Suite add-on,"MDM;MAM;device compliance;EPM",0
+def_easm,Defender EASM,SecOps/CISO,Azure consumption,"attack surface;external assets;shadow IT",0
+def_ti,Defender Threat Intelligence,Threat intel/SecOps,free tier or premium standalone,"TI;IOC;threat actor;MDTI",0
+github_as,GitHub Advanced Security,AppSec/DevSecOps,per active committer,"SAST;secret scanning;SBOM;supply chain",0

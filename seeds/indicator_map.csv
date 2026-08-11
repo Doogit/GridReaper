@@ -1,0 +1,63 @@
+trigger_id,product_id,evidence_quality,notes
+nerc_cip_revision,def_iot,IR,CIP-015 INSM names the OT-monitoring capability directly
+nerc_cip_revision,sentinel,IR,log retention + monitoring for CIP compliance
+nerc_cip_revision,entra_suite,PC,CIP-005 electronic security perimeter / remote access
+nerc_enforcement,def_iot,IR,"CIP-007/010/015 violations map to OT monitoring - see cip_product_map.csv"
+nerc_enforcement,sentinel,IR,"CIP-007/010 config & patch monitoring evidence"
+nerc_enforcement,def_endpoint,PC,CIP-007 patch/malware controls on IT-side BES Cyber Systems
+nerc_enforcement,entra_suite,PC,CIP-005 remote access / CIP-004 access management
+tsa_security_directive,def_iot,IR,continuous OT monitoring requirement
+tsa_security_directive,sentinel,IR,incident detection & reporting
+tsa_security_directive,entra_suite,PC,MFA + segmentation for remote access
+sec_cyber_disclosure,purview,PC,governance/disclosure posture
+sec_cyber_disclosure,sentinel,PC,detection maturity for material-incident readiness
+sec_cyber_disclosure,sec_copilot,VM,SOC efficiency narrative
+own_incident,def_endpoint,PC,post-breach endpoint hardening
+own_incident,def_identity,PC,identity-attack remediation
+own_incident,sentinel,PC,SIEM/log retention post-incident
+own_incident,def_iot,PC,OT breach implicates OT monitoring
+peer_incident,def_iot,PC,contagion narrative for OT
+peer_incident,sentinel,PC,detection gap narrative
+peer_incident,def_ti,VM,threat-actor awareness
+leadership_change,def_endpoint,PC,new CISO stack review (any product)
+leadership_change,sentinel,PC,new CISO SOC/SIEM review
+leadership_change,def_iot,PC,new CISO OT posture review
+ma_divestiture,def_easm,PC,unknown acquired estate discovery
+ma_divestiture,entra_suite,PC,identity consolidation
+ma_divestiture,purview,PC,data governance across merged entity
+ma_divestiture,sentinel,PC,SOC consolidation
+capital_project,def_iot,PC,new facility new OT surface
+capital_project,def_cloud,VM,new cloud/datacenter workloads
+capital_project,def_easm,VM,new internet-facing assets
+cloud_ai_adoption,def_cloud,VM,cloud workload protection
+cloud_ai_adoption,agent365,VM,AI agent governance
+cloud_ai_adoption,entra_agentid,VM,agent identity
+cloud_ai_adoption,purview,VM,AI data governance / DSPM for AI
+risk_factor_change,purview,VM,governance signal
+risk_factor_change,sentinel,VM,detection investment signal
+cyber_insurance_event,def_endpoint,VM,insurer EDR requirement
+cyber_insurance_event,entra_suite,VM,insurer MFA requirement
+cyber_insurance_event,sentinel,VM,insurer logging requirement
+audit_consent_decree,def_iot,PC,OT finding remediation
+audit_consent_decree,sentinel,PC,monitoring evidence
+audit_consent_decree,purview,PC,records/compliance
+competitor_eol_renewal,def_endpoint,VM,EDR displacement window
+competitor_eol_renewal,sentinel,VM,SIEM displacement window
+security_hiring_surge,def_iot,VM,OT security hiring implies OT program build
+security_hiring_surge,sentinel,VM,SOC build
+layoffs_consolidation,sec_copilot,VM,SOC automation under headcount pressure
+layoffs_consolidation,sentinel,VM,tool consolidation
+named_apt_targeting,def_iot,PC,OT-targeting APT
+named_apt_targeting,def_ti,PC,threat intel
+named_apt_targeting,sentinel,PC,detection content
+ics_cve_kev,def_iot,IR,exploited ICS vuln in known-run product
+ics_cve_kev,def_easm,PC,exposure discovery
+rate_case_capex,def_iot,PC,funded OT modernization
+rate_case_capex,def_cloud,VM,funded cloud/grid modernization
+rate_case_capex,sentinel,VM,funded SOC modernization
+license_upsell_window,agent365,VM,E5->E7 agent governance
+license_upsell_window,sec_copilot,VM,E5 Copilot activation
+license_upsell_window,entra_agentid,VM,agent identity
+exec_ai_advocacy,agent365,VM,public AI push
+exec_ai_advocacy,entra_agentid,VM,agent identity
+exec_ai_advocacy,purview,VM,AI data governance

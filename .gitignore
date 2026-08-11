@@ -1,0 +1,9 @@
+data/*.db
+data/*.db-wal
+data/*.db-shm
+__pycache__/
+*.pyc
+.env
+
+# Internal planning/spec docs — not for the public repo
+docs/

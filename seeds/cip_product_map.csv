@@ -1,0 +1,12 @@
+cip_standard,topic,product_ids,outreach_angle
+CIP-002,BES Cyber System categorization,def_iot,asset inventory and categorization visibility
+CIP-003,Security management controls,purview;sentinel,policy governance and evidence
+CIP-004,Personnel & training / access management,entra_suite,access lifecycle and least-privilege
+CIP-005,Electronic Security Perimeter / remote access,entra_suite;def_iot,ZTNA remote access and OT perimeter monitoring
+CIP-007,System security management (patch/ports/malware),def_endpoint;def_iot;sentinel,patch-management gap and port/malware monitoring
+CIP-008,Incident reporting & response planning,sentinel;sec_copilot,detection response and reporting evidence
+CIP-009,Recovery plans,sentinel,recovery evidence and log retention
+CIP-010,Configuration change management & vulnerability assessment,def_iot;sentinel,config/change monitoring and vuln assessment
+CIP-011,Information protection,purview,BES Cyber System Information protection
+CIP-013,Supply chain risk management,def_easm;def_ti,supply-chain exposure and vendor risk
+CIP-015,Internal Network Security Monitoring (INSM),def_iot;sentinel,INSM is the named capability - direct OT monitoring buy
