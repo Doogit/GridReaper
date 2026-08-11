@@ -18,6 +18,7 @@ REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 SEEDS_DIR = os.path.join(REPO_ROOT, "seeds")
 WATCHLIST_ALIAS_SOURCE = "watchlist_entities.csv"
 WATCHLIST_COLLISION_REASON = "seeded from watchlist_entities.csv"
+GENERATED_RELATIONSHIP_SOURCE = "gleif"
 
 # Loaded in FK order: products + triggers precede indicator_map.
 # col_map renames a CSV column to its table column.
@@ -112,29 +113,49 @@ def build_upsert(table, cols, pk, update_cols=None):
             f"VALUES ({placeholders}) {conflict}")
 
 
+def duplicated_values(rows, col):
+    counts = {}
+    for row in rows:
+        value = (row.get(col) or "").strip()
+        if value:
+            counts[value] = counts.get(value, 0) + 1
+    return {value for value, count in counts.items() if count > 1}
+
+
 def apply_identifiers(conn):
     """Fill lei / wikidata_qid from the generated entity_identifiers.csv
     (written by app.enrich_entities). Fill-if-empty only: a non-empty value
     from the hand-verified watchlist CSV always wins over generated data.
-    Returns (lei_filled, qid_filled, source_rows)."""
+    Duplicate generated identifiers are skipped because deterministic IDs
+    must remain one-to-one for entity resolution.
+    Returns (lei_filled, qid_filled, source_rows, duplicate_skips)."""
     _, rows = read_rows(os.path.join(SEEDS_DIR, "entity_identifiers.csv"))
     lei_filled = qid_filled = 0
+    duplicate_skips = 0
+    duplicate_leis = duplicated_values(rows, "lei")
+    duplicate_qids = duplicated_values(rows, "wikidata_qid")
     for row in rows:
         cur = conn.execute(
             "SELECT lei, wikidata_qid FROM watchlist_entities "
             "WHERE entity_id = ?", (row["entity_id"],)).fetchone()
         if cur is None:
             continue
-        if row.get("lei") and not (cur["lei"] or "").strip():
+        lei = (row.get("lei") or "").strip()
+        qid = (row.get("wikidata_qid") or "").strip()
+        if lei and lei in duplicate_leis:
+            duplicate_skips += 1
+        elif lei and not (cur["lei"] or "").strip():
             conn.execute("UPDATE watchlist_entities SET lei=? WHERE entity_id=?",
-                         (row["lei"], row["entity_id"]))
+                         (lei, row["entity_id"]))
             lei_filled += 1
-        if row.get("wikidata_qid") and not (cur["wikidata_qid"] or "").strip():
+        if qid and qid in duplicate_qids:
+            duplicate_skips += 1
+        elif qid and not (cur["wikidata_qid"] or "").strip():
             conn.execute(
                 "UPDATE watchlist_entities SET wikidata_qid=? WHERE entity_id=?",
-                (row["wikidata_qid"], row["entity_id"]))
+                (qid, row["entity_id"]))
             qid_filled += 1
-    return lei_filled, qid_filled, len(rows)
+    return lei_filled, qid_filled, len(rows), duplicate_skips
 
 
 def load(db_path=None):
@@ -162,6 +183,10 @@ def load(db_path=None):
             pk = spec["pk"]
             sql = build_upsert(table, cols, pk, spec.get("update_cols"))
             fk_checks = spec.get("fk_checks", [])
+
+            if table == "entity_relationships":
+                conn.execute("DELETE FROM entity_relationships WHERE source = ?",
+                             (GENERATED_RELATIONSHIP_SOURCE,))
 
             loaded = 0
             for row in rows:
@@ -225,9 +250,10 @@ def load(db_path=None):
         print(f"{table}: {loaded} rows loaded (source CSV had {source_m} data rows){tag}")
     print(f"entity_aliases: {len(aliases)} split from watchlist CSV")
     print(f"entity_collision_terms: {len(collisions)} split from watchlist CSV")
-    lei_n, qid_n, ident_rows = ident_stats
+    lei_n, qid_n, ident_rows, duplicate_skips = ident_stats
     print(f"entity_identifiers: {lei_n} lei + {qid_n} wikidata_qid filled "
-          f"(source CSV had {ident_rows} rows)")
+          f"(source CSV had {ident_rows} rows; "
+          f"{duplicate_skips} duplicate value(s) skipped)")
 
     if skipped:
         print(f"\n{len(skipped)} row(s) skipped on FK warning:")
