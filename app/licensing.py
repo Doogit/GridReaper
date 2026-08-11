@@ -41,10 +41,17 @@ Play candidates
 
 Ownership: this module is the only writer of ``license_facts`` (no
 config_version column there), so rebuild deletes all facts and regenerates.
-Candidates are versioned: rows with CONFIG_VERSION are deleted and
-regenerated, mirroring the seed loader's alias-refresh pattern.
-R7.10/R7.12 gating is a later chunk — this is the data layer only.
+Candidates are upserted in place (play_ids are deterministic), never
+delete+regenerated: ``license_play_snapshots.play_id`` FK-references
+candidates, so a delete would crash the refresh on any DB that has ever
+generated a card (R7.6 — old cards must keep explaining themselves).
+Candidates that stop being generated are removed only when no snapshot
+references them; referenced stale ones are kept as pinned history and
+reported. After a rebuild the summary also reports snapshot fact_ids that
+no longer resolve (a SKU/tier rename orphans pinned evidence — loud, not
+silent). R7.10/R7.12 gating lives in app/plays.py — this is the data layer.
 """
+import json
 import sys
 
 from app.db.connection import get_connection
@@ -139,7 +146,7 @@ TIER_PREREQUISITE = {
 
 DISCOVERY_QUESTION = (
     "What licensing tier are you on today — E3 or E5? "
-    "If E3, {path} is the typical next step for {product}."
+    "If E3, the typical next step for {product} is: {path}."
 )
 
 
@@ -211,9 +218,9 @@ def rebuild(conn):
         "SELECT trigger_id, product_id FROM indicator_map "
         "ORDER BY trigger_id, product_id").fetchall()
 
-    conn.execute("DELETE FROM license_play_candidates WHERE config_version = ?",
-                 (CONFIG_VERSION,))
-    candidates = 0
+    # Upsert candidates in place: snapshots FK-reference play_id, so a
+    # delete+regenerate would crash on any DB that has generated a card.
+    generated_ids = set()
     for r in indicator_rows:
         family = r["product_id"]
         if family not in FAMILY_PLAY_SKU:
@@ -226,24 +233,59 @@ def rebuild(conn):
                 f"FAMILY_PLAY_SKU[{family!r}] = {sku_tier!r} not found in "
                 f"license_matrix.")
         path = upgrade_paths[sku_tier]
+        play_id = f"{r['trigger_id']}:{family}"
+        generated_ids.add(play_id)
         conn.execute(
             "INSERT INTO license_play_candidates (play_id, trigger_id, "
             " product_id, assumed_baseline, recommended_path, "
             " discovery_question, rank_rule, config_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"{r['trigger_id']}:{family}", r["trigger_id"], family, "E3",
-             path,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(play_id) DO UPDATE SET trigger_id=excluded.trigger_id, "
+            " product_id=excluded.product_id, "
+            " assumed_baseline=excluded.assumed_baseline, "
+            " recommended_path=excluded.recommended_path, "
+            " discovery_question=excluded.discovery_question, "
+            " rank_rule=excluded.rank_rule, "
+            " config_version=excluded.config_version",
+            (play_id, r["trigger_id"], family, "E3", path,
              DISCOVERY_QUESTION.format(path=path,
                                        product=product_names[family]),
              "", CONFIG_VERSION))
-        candidates += 1
+
+    # Stale candidates: drop the unreferenced, keep+report the pinned.
+    stale_kept = []
+    for r in conn.execute(
+            "SELECT play_id FROM license_play_candidates ORDER BY play_id"):
+        if r["play_id"] in generated_ids:
+            continue
+        referenced = conn.execute(
+            "SELECT 1 FROM license_play_snapshots WHERE play_id = ? LIMIT 1",
+            (r["play_id"],)).fetchone()
+        if referenced:
+            stale_kept.append(r["play_id"])
+        else:
+            conn.execute(
+                "DELETE FROM license_play_candidates WHERE play_id = ?",
+                (r["play_id"],))
+
+    # Integrity sweep: snapshot fact_ids must still resolve after the facts
+    # delete+regenerate (a SKU/tier rename orphans pinned evidence).
+    fact_ids = {f[0] for f in facts}
+    orphaned_fact_refs = 0
+    for r in conn.execute("SELECT fact_ids FROM license_play_snapshots"):
+        try:
+            ids = json.loads(r["fact_ids"] or "[]")
+        except ValueError:
+            ids = []
+        orphaned_fact_refs += sum(1 for i in ids if i not in fact_ids)
     conn.commit()
 
     by_segment = {}
     for f in facts:
         by_segment[f[1]] = by_segment.get(f[1], 0) + 1
     return {"facts": len(facts), "facts_by_segment": by_segment,
-            "candidates": candidates}
+            "candidates": len(generated_ids), "stale_kept": stale_kept,
+            "orphaned_fact_refs": orphaned_fact_refs}
 
 
 def main():
@@ -257,6 +299,14 @@ def main():
     print(f"license_facts: {counts['facts']} ({seg})")
     print(f"license_play_candidates: {counts['candidates']} "
           f"(config_version={CONFIG_VERSION})")
+    if counts["stale_kept"]:
+        print(f"WARNING: {len(counts['stale_kept'])} stale candidate(s) kept "
+              f"(referenced by snapshots): {counts['stale_kept']}")
+    if counts["orphaned_fact_refs"]:
+        print(f"WARNING: {counts['orphaned_fact_refs']} snapshot fact "
+              f"reference(s) no longer resolve in license_facts (SKU/tier "
+              f"rename?) - pinned evidence is orphaned.")
+        return 1
     return 0
 
 

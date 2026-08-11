@@ -1,0 +1,31 @@
+weight_kind,key,weight,notes
+subsector,iou_electric,1.10,NERC CIP registered; large OT/control-center estates; core buyer profile
+subsector,rto_iso,1.10,Grid operators; CIP core; control centers are the whole business
+subsector,coop_gt,1.05,G&T co-ops are CIP-registered with real OT; leaner staff raises tooling need
+subsector,coop_transmission,1.05,Transmission co-op; CIP-scoped like G&T
+subsector,federal_pma,1.05,Federal power marketing admins; CIP-scoped transmission + federal cyber mandates
+subsector,muni_public,1.00,Munis/public power; CIP scope varies with size; OT-heavy but smaller budgets
+subsector,ipp,1.00,Independent generators; CIP generation scope
+subsector,renewables,1.00,Growing OT fleets; inverter-based-resource security attention rising
+subsector,federal,1.00,Federal utility (TVA); CIP-scoped but procurement path differs
+subsector,iou_gas,0.95,Gas LDCs; TSA pipeline directives apply; no NERC CIP
+subsector,midstream,0.95,Pipelines; TSA Security Directives mandate OT/IT controls
+subsector,lng,0.95,LNG terminals; TSA-directive scope; large greenfield OT
+subsector,state_authority,0.95,State power authorities; public-sector cycles slow deals slightly
+subsector,state_owned,0.95,State-owned utility; as state_authority
+subsector,public,0.95,Public power agencies; as muni band but mixed asset ownership
+subsector,coop_distribution,0.90,Distribution-only co-op; minimal CIP scope; small OT estate
+subsector,storage,0.90,Storage operators; modest OT footprint today
+subsector,refiner,0.85,Downstream; real OT but weaker regulatory pull than TSA pipelines
+subsector,og_major,0.80,Integrated majors; huge but slow strategic procurement; weak external-signal fit
+subsector,og_ep,0.75,Upstream E&P; light regulatory pressure; IT-centric spend
+subsector,ofs,0.70,Oilfield services; least regulated; weakest OT-security buyer profile
+richness,high,1.00,Rich public footprint; signals about them are well corroborated
+richness,medium,0.90,Moderate public footprint
+richness,low,0.75,Thin public footprint; single-source signals more likely
+coverage,edgar-visible,1.00,SEC filer; EDGAR sources see them directly
+coverage,dark,0.85,No EDGAR visibility; discounted but never zeroed (R6.6)
+applicability,default,0.90,Regulatory_calendar cards: how directly the rule applies absent account evidence; replaces richness (R7.5)
+scope,account,1.00,Account-scoped cards are the product; full weight
+scope,sector,0.55,Sector cards inform but must not outrank strong account cards
+scope,regulatory_calendar,0.45,Calendar items are the earliest and least account-specific tier

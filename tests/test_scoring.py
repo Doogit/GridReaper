@@ -1,0 +1,248 @@
+"""Scoring engine tests (R7.3, R7.5).
+
+Hermetic: real migrations against in-memory SQLite, FK on, fixture-inserted
+triggers/entities/signals and scoring_weights rows (the CSV->table path is
+exercised by the loader tests; TestSeedCsvCoverage checks the shipped CSV
+covers every lookup key). Covers exact formula math, half-life curve points,
+neutral fallback for unknown weight keys, the regulatory_calendar
+applicability path, the decay flip at DECAY_THRESHOLD, idempotency with an
+injected clock, and that dismissed/decayed rows are never touched.
+"""
+import csv
+import os
+import sqlite3
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from app.db.migrate import apply_migrations
+from app.scoring import DECAY_THRESHOLD, rescore
+
+NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+SEEDS_CSV = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "seeds", "scoring_weights.csv")
+
+EXPECTED_SUBSECTORS = {
+    "iou_electric", "og_ep", "midstream", "coop_gt", "ofs", "renewables",
+    "muni_public", "refiner", "rto_iso", "iou_gas", "public",
+    "coop_distribution", "coop_transmission", "federal", "federal_pma",
+    "ipp", "lng", "og_major", "state_authority", "state_owned", "storage",
+}
+
+FIXTURE_WEIGHTS = [
+    ("subsector", "iou_electric", 1.1),
+    ("subsector", "og_ep", 0.75),
+    ("richness", "high", 1.0),
+    ("richness", "medium", 0.9),
+    ("richness", "low", 0.75),
+    ("coverage", "edgar-visible", 1.0),
+    ("coverage", "dark", 0.85),
+    ("applicability", "default", 0.9),
+    ("scope", "account", 1.0),
+    ("scope", "sector", 0.55),
+    ("scope", "regulatory_calendar", 0.45),
+]
+
+
+def days_ago(n):
+    return (NOW.date() - timedelta(days=n)).isoformat()
+
+
+def fixture_conn():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON;")
+    apply_migrations(conn)
+    conn.execute(
+        "INSERT INTO triggers (trigger_id, name, base_strength, "
+        " decay_half_life_days) VALUES ('t_lead', 'Leadership', 4, 90)")
+    conn.execute(
+        "INSERT INTO triggers (trigger_id, name, base_strength, "
+        " decay_half_life_days) VALUES ('t_reg', 'Regulatory', 5, 600)")
+    entities = [
+        # (entity_id, subsector, richness, coverage_flag)
+        ("E_IOU", "iou_electric", "high", "edgar-visible"),
+        ("E_OG", "og_ep", "low", "dark"),
+        ("E_NEW", "brand_new_subsector", "", ""),   # nothing in weights
+    ]
+    for eid, sub, rich, cov in entities:
+        conn.execute(
+            "INSERT INTO watchlist_entities (entity_id, name, subsector, "
+            " richness, coverage_flag) VALUES (?, ?, ?, ?, ?)",
+            (eid, eid, sub, rich, cov))
+    conn.executemany(
+        "INSERT INTO scoring_weights (weight_kind, key, weight) "
+        "VALUES (?, ?, ?)", FIXTURE_WEIGHTS)
+    conn.commit()
+    return conn
+
+
+def add_signal(conn, signal_id, trigger_id, scope, entity_id, event_date,
+               status="active", score=None):
+    conn.execute(
+        "INSERT INTO signals (signal_id, trigger_id, signal_scope, "
+        " entity_id, event_date, status, score) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (signal_id, trigger_id, scope, entity_id, event_date, status, score))
+    conn.commit()
+
+
+class TestScoring(unittest.TestCase):
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def get(self, signal_id):
+        return self.conn.execute(
+            "SELECT score, status FROM signals WHERE signal_id = ?",
+            (signal_id,)).fetchone()
+
+    def test_formula_exact_at_age_zero(self):
+        """base 4 * decay 1 * (1.1 * 1.0 * 1.0) * scope 1.0 = 4.4"""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        summary = rescore(self.conn, now=NOW)
+        self.assertEqual(summary, {"scored": 1, "decayed": 0})
+        self.assertAlmostEqual(self.get("s1")["score"], 4.4)
+
+    def test_formula_exact_all_fit_factors(self):
+        """base 4 * (0.75 * 0.75 * 0.85) = 1.9125"""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_OG", days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertAlmostEqual(self.get("s1")["score"], 1.9125)
+
+    def test_half_life_point_halves_score(self):
+        """age == half_life (90d) -> exactly half of 4.4"""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(90))
+        rescore(self.conn, now=NOW)
+        self.assertAlmostEqual(self.get("s1")["score"], 2.2)
+
+    def test_unknown_weight_keys_fall_back_neutral(self):
+        """Unseen subsector + blank richness/coverage -> all 1.0, score 4."""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_NEW", days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertAlmostEqual(self.get("s1")["score"], 4.0)
+
+    def test_sector_scope_entity_less_is_neutral_fit(self):
+        """5 * 1.0 (no account to fit) * scope 0.55 = 2.75"""
+        add_signal(self.conn, "s1", "t_reg", "sector", None, days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertAlmostEqual(self.get("s1")["score"], 2.75)
+
+    def test_regulatory_calendar_uses_applicability(self):
+        """Entity-less: 5 * applicability default 0.9 * scope 0.45 = 2.025"""
+        add_signal(self.conn, "s1", "t_reg", "regulatory_calendar", None,
+                   days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertAlmostEqual(self.get("s1")["score"], 2.025)
+
+    def test_regulatory_calendar_with_entity_replaces_richness(self):
+        """R7.5: applicability (default 0.9) replaces richness (high 1.0):
+        5 * (1.1 * 0.9 * 1.0) * 0.45 = 2.2275"""
+        add_signal(self.conn, "s1", "t_reg", "regulatory_calendar", "E_IOU",
+                   days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertAlmostEqual(self.get("s1")["score"], 2.2275)
+
+    def test_sector_never_outranks_fresh_account_card(self):
+        add_signal(self.conn, "acct", "t_lead", "account", "E_IOU", days_ago(0))
+        add_signal(self.conn, "sect", "t_reg", "sector", None, days_ago(0))
+        add_signal(self.conn, "cal", "t_reg", "regulatory_calendar", None,
+                   days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertGreater(self.get("acct")["score"], self.get("sect")["score"])
+        self.assertGreater(self.get("sect")["score"], self.get("cal")["score"])
+
+    def test_decay_flip_below_threshold(self):
+        """Perfect-fit leadership signal: 4 * 0.5^(200/90) ~= 0.858 < 1.0
+        -> decayed; at exactly 2 half-lives the score is exactly 1.0 and
+        stays active (flip is strictly below DECAY_THRESHOLD)."""
+        add_signal(self.conn, "old", "t_lead", "account", "E_NEW",
+                   days_ago(200))
+        add_signal(self.conn, "edge", "t_lead", "account", "E_NEW",
+                   days_ago(180))
+        summary = rescore(self.conn, now=NOW)
+        self.assertEqual(summary, {"scored": 2, "decayed": 1})
+        old = self.get("old")
+        self.assertEqual(old["status"], "decayed")
+        self.assertLess(old["score"], DECAY_THRESHOLD)
+        edge = self.get("edge")
+        self.assertEqual(edge["status"], "active")
+        self.assertAlmostEqual(edge["score"], 1.0)
+
+    def test_empty_and_garbage_event_dates_score_at_full_strength(self):
+        add_signal(self.conn, "s1", "t_lead", "account", "E_NEW", "")
+        add_signal(self.conn, "s2", "t_lead", "account", "E_NEW", "not-a-date")
+        add_signal(self.conn, "s3", "t_lead", "account", "E_NEW",
+                   days_ago(0) + "T09:30:00Z")   # timestamp form
+        rescore(self.conn, now=NOW)
+        for sid in ("s1", "s2", "s3"):
+            self.assertAlmostEqual(self.get(sid)["score"], 4.0)
+
+    def test_rescore_idempotent_for_same_now(self):
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(30))
+        add_signal(self.conn, "s2", "t_reg", "sector", None, days_ago(400))
+        add_signal(self.conn, "s3", "t_lead", "account", "E_OG", days_ago(200))
+        rescore(self.conn, now=NOW)
+        first = self.conn.execute(
+            "SELECT signal_id, score, status FROM signals "
+            "ORDER BY signal_id").fetchall()
+        rescore(self.conn, now=NOW)
+        second = self.conn.execute(
+            "SELECT signal_id, score, status FROM signals "
+            "ORDER BY signal_id").fetchall()
+        self.assertEqual([tuple(r) for r in first], [tuple(r) for r in second])
+
+    def test_dismissed_and_decayed_rows_untouched(self):
+        add_signal(self.conn, "gone", "t_lead", "account", "E_IOU",
+                   days_ago(0), status="dismissed", score=3.3)
+        add_signal(self.conn, "dead", "t_lead", "account", "E_IOU",
+                   days_ago(0), status="decayed", score=0.42)
+        summary = rescore(self.conn, now=NOW)
+        self.assertEqual(summary, {"scored": 0, "decayed": 0})
+        self.assertEqual(tuple(self.get("gone")), (3.3, "dismissed"))
+        self.assertEqual(tuple(self.get("dead")), (0.42, "decayed"))
+
+
+class TestSeedCsvCoverage(unittest.TestCase):
+    """The shipped seeds/scoring_weights.csv covers every lookup key the
+    scorer will hit against the real watchlist."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(SEEDS_CSV, newline="", encoding="utf-8") as fh:
+            cls.rows = list(csv.DictReader(fh))
+        cls.by_kind = {}
+        for row in cls.rows:
+            cls.by_kind.setdefault(row["weight_kind"], {})[row["key"]] = (
+                float(row["weight"]))
+
+    def test_all_weights_are_positive_floats(self):
+        for row in self.rows:
+            self.assertGreater(float(row["weight"]), 0.0, msg=row)
+
+    def test_subsector_keys_cover_watchlist(self):
+        self.assertEqual(set(self.by_kind["subsector"]), EXPECTED_SUBSECTORS)
+
+    def test_richness_and_coverage_keys(self):
+        self.assertEqual(set(self.by_kind["richness"]),
+                         {"high", "medium", "low"})
+        self.assertEqual(set(self.by_kind["coverage"]),
+                         {"edgar-visible", "dark"})
+        # R6.6: dark accounts are discounted, never zeroed
+        self.assertGreater(self.by_kind["coverage"]["dark"], 0.0)
+
+    def test_applicability_default_present(self):
+        self.assertIn("default", self.by_kind["applicability"])
+
+    def test_scope_fit_ordering(self):
+        scope = self.by_kind["scope"]
+        self.assertEqual(set(scope),
+                         {"account", "sector", "regulatory_calendar"})
+        self.assertGreater(scope["account"], scope["sector"])
+        self.assertGreater(scope["sector"], scope["regulatory_calendar"])
+
+
+if __name__ == "__main__":
+    unittest.main()
