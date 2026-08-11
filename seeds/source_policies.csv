@@ -1,0 +1,15 @@
+source_id,name,access_method,ttl,enabled,tos_status,evidence_rank,rate_limit,last_policy_review
+sec_edgar_submissions,SEC EDGAR submissions API,api,86400,1,approved,1,10 rps shared across all EDGAR calls (R5.2),2026-08-11
+sec_edgar_fulltext,SEC EDGAR full-text search,api,604800,1,approved,1,10 rps shared across all EDGAR calls (R5.2),2026-08-11
+federal_register,Federal Register API,api,86400,1,approved,1,,2026-08-11
+presswire_prnewswire,PR Newswire RSS,rss,3600,1,approved,2,,2026-08-11
+presswire_globenewswire,GlobeNewswire RSS,rss,3600,1,approved,2,,2026-08-11
+nerc_pages,NERC/FERC public page checks,page_check,604800,1,approved,1,manual-assisted diffs allowed,2026-08-11
+gdelt,GDELT 2.0 DOC API,api,86400,1,approved_store_only,3,,2026-08-11
+cisa_kev,CISA KEV JSON,json,86400,1,approved_store_only,1,,2026-08-11
+nvd,NVD API 2.0,api,86400,1,approved_store_only,1,keyed rolling window; unauthenticated fallback (R5.3),2026-08-11
+ransomware_live,ransomware.live API,api,86400,1,approved_cc_by_4.0,3,,2026-08-11
+ransomlook,RansomLook API,api,86400,1,approved_cc_by_4.0,3,,2026-08-11
+eia,EIA API v2,api,604800,1,approved,1,key-based; paginated typed parsing (R5.4),2026-08-11
+gleif,GLEIF LEI API,api,31536000,1,approved,1,,2026-08-11
+wikidata,Wikidata API,api,31536000,1,approved,3,,2026-08-11

@@ -36,9 +36,10 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 
 ## What works today
 
-- **Schema** — the full data model as idempotent SQLite tables (config + runtime layers) with query indexes.
+- **Schema + migrations** — the full data model (config + runtime layers, query indexes) managed by a versioned, checksummed migration runner. Applied migrations are tamper-guarded.
 - **Connection helper** — SQLite in WAL mode with foreign keys and a busy timeout, matching the single-writer / read-heavy architecture.
-- **Seed loader** — idempotent, foreign-key-ordered load of the config data with a per-table row-count report. Safe to re-run.
+- **Seed loader** — idempotent, foreign-key-ordered load of the config data with a per-table row-count report. Safe to re-run; never clobbers runtime-managed state (e.g. a source disabled by the operator stays disabled).
+- **Source policy registry** — the MVP source inventory seeded with per-source access method, poll interval, ToS status, evidence rank, and rate-limit notes.
 
 ## Getting started
 
@@ -66,8 +67,8 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 
 | Area | Status |
 |---|---|
-| SQLite schema + WAL connection | Implemented |
-| Idempotent config/seed loader | Implemented |
+| SQLite schema + migrations + WAL connection | Implemented |
+| Idempotent config/seed loader + source policy registry | Implemented |
 | Entity resolution (CIK/LEI/QID anchoring; GLEIF/Wikidata enrichment; alias disambiguation) | In progress |
 | Classified ingestion (EDGAR, Federal Register, press-wire RSS, NERC/FERC pages) | In progress |
 | Store-only ingestion for backfill (GDELT news, CISA KEV/NVD, ransomware trackers) + enrichment (EIA) | In progress |
