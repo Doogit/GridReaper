@@ -1,4 +1,4 @@
--- 0001_initial: GridSignals data model per requirements v3 §4.1.
+-- 0001_initial: GridReaper data model per requirements v3 §4.1.
 -- Config tables are seeded from seeds/*.csv; column names for seeded columns
 -- match the CSV headers. Runtime tables are created empty.
 
