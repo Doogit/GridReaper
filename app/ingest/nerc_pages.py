@@ -35,7 +35,7 @@ USER_AGENT = "GridSignals/0.1 (+https://github.com/Doogit/GridSignals)"
 PARSER_VERSION = "nerc_pages/1.0"
 
 PAGE_URLS = [
-    "https://www.nerc.com/pa/Stand/Pages/CurrentStandardsUnderDevelopment.aspx",
+    "https://www.nerc.com/pa/Stand/Pages/Standards-Under-Development.aspx",
     "https://www.nerc.com/pa/Stand/Pages/CIPStandards.aspx",
 ]
 

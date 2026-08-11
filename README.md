@@ -4,7 +4,7 @@ Monitor external events across US energy companies and flag when an account beco
 
 Stack: Python · SQLite · Streamlit. All data sources are free and read-only.
 
-> **Status: early / foundation.** The database schema and seed loader are implemented and verified. Ingestion, entity resolution, scoring, license-play resolution, the UI, and the feedback/audit loop are **in progress** — see [Roadmap](#roadmap).
+> **Status: early / foundation.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), and normalized license facts are implemented and verified. Classification, scoring, license-play snapshots, the UI, and the feedback/audit loop are **in progress** — see [Roadmap](#roadmap).
 
 ## How it works
 
@@ -42,6 +42,8 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 - **Source policy registry** — the MVP source inventory seeded with per-source access method, poll interval, ToS status, evidence rank, and rate-limit notes.
 - **Entity resolution core** — deterministic CIK/ticker/LEI/alias matching with a fuzzy-name fallback. Known-collision names (e.g. bare "Dominion") never auto-match without corroborating context; ambiguous or low-confidence results go to a review queue instead of firing, and every match decision is logged with its terms and parser version. Covered by an adversarial test fixture set (collisions, subsidiaries, abbreviations, near-twins).
 - **Entity enrichment** — an annual-refresh job that anchors the watchlist to external identifiers: Wikidata queried by SEC CIK (deterministic, one batch) for QIDs and LEIs, GLEIF fulltext as fallback accepted only on exact normalized-name match, plus GLEIF parent/child relationship import. Results are generated into reviewable seed CSVs; hand-verified values always win over generated ones.
+- **Ingestion layer** — a shared runner (per-source policy checks, TTL skips, run bookkeeping, idempotent native-id/content-hash dedupe, per-source error containment, single-writer lock) plus five live fetchers: SEC EDGAR submissions (8-K/10-K per watchlist CIK), Federal Register (FERC + TSA documents), press-wire RSS (PR Newswire, GlobeNewswire), NERC standards-page snapshots, and the CISA KEV catalog. A 12-month backfill (~5,200 raw events) is stored and re-runs dedupe to zero.
+- **License facts + play candidates** — the hand-verified license matrix normalized into per-segment `license_facts` (commercial + GCC High, with a conservative, lossless mapping of the freeform gov-cloud notes) and one conditional license-play candidate per trigger→product mapping. Rebuild is deterministic from seeded config.
 
 ## Getting started
 
@@ -73,10 +75,12 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Idempotent config/seed loader + source policy registry | Implemented |
 | Entity resolution core (deterministic + fuzzy matching, collision guard, review queue, decision log) | Implemented |
 | Entity enrichment (GLEIF LEI / Wikidata QID population, parent/child relationships) | Implemented |
-| Classified ingestion (EDGAR, Federal Register, press-wire RSS, NERC/FERC pages) | In progress |
-| Store-only ingestion for backfill (GDELT news, CISA KEV/NVD, ransomware trackers) + enrichment (EIA) | In progress |
+| Ingestion runner (dedupe, run bookkeeping, error containment, single-writer lock) | Implemented |
+| Ingestion: EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV | Implemented |
+| Store-only ingestion for backfill (GDELT news, NVD, ransomware trackers) + enrichment (EIA) | In progress |
+| License facts + play candidates (normalized from the license matrix) | Implemented |
 | Classification & scoring (rule-based; decay half-lives; account fit) | In progress |
-| License-play resolution (incl. gov-cloud gating) | In progress |
+| License-play snapshots + gov-cloud gating | In progress |
 | Streamlit UI (multi-page, dark SOC theme, card feed) | In progress |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | In progress |
 

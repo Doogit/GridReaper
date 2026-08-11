@@ -39,9 +39,12 @@ PRNEWSWIRE_FEEDS = [
     "https://www.prnewswire.com/rss/energy-latest-news/energy-latest-news-list.rss",
     "https://www.prnewswire.com/rss/utilities-latest-news/utilities-latest-news-list.rss",
 ]
+# GlobeNewswire serves per-subjectcode feeds (last ~20 releases each); the
+# /RssFeed/industry/... form 400s and unknown subjectcodes hang rather than
+# error, so only the live-verified Energy feed ships. Add further confirmed
+# subjectcode feeds here as they are identified.
 GLOBENEWSWIRE_FEEDS = [
-    "https://www.globenewswire.com/RssFeed/industry/Energy/feedTitle/GlobeNewswire%20-%20Energy",
-    "https://www.globenewswire.com/RssFeed/industry/Utilities/feedTitle/GlobeNewswire%20-%20Utilities",
+    "https://www.globenewswire.com/RssFeed/subjectcode/2-Energy",
 ]
 
 
