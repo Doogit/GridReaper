@@ -139,6 +139,12 @@ class TestFetchEvents(EdgarTestCase):
         events, calls = self.fetch_all(canned, limit=3)
         self.assertEqual(len(events), 3)
 
+    def test_limit_zero_skips_requests(self):
+        self.add_entity("E1", "1000")
+        events, calls = self.fetch_all(submissions([filing("a-1")]), limit=0)
+        self.assertEqual(events, [])
+        self.assertEqual(calls, [])
+
 
 class TestRunSourceIntegration(EdgarTestCase):
     def test_run_and_rerun_dedupe(self):

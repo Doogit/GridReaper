@@ -96,6 +96,12 @@ class TestFetchEvents(KevTestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["source_native_id"], "CVE-2021-0001")
 
+    def test_limit_zero_skips_request(self):
+        with mock.patch.object(cisa_kev, "_get_json") as get_json:
+            events = list(cisa_kev.fetch_events(self.conn, 3650, 0))
+        self.assertEqual(events, [])
+        get_json.assert_not_called()
+
 
 class TestRunSource(KevTestCase):
     def test_run_and_delta_rerun(self):

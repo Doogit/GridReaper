@@ -46,6 +46,8 @@ def fetch_events(conn, window_days, limit):
     Records missing dateAdded are kept (never drop catalog data silently).
     HTTP failures propagate; the runner records status 'error' (R10.3).
     """
+    if limit is not None and limit <= 0:
+        return
     cutoff = (datetime.now(timezone.utc)
               - timedelta(days=window_days)).date().isoformat()
     data = _get_json(KEV_URL)
@@ -61,7 +63,7 @@ def fetch_events(conn, window_days, limit):
             "url": CATALOG_URL,
         }
         yielded += 1
-        if limit and yielded >= limit:
+        if limit is not None and yielded >= limit:
             return
 
 

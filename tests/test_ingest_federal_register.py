@@ -77,6 +77,11 @@ class FetchEventsTest(unittest.TestCase):
         self.assertEqual(len(events), 2)
         self.assertEqual(len(urls), 1)   # never fetches page 2
 
+    def test_limit_zero_skips_requests(self):
+        events, urls = self._events([_page([_doc(1)])], limit=0)
+        self.assertEqual(events, [])
+        self.assertEqual(urls, [])
+
     def test_event_dict_shape(self):
         events, _ = self._events([_page([_doc(7)])])
         e = events[0]

@@ -73,6 +73,8 @@ def _primary_doc_url(cik, filing):
 
 def fetch_events(conn, window_days, limit):
     """Yield 8-K/10-K raw events for all watchlist CIKs within the window."""
+    if limit is not None and limit <= 0:
+        return
     cutoff = (datetime.now(timezone.utc)
               - timedelta(days=window_days)).date().isoformat()
     entities = conn.execute(

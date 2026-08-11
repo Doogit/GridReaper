@@ -121,6 +121,13 @@ class TestRunSourceIntegration(unittest.TestCase):
             events = list(nerc_pages.fetch_events(None, 365, 1))
         self.assertEqual(len(events), 1)
 
+    def test_limit_zero_skips_requests(self):
+        with mock.patch.object(nerc_pages, "PAGE_URLS", ["https://x.example"]), \
+             mock.patch.object(nerc_pages, "_get_text") as get_text:
+            events = list(nerc_pages.fetch_events(None, 365, 0))
+        self.assertEqual(events, [])
+        get_text.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

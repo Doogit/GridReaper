@@ -80,6 +80,8 @@ def _fetch_feed_events(feed_urls, window_days, limit):
     """Yield fetcher-contract events for every <item> across feed_urls.
     A feed's HTTP failure propagates: the runner records the run as
     'error' without blocking other sources (R10.3)."""
+    if limit is not None and limit <= 0:
+        return
     cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
     count = 0
     for feed_url in feed_urls:
@@ -106,7 +108,7 @@ def _fetch_feed_events(feed_urls, window_days, limit):
                 "url": link,
             }
             count += 1
-            if limit and count >= limit:
+            if limit is not None and count >= limit:
                 return
 
 

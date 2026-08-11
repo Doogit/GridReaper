@@ -113,8 +113,10 @@ def page_event(page_url, html):
 def fetch_events(conn, window_days, limit):
     """Yield one snapshot event per configured page. window_days ignored
     (snapshots have no archive to window over)."""
+    if limit is not None and limit <= 0:
+        return
     for count, page_url in enumerate(PAGE_URLS):
-        if limit and count >= limit:
+        if limit is not None and count >= limit:
             return
         yield page_event(page_url, _get_text(page_url))
 

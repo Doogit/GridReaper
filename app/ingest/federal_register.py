@@ -66,6 +66,8 @@ def fetch_events(conn, window_days, limit):
     """Yield one event per Federal Register document (runner contract).
     HTTP failures propagate; the runner records them as status 'error'
     (R10.3)."""
+    if limit is not None and limit <= 0:
+        return
     url = _first_page_url(window_days)
     yielded = 0
     for _ in range(MAX_PAGES):
@@ -79,7 +81,7 @@ def fetch_events(conn, window_days, limit):
                 "canonical_url": doc.get("html_url", ""),
             }
             yielded += 1
-            if limit and yielded >= limit:
+            if limit is not None and yielded >= limit:
                 return
         url = data.get("next_page_url")
         if not url:

@@ -26,7 +26,7 @@ def _event(native_id, n=0):
 
 def fake_fetcher(events):
     def fetch_events(conn, window_days, limit):
-        for e in events[:limit] if limit else events:
+        for e in events if limit is None else events[:limit]:
             yield e
     return fetch_events
 
@@ -172,6 +172,17 @@ class TestRunSource(RunnerTestCase):
             limit=2)
         self.assertEqual(summary["records_seen"], 2)
 
+    def test_limit_zero_stores_no_events(self):
+        events = [_event(f"a-{i}") for i in range(5)]
+        summary = runner.run_source(
+            self.conn, "test_source", fake_fetcher(events), "test/1.0",
+            limit=0)
+        self.assertEqual(summary["records_seen"], 0)
+        self.assertEqual(summary["records_new"], 0)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0],
+            0)
+
 
 class TestIngestLock(unittest.TestCase):
     def test_contention_raises(self):
@@ -190,7 +201,8 @@ class TestIngestLock(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump({"pid": 99999, "ts": old}, fh)
             with runner.ingest_lock(path):
-                holder = json.load(open(path, encoding="utf-8"))
+                with open(path, encoding="utf-8") as fh:
+                    holder = json.load(fh)
                 self.assertEqual(holder["pid"], os.getpid())
             self.assertFalse(os.path.exists(path))
 

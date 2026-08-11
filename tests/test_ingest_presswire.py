@@ -94,6 +94,13 @@ class TestFeedParsing(unittest.TestCase):
                 ["https://a.example/rss", "https://b.example/rss"], 365, 3))
         self.assertEqual(len(events), 3)
 
+    def test_limit_zero_skips_requests(self):
+        with mock.patch.object(presswire, "_get_text") as get_text:
+            events = list(presswire._fetch_feed_events(
+                ["https://a.example/rss"], 365, 0))
+        self.assertEqual(events, [])
+        get_text.assert_not_called()
+
     def test_wrappers_hit_their_own_feed_lists(self):
         requested = []
 
