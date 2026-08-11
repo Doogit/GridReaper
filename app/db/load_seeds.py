@@ -47,6 +47,11 @@ TABLES = [
     {"table": "entity_collision_terms", "csv": "entity_collision_terms.csv",
      "pk": ["entity_id", "term"], "int_cols": [],
      "fk_checks": [("entity_id", "watchlist_entities")]},
+    {"table": "entity_relationships", "csv": "entity_relationships.csv",
+     "pk": ["parent_entity_id", "child_entity_id", "relationship_type"],
+     "int_cols": [],
+     "fk_checks": [("parent_entity_id", "watchlist_entities"),
+                   ("child_entity_id", "watchlist_entities")]},
     {"table": "license_matrix", "csv": "license_matrix.csv",
      "pk": ["product_id", "tier"], "int_cols": []},
     {"table": "source_policies", "csv": "source_policies.csv",
@@ -105,6 +110,31 @@ def build_upsert(table, cols, pk, update_cols=None):
         conflict = f"ON CONFLICT({','.join(pk)}) DO NOTHING"
     return (f"INSERT INTO {table} ({','.join(cols)}) "
             f"VALUES ({placeholders}) {conflict}")
+
+
+def apply_identifiers(conn):
+    """Fill lei / wikidata_qid from the generated entity_identifiers.csv
+    (written by app.enrich_entities). Fill-if-empty only: a non-empty value
+    from the hand-verified watchlist CSV always wins over generated data.
+    Returns (lei_filled, qid_filled, source_rows)."""
+    _, rows = read_rows(os.path.join(SEEDS_DIR, "entity_identifiers.csv"))
+    lei_filled = qid_filled = 0
+    for row in rows:
+        cur = conn.execute(
+            "SELECT lei, wikidata_qid FROM watchlist_entities "
+            "WHERE entity_id = ?", (row["entity_id"],)).fetchone()
+        if cur is None:
+            continue
+        if row.get("lei") and not (cur["lei"] or "").strip():
+            conn.execute("UPDATE watchlist_entities SET lei=? WHERE entity_id=?",
+                         (row["lei"], row["entity_id"]))
+            lei_filled += 1
+        if row.get("wikidata_qid") and not (cur["wikidata_qid"] or "").strip():
+            conn.execute(
+                "UPDATE watchlist_entities SET wikidata_qid=? WHERE entity_id=?",
+                (row["wikidata_qid"], row["entity_id"]))
+            qid_filled += 1
+    return lei_filled, qid_filled, len(rows)
 
 
 def load(db_path=None):
@@ -175,6 +205,10 @@ def load(db_path=None):
                 "ON CONFLICT(entity_id, term) DO NOTHING",
                 (eid, term, WATCHLIST_COLLISION_REASON))
 
+        # Generated identifier fills (after watchlist upsert so a reload's
+        # empty CSV cells are refilled in the same transaction)
+        ident_stats = apply_identifiers(conn)
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -191,6 +225,9 @@ def load(db_path=None):
         print(f"{table}: {loaded} rows loaded (source CSV had {source_m} data rows){tag}")
     print(f"entity_aliases: {len(aliases)} split from watchlist CSV")
     print(f"entity_collision_terms: {len(collisions)} split from watchlist CSV")
+    lei_n, qid_n, ident_rows = ident_stats
+    print(f"entity_identifiers: {lei_n} lei + {qid_n} wikidata_qid filled "
+          f"(source CSV had {ident_rows} rows)")
 
     if skipped:
         print(f"\n{len(skipped)} row(s) skipped on FK warning:")
