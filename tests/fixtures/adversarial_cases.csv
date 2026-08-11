@@ -8,6 +8,7 @@ collision_full_name_county,name,Otter Tail,,review,
 collision_full_name_with_context,name,Otter Tail,Otter Tail Power filed a rate case,matched,E0038
 parent_vs_subsidiary_brand,name,PNM,,review,
 parent_vs_subsidiary_context,name,PNM,PNM Resources reported quarterly earnings for its utilities,matched,E0046
+parent_vs_subsidiary_both_contexts,name,PNM,TXNM Energy and PNM Resources both appeared in the same filing,review,
 subsidiary_dba_alias,name,Texas-New Mexico Power,,matched,E0046
 abbreviation_alias,name,AEP,,matched,E0005
 ampersand_variant,name,Pacific Gas & Electric,,matched,E0008

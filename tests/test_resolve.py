@@ -139,6 +139,16 @@ class TestResolverBehavior(unittest.TestCase):
         res = self.resolver.resolve(name="PNM")
         self.assertEqual({e for e, _ in res.candidates}, {"E0028", "E0046"})
 
+    def test_multi_candidate_context_stays_review(self):
+        """Context only breaks a tie when it corroborates one candidate."""
+        res = self.resolver.resolve(
+            name="PNM",
+            context_text="TXNM Energy and PNM Resources both appeared")
+        self.assertEqual(res.status, "review")
+        self.assertIsNone(res.entity_id)
+        self.assertEqual(res.method, "ambiguous_context")
+        self.assertEqual({e for e, _ in res.candidates}, {"E0028", "E0046"})
+
     def test_deterministic_beats_fuzzy(self):
         """CIK wins even when the name would go to review."""
         res = self.resolver.resolve(cik="715957", name="Dominion")

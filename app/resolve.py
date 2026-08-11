@@ -138,12 +138,22 @@ class EntityResolver:
         # even when it equals an entity's full name.
         if n in self._collisions:
             cands = sorted(self._collisions[n])
+            confirmed = []
             for eid in cands:
                 confirm = self._context_confirms(eid, n, context_norm)
                 if confirm:
-                    return Resolution("matched", eid, "name+context", 0.95,
-                                      [n, f"context:{confirm}"], [],
-                                      [(eid, 0.95)])
+                    confirmed.append((eid, confirm))
+            if len(confirmed) == 1:
+                eid, confirm = confirmed[0]
+                return Resolution("matched", eid, "name+context", 0.95,
+                                  [n, f"context:{confirm}"], [],
+                                  [(eid, 0.95)])
+            if len(confirmed) > 1:
+                return Resolution(
+                    "review", None, "ambiguous_context",
+                    REVIEW_THRESHOLD,
+                    [n] + [f"context:{confirm}" for _, confirm in confirmed],
+                    [], [(eid, REVIEW_THRESHOLD) for eid, _ in confirmed])
             return Resolution("review", None, "collision_term",
                               REVIEW_THRESHOLD, [], [n],
                               [(eid, REVIEW_THRESHOLD) for eid in cands])
@@ -155,12 +165,22 @@ class EntityResolver:
                 eid = next(iter(ids))
                 return Resolution("matched", eid, "name", 1.0, [n], [],
                                   [(eid, 1.0)])
+            confirmed = []
             for eid in sorted(ids):  # ambiguous exact: context may break tie
                 confirm = self._context_confirms(eid, n, context_norm)
                 if confirm:
-                    return Resolution("matched", eid, "name+context", 0.95,
-                                      [n, f"context:{confirm}"], [],
-                                      [(eid, 0.95)])
+                    confirmed.append((eid, confirm))
+            if len(confirmed) == 1:
+                eid, confirm = confirmed[0]
+                return Resolution("matched", eid, "name+context", 0.95,
+                                  [n, f"context:{confirm}"], [],
+                                  [(eid, 0.95)])
+            if len(confirmed) > 1:
+                return Resolution(
+                    "review", None, "ambiguous_context",
+                    REVIEW_THRESHOLD,
+                    [n] + [f"context:{confirm}" for _, confirm in confirmed],
+                    [], [(eid, REVIEW_THRESHOLD) for eid, _ in confirmed])
             return Resolution("review", None, "ambiguous_name",
                               REVIEW_THRESHOLD, [n], [],
                               [(eid, REVIEW_THRESHOLD) for eid in sorted(ids)])
