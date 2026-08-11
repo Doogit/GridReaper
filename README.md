@@ -4,7 +4,7 @@ Monitor external events across US energy companies and flag when an account beco
 
 Stack: Python · SQLite · Streamlit. All data sources are free and read-only.
 
-> **Status: early / foundation.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), and normalized license facts are implemented and verified. Classification, scoring, license-play snapshots, the UI, and the feedback/audit loop are **in progress** — see [Roadmap](#roadmap).
+> **Status: signal pipeline working end-to-end.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), normalized license facts, rule-based classification & scoring, and immutable license-play snapshots with gov-cloud gating are implemented and verified against the stored 12-month backfill. The Streamlit UI and the feedback/audit loop are **in progress** — see [Roadmap](#roadmap).
 
 ## How it works
 
@@ -42,18 +42,40 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 - **Source policy registry** — the MVP source inventory seeded with per-source access method, poll interval, ToS status, evidence rank, and rate-limit notes.
 - **Entity resolution core** — deterministic CIK/ticker/LEI/alias matching with a fuzzy-name fallback. Known-collision names (e.g. bare "Dominion") never auto-match without corroborating context; ambiguous or low-confidence results go to a review queue instead of firing, and every match decision is logged with its terms and parser version. Covered by an adversarial test fixture set (collisions, subsidiaries, abbreviations, near-twins).
 - **Entity enrichment** — an annual-refresh job that anchors the watchlist to external identifiers: Wikidata queried by SEC CIK (deterministic, one batch) for QIDs and LEIs, GLEIF fulltext as fallback accepted only on exact normalized-name match, plus GLEIF parent/child relationship import. Results are generated into reviewable seed CSVs; hand-verified values always win over generated ones.
-- **Ingestion layer** — a shared runner (per-source policy checks, TTL skips, run bookkeeping, idempotent native-id/content-hash dedupe, per-source error containment, single-writer lock) plus five live fetchers: SEC EDGAR submissions (8-K/10-K per watchlist CIK), Federal Register (FERC + TSA documents), press-wire RSS (PR Newswire, GlobeNewswire), NERC standards-page snapshots, and the CISA KEV catalog. A 12-month backfill (~5,200 raw events) is stored and re-runs dedupe to zero.
+- **Ingestion layer** — a shared runner (per-source policy checks, TTL skips, run bookkeeping, idempotent native-id/content-hash dedupe, per-source error containment, single-writer lock) plus five live fetchers: SEC EDGAR submissions (8-K/10-K per watchlist CIK), Federal Register (FERC + TSA documents), press-wire RSS (PR Newswire, GlobeNewswire), NERC standards-page snapshots, and the CISA KEV catalog. A 12-month backfill (~5,200 raw events, local — the database is gitignored and rebuildable) is stored and re-runs dedupe to zero.
 - **License facts + play candidates** — the hand-verified license matrix normalized into per-segment `license_facts` (commercial + GCC High, with a conservative, lossless mapping of the freeform gov-cloud notes) and one conditional license-play candidate per trigger→product mapping. Rebuild is deterministic from seeded config.
+- **Classification & scoring (rule-based MVP)** — a classifier framework (entity resolution with review-queue gating, parent rollup, deterministic signal ids, per-version bookkeeping so re-runs are incremental and rule changes reprocess history) plus two precision-first classifiers: leadership changes (8-K Item 5.02 + press-wire appointment grammar, security-relevant titles only) and regulatory actions (Federal Register FERC/TSA rules with a required compliance-clock anchor; NERC standards-page diffs). Scores follow `base_strength × 0.5^(age/half-life) × account_fit × scope_fit` with operator-tunable weights seeded from CSV; stale signals decay automatically. Every signal carries ranked evidence rows — nothing surfaces unsourced.
+- **License-play snapshots + gov-cloud gating (rule-based MVP)** — each signal gets immutable play snapshots pinning the licensing evidence basis (fact ids, display text, outreach-safe text) at generation time, so old cards stay explainable after licensing data changes. Outreach text never states non-primary prices, never asserts the account's current tier, and stays sector-phrased for sector-wide events. Security Copilot plays are suppressed for known/likely US government cloud tenants.
 
 ## Getting started
 
-Requires Python 3.11+ (standard library only — no third-party dependencies for the loader).
+Requires Python 3.11+ (standard library only — no third-party dependencies).
 
 ```bash
-python -m app.db.load_seeds
+python -m app.db.load_seeds     # create data/gridsignals.db + config tables
+python -m app.licensing         # normalize license facts + play candidates
+python -m unittest discover -s tests   # 156 hermetic tests, no network
 ```
 
-This creates `data/gridsignals.db` (gitignored) and populates the config tables from `seeds/`. The command is idempotent — re-running refreshes rows rather than duplicating them.
+This creates `data/gridsignals.db` (gitignored) and populates the config layer from `seeds/`. Both commands are idempotent and safe to re-run.
+
+A fresh clone starts with **no event data** — the raw-event backfill referenced below lives in the (gitignored) local database, not the repo. To build your own and see real signals end-to-end, run the pipeline (live fetches; free, read-only, polite):
+
+```bash
+python -m app.ingest.edgar                          # SEC EDGAR submissions
+python -m app.ingest.federal_register               # FERC + TSA documents
+python -m app.ingest.presswire --source prnewswire  # press-wire RSS
+python -m app.ingest.presswire --source globenewswire
+python -m app.ingest.nerc_pages                     # NERC page snapshots
+python -m app.ingest.cisa_kev                       # CISA KEV (store-only)
+
+python -m app.classify.leadership                   # offline from here on
+python -m app.classify.regulatory
+python -m app.scoring
+python -m app.plays
+```
+
+Signals land in the `signals` table with ranked evidence in `signal_evidence`; each signal's license plays are pinned in `license_play_snapshots`. (Rendering them is the UI chunk — see Roadmap.)
 
 ## Architecture
 
@@ -79,8 +101,8 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Ingestion: EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV | Implemented |
 | Store-only ingestion for backfill (GDELT news, NVD, ransomware trackers) + enrichment (EIA) | In progress |
 | License facts + play candidates (normalized from the license matrix) | Implemented |
-| Classification & scoring (rule-based; decay half-lives; account fit) | In progress |
-| License-play snapshots + gov-cloud gating | In progress |
+| Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
+| License-play snapshots + gov-cloud gating | Implemented |
 | Streamlit UI (multi-page, dark SOC theme, card feed) | In progress |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | In progress |
 
