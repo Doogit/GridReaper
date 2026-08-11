@@ -66,6 +66,9 @@ TABLES = [
                    ("child_entity_id", "watchlist_entities")]},
     {"table": "license_matrix", "csv": "license_matrix.csv",
      "pk": ["product_id", "tier"], "int_cols": []},
+    {"table": "scoring_weights", "csv": "scoring_weights.csv",
+     # weight is REAL; loader passes CSV strings, SQLite REAL affinity coerces
+     "pk": ["weight_kind", "key"], "int_cols": []},
     {"table": "source_policies", "csv": "source_policies.csv",
      "pk": ["source_id"], "int_cols": ["ttl", "enabled", "evidence_rank"],
      # enabled is admin/G2-managed after first insert - never clobber it
