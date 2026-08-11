@@ -16,6 +16,8 @@ from app.db.migrate import apply_migrations
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 SEEDS_DIR = os.path.join(REPO_ROOT, "seeds")
+WATCHLIST_ALIAS_SOURCE = "watchlist_entities.csv"
+WATCHLIST_COLLISION_REASON = "seeded from watchlist_entities.csv"
 
 # Loaded in FK order: products + triggers precede indicator_map.
 # col_map renames a CSV column to its table column.
@@ -150,16 +152,22 @@ def load(db_path=None):
             summary.append((table, loaded, len(rows)))
 
         # Normalized alias/collision rows split from the watchlist CSV (R4.4)
+        conn.execute("DELETE FROM entity_aliases WHERE source = ?",
+                     (WATCHLIST_ALIAS_SOURCE,))
+        conn.execute("DELETE FROM entity_collision_terms WHERE reason = ?",
+                     (WATCHLIST_COLLISION_REASON,))
         for eid, alias in aliases:
             conn.execute(
                 "INSERT INTO entity_aliases (entity_id, alias, source) "
-                "VALUES (?, ?, 'watchlist_entities.csv') "
-                "ON CONFLICT(entity_id, alias) DO NOTHING", (eid, alias))
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(entity_id, alias) DO NOTHING",
+                (eid, alias, WATCHLIST_ALIAS_SOURCE))
         for eid, term in collisions:
             conn.execute(
                 "INSERT INTO entity_collision_terms (entity_id, term, reason) "
-                "VALUES (?, ?, 'seeded from watchlist_entities.csv') "
-                "ON CONFLICT(entity_id, term) DO NOTHING", (eid, term))
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(entity_id, term) DO NOTHING",
+                (eid, term, WATCHLIST_COLLISION_REASON))
 
         conn.commit()
     except Exception:

@@ -8,7 +8,6 @@ database.
 """
 import hashlib
 import os
-import sqlite3
 import sys
 from datetime import datetime, timezone
 
@@ -17,6 +16,10 @@ MIGRATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migra
 
 def _checksum(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sql_literal(value):
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _is_legacy_db(conn):
@@ -60,13 +63,21 @@ def apply_migrations(conn):
                     f"add a new one."
                 )
             continue
-        conn.executescript(sql)
-        conn.execute(
+        applied_at = datetime.now(timezone.utc).isoformat()
+        script = (
+            "BEGIN;\n"
+            f"{sql.rstrip()}\n"
             "INSERT INTO schema_migrations (version, applied_at, checksum) "
-            "VALUES (?, ?, ?)",
-            (version, datetime.now(timezone.utc).isoformat(), digest),
+            f"VALUES ({_sql_literal(version)}, {_sql_literal(applied_at)}, "
+            f"{_sql_literal(digest)});\n"
+            "COMMIT;"
         )
-        conn.commit()
+        try:
+            conn.executescript(script)
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
         ran.append(version)
     return ran
 
