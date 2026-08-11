@@ -31,15 +31,16 @@ Text construction
     and the family carries a "not available — ..." gcc_high fact.
 
     outreach_safe_text (R7.11, customer-facing): scope-phrased lead-in plus
-    the candidate's conditional discovery question. It never interpolates
-    any license_facts.price_note (so price strings from non-primary facts
-    can never leak), never asserts the account's current tier (conditional
-    discovery phrasing only, R7.7), and signals whose scope != 'account'
-    are phrased sector-wide ("Operators in this segment ...") with no
-    account-specific wording. Prerequisites are never stated as
-    recommendations — the only prerequisite-touching content is the
-    candidate's discovery question, which already models prerequisites as
-    discovery (R7.9, agent365 family included).
+    the candidate's conditional discovery question. The sector lead-in
+    quotes the signal's own sourced headline and event date — outreach
+    never invents sector color; every clause traces to a stored row. It
+    never interpolates any license_facts.price_note (so price strings from
+    non-primary facts can never leak), never asserts the account's current
+    tier (conditional discovery phrasing only, R7.7), and signals whose
+    scope != 'account' carry no account-specific wording. Prerequisites are
+    never stated as recommendations — the only prerequisite-touching
+    content is the candidate's discovery question, which already models
+    prerequisites as discovery (R7.9, agent365 family included).
 
 fact_ids pins the evidence basis: every license_facts row whose product_id
 is the candidate's family (commercial and gcc_high segments), ordered by
@@ -62,12 +63,15 @@ GOV_UNAVAILABLE_FAMILIES = {"sec_copilot"}
 GOV_POSSIBLE_LIKELIHOODS = {"likely", "possible"}
 NOT_AVAILABLE_PREFIX = "not available — "
 
+# Outreach lead-ins reference the signal's own sourced event (headline +
+# event date) - never invented sector color: every clause in outreach text
+# must trace to a stored, sourced row (R4.1 discipline applied to drafts).
 ACCOUNT_OUTREACH = (
     "Given the recent development at your organization, a licensing check "
     "may be timely. {question}")
 SECTOR_OUTREACH = (
-    "Operators in this segment are revisiting {product} licensing. "
-    "{question}")
+    "{event}. In that context, a {product} licensing check may be timely "
+    "for affected operators. {question}")
 
 
 def _utcnow():
@@ -104,10 +108,13 @@ def _display_text(cand, product, entity, not_available_fact):
     return "\n".join(lines)
 
 
-def _outreach_safe_text(cand, product, signal_scope):
-    if signal_scope == "account":
+def _outreach_safe_text(cand, product, sig):
+    if sig["signal_scope"] == "account":
         return ACCOUNT_OUTREACH.format(question=cand["discovery_question"])
-    return SECTOR_OUTREACH.format(product=product,
+    event = sig["headline"] or "A recent regulatory development"
+    if sig["event_date"]:
+        event += f" ({sig['event_date']})"
+    return SECTOR_OUTREACH.format(event=event, product=product,
                                   question=cand["discovery_question"])
 
 
@@ -141,8 +148,8 @@ def generate_snapshots(conn, generation_version=GENERATION_VERSION):
               "suppressed_gov": 0, "signals_seen": 0}
     now = _utcnow()
     for sig in conn.execute(
-            "SELECT signal_id, entity_id, signal_scope, trigger_id "
-            "FROM signals ORDER BY signal_id").fetchall():
+            "SELECT signal_id, entity_id, signal_scope, trigger_id, "
+            " headline, event_date FROM signals ORDER BY signal_id").fetchall():
         counts["signals_seen"] += 1
         entity = entities.get(sig["entity_id"]) if sig["entity_id"] else None
         for cand in candidates_by_trigger.get(sig["trigger_id"], []):
@@ -168,7 +175,7 @@ def generate_snapshots(conn, generation_version=GENERATION_VERSION):
                  json.dumps([f["fact_id"] for f in family_facts]),
                  now, generation_version,
                  _display_text(cand, product, entity, not_available_fact),
-                 _outreach_safe_text(cand, product, sig["signal_scope"])))
+                 _outreach_safe_text(cand, product, sig)))
             counts["snapshots_new"] += 1
     conn.commit()
     return counts

@@ -194,7 +194,9 @@ class TestGenerateSnapshots(unittest.TestCase):
         sector = [r for r in self.rows() if r["signal_id"] == "sig_sector"]
         self.assertEqual(len(sector), 1)
         text = sector[0]["outreach_safe_text"]
-        self.assertIn("Operators in this segment", text)
+        # sector lead-in quotes the signal's own sourced event, then stays
+        # class-phrased ("affected operators") - never invented sector color
+        self.assertIn("affected operators", text)
         self.assertNotIn("your ", text.lower())
         self.assertNotIn("your recent event", text.lower())
         # account-scoped outreach IS account-phrased

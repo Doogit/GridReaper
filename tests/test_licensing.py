@@ -8,6 +8,7 @@ discovery questions that never assert the account's tier, and idempotency.
 One test loads the real seed CSVs to pin mapping completeness to the
 shipped license_matrix.
 """
+import json
 import os
 import sqlite3
 import tempfile
@@ -170,6 +171,75 @@ class TestPlayCandidates(LicensingTestCase):
         self.assertIn("If E3", q)
         self.assertIn("E3 -> E5 Security addon OR full E5", q)
         self.assertIn("Defender for Endpoint (P1/P2)", q)
+
+    def _add_snapshot(self, signal_id, play_id, fact_ids):
+        """Minimal FK-satisfying snapshot: raw_event -> signal -> snapshot."""
+        self.conn.execute(
+            "INSERT INTO raw_events (raw_event_id) VALUES ('raw-l1') "
+            "ON CONFLICT DO NOTHING")
+        self.conn.execute(
+            "INSERT INTO signals (signal_id, raw_event_id, signal_scope, "
+            " trigger_id) VALUES (?, 'raw-l1', 'sector', 'own_incident') "
+            "ON CONFLICT DO NOTHING", (signal_id,))
+        self.conn.execute(
+            "INSERT INTO license_play_snapshots (signal_id, play_id, "
+            " fact_ids, generated_at, generation_version, display_text, "
+            " outreach_safe_text) VALUES (?, ?, ?, 't', 'plays/1.0', '', '')",
+            (signal_id, play_id, json.dumps(fact_ids)))
+        self.conn.commit()
+
+    def test_rebuild_survives_existing_snapshots(self):
+        """Regression: the quarterly refresh must not FK-crash once a card
+        exists (snapshots reference play_ids); candidates upsert in place."""
+        self._seed_play()
+        rebuild(self.conn)
+        self._add_snapshot("sig-1", "own_incident:def_endpoint",
+                           ["defender_endpoint_p2:e5:commercial"])
+        # simulate the quarterly licensing edit
+        self.conn.execute(
+            "UPDATE license_matrix SET upgrade_path = 'E5 direct' "
+            "WHERE product_id = 'defender_endpoint_p2'")
+        counts = rebuild(self.conn)   # must not raise IntegrityError
+        self.assertEqual(counts["candidates"], 1)
+        self.assertEqual(counts["stale_kept"], [])
+        self.assertEqual(counts["orphaned_fact_refs"], 0)
+        row = self.candidates()[0]
+        self.assertEqual(row["recommended_path"], "E5 direct")   # refreshed
+        snap = self.conn.execute(
+            "SELECT * FROM license_play_snapshots").fetchone()
+        self.assertEqual(snap["play_id"], "own_incident:def_endpoint")
+
+    def test_rebuild_keeps_snapshot_referenced_stale_candidate(self):
+        """A candidate that stops being generated survives (pinned history)
+        when a snapshot references it, and is reported in stale_kept."""
+        self._seed_play()
+        rebuild(self.conn)
+        self._add_snapshot("sig-1", "own_incident:def_endpoint",
+                           ["defender_endpoint_p2:e5:commercial"])
+        self.conn.execute(
+            "DELETE FROM indicator_map WHERE trigger_id = 'own_incident'")
+        self.conn.commit()
+        counts = rebuild(self.conn)
+        self.assertEqual(counts["candidates"], 0)
+        self.assertEqual(counts["stale_kept"], ["own_incident:def_endpoint"])
+        self.assertEqual(len(self.candidates()), 1)   # kept, not deleted
+
+    def test_rebuild_reports_orphaned_snapshot_fact_refs(self):
+        """A SKU/tier rename must be loud: pinned fact_ids that no longer
+        resolve are counted, never silently orphaned."""
+        self._seed_play()
+        self.add_matrix("defender_endpoint_p1", "e3")
+        rebuild(self.conn)
+        self._add_snapshot("sig-1", "own_incident:def_endpoint",
+                           ["defender_endpoint_p1:e3:commercial",
+                            "defender_endpoint_p1:e3:gcc_high"])
+        # rename the tier (a normal quarterly Microsoft move)
+        self.conn.execute(
+            "UPDATE license_matrix SET tier = 'e3_new' "
+            "WHERE product_id = 'defender_endpoint_p1'")
+        self.conn.commit()
+        counts = rebuild(self.conn)
+        self.assertEqual(counts["orphaned_fact_refs"], 2)
 
     def test_missing_canonical_sku_row_raises(self):
         # indicator family present but its canonical play SKU row is absent

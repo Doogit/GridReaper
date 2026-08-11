@@ -30,6 +30,10 @@ the signal feed).
 
 Scope: effective_on set -> sector (the compliance clock is running for the
 affected class); otherwise -> regulatory_calendar (upcoming milestone).
+Headlines are "{agency} {doc-type label}: {document title}" - the label
+comes from the document's own type field and the title is quoted, so the
+headline never claims an action (adopts/directs/approves) the payload does
+not itself state, and same-day sibling documents stay distinguishable.
 nerc_enforcement does not allow regulatory_calendar, so it always emits
 sector; additionally, when the title's leading "Company Name; Notice of..."
 segment carries a clear corporate-suffix token (Inc/LLC/Corp/...), an
@@ -93,10 +97,22 @@ _CORP_SUFFIXES = {"inc", "incorporated", "llc", "lc", "llp", "lp", "ltd",
 
 FR_CONFIDENCE = 0.8
 ACCOUNT_CONFIDENCE = 0.75
+MAX_HEADLINE_CHARS = 140
 DIFF_CONFIDENCE = 0.65
 DIFF_CONTEXT_TOKENS = 8
 MAX_SNIPPET_CHARS = 400
 MAX_ABSTRACT_SENTENCES = 2
+
+
+def _headline(agency, doc_type, title):
+    """'{agency} {type label}: {title}' - claims only what the payload
+    states (the type field), keeps sibling documents distinguishable."""
+    label = {"Rule": "final rule", "Proposed Rule": "proposed rule",
+             "Notice": "notice"}.get(doc_type, doc_type or "document")
+    text = f"{agency} {label}: {title}"
+    if len(text) > MAX_HEADLINE_CHARS:
+        text = text[:MAX_HEADLINE_CHARS - 1].rstrip() + "…"
+    return text
 
 
 def _agency_slugs(payload):
@@ -198,13 +214,11 @@ def classify_federal_register(conn, raw):
 
     if (TSA_SLUG in slugs and doc_type in RULEMAKING_TYPES
             and any(t in lower for t in TSA_TERMS)):
-        verb = "sets" if scope == "sector" else "proposes"
         candidates.append({
             "trigger_id": "tsa_security_directive", "signal_scope": scope,
             "entity_id": None, "entity_name_hint": None,
             "event_date": event_date,
-            "headline": (f"TSA {verb} security requirements for regulated "
-                         "pipeline and surface transportation operators"),
+            "headline": _headline("TSA", doc_type, title),
             "evidence": _evidence(
                 title,
                 _matched_sentences(
@@ -217,13 +231,11 @@ def classify_federal_register(conn, raw):
     if (FERC_SLUG in slugs and doc_type in RULEMAKING_TYPES
             and "reliability standard" in lower
             and _has_cip_context(payload, text)):
-        verb = "adopts" if scope == "sector" else "proposes"
         candidates.append({
             "trigger_id": "nerc_cip_revision", "signal_scope": scope,
             "entity_id": None, "entity_name_hint": None,
             "event_date": event_date,
-            "headline": (f"FERC {verb} CIP Reliability Standard revisions "
-                         "affecting registered utilities"),
+            "headline": _headline("FERC", doc_type, title),
             "evidence": _evidence(
                 title, _matched_sentences(abstract, _has_reliability_term),
                 effective_on, comments_close_on),
@@ -238,12 +250,17 @@ def classify_federal_register(conn, raw):
             _matched_sentences(
                 abstract, lambda s: bool(_ENFORCEMENT_RE.search(s))),
             effective_on, comments_close_on)
+        # Sector headline stays class-phrased WITHOUT the company name:
+        # the trigger is URE-anonymized by default (attribution gated) and
+        # sector cards explain affected classes, never a named account
+        # (R7.2). The named company appears only in the account-scoped
+        # candidate below and in the rank-1 title evidence.
         candidates.append({
             "trigger_id": "nerc_enforcement", "signal_scope": "sector",
             "entity_id": None, "entity_name_hint": None,
             "event_date": event_date,
-            "headline": ("FERC CIP/reliability enforcement action signals "
-                         "compliance exposure across registered utilities"),
+            "headline": ("FERC enforcement notice: CIP/reliability "
+                         "enforcement action affecting registered entities"),
             "evidence": evidence,
             "confidence": FR_CONFIDENCE,
         })

@@ -152,7 +152,10 @@ class TestFederalRegister(unittest.TestCase):
         self.assertEqual(sig["trigger_id"], "nerc_cip_revision")
         self.assertEqual(sig["signal_scope"], "regulatory_calendar")
         self.assertIsNone(sig["entity_id"])
-        self.assertIn("proposes", sig["headline"])
+        # headline label comes from the doc's own type field, and the
+        # quoted title keeps sibling documents distinguishable
+        self.assertIn("FERC proposed rule:", sig["headline"])
+        self.assertIn("CIP-003-11", sig["headline"])
 
     def test_enforcement_notice_emits_sector_and_named_account(self):
         add_fr_event(self.conn, 1, fr_doc(
