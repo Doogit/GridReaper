@@ -8,13 +8,31 @@ Stack: Python · SQLite · Streamlit. All data sources are free and read-only.
 
 ## How it works
 
-GridReaper watches public signals about US energy companies — regulatory actions (NERC/FERC/TSA) and leadership changes (new CISO/CIO) — and turns them into scored, sourced signal cards. Each card maps the event to relevant Microsoft security products, resolves a licensing path, and drafts an outreach opener. Every claim carries a source link and an evidence-quality tag; nothing surfaces unsourced.
+GridReaper ingests a broad set of free, public signals about US energy companies and turns the highest-signal events into scored, sourced cards. Each card maps an event to relevant Microsoft security products, resolves a licensing path, and drafts an outreach opener. Every claim carries a source link and an evidence-quality tag; nothing surfaces unsourced.
+
+At MVP, two trigger types are **classified into cards** — regulatory actions (NERC/FERC/TSA) and leadership changes (new CISO/CIO/CTO). A wider set of sources — cyber incidents, ransomware activity, known-exploited vulnerabilities, and global news — is **ingested and stored** to build historical backfill, so later stages classify against history instead of starting cold.
 
 Design principles:
 
-- **Read-only, free sources only.** SEC EDGAR, Federal Register, press-wire RSS, NERC/FERC pages. No paid feeds, no ToS-restricted scraping, no ML.
-- **Evidence over noise.** Two low-volume-but-high-signal trigger types at MVP, confidence gating, and an automated accuracy audit rather than a firehose.
+- **Read-only, free sources only.** No paid feeds, no ToS-restricted scraping, no ML.
+- **Evidence over noise.** Confidence gating and an automated accuracy audit rather than a firehose; low-volume, high-signal triggers are classified first.
 - **Config as data.** Products, triggers, mappings, watchlist, and the license matrix live as CSV seeded into SQLite — editable without code changes.
+
+## Data sources
+
+The MVP target source set — all free and accessed read-only (GET / RSS / JSON / bulk download). Ingestion is in progress; see [Roadmap](#roadmap).
+
+| Source | Role |
+|---|---|
+| SEC EDGAR — 8-K / 10-K filings + submissions API | Classified — leadership + regulatory |
+| Federal Register API (FERC, TSA) | Classified — regulatory |
+| Press-wire RSS (PR Newswire, GlobeNewswire) | Classified — leadership |
+| NERC / FERC public pages | Classified — regulatory |
+| GDELT global news | Stored for backfill (later-stage classification) |
+| CISA KEV + NVD | Stored — known-exploited vulnerabilities |
+| Ransomware trackers (ransomware.live / RansomLook) | Stored — incident early-warning |
+| EIA API | Enrichment — facility geo/capacity for the map |
+| GLEIF + Wikidata | Entity resolution — LEI / QID anchoring |
 
 ## What works today
 
@@ -44,18 +62,21 @@ Ingestion runs as a separate scheduled process. The app is read-only for all sig
 
 ## Roadmap
 
-The MVP targets two classified trigger types — regulatory actions and leadership changes — over a watchlist of US energy companies, surfaced as sourced signal cards with resolved license plays.
+The MVP classifies two trigger types — regulatory actions and leadership changes — into cards over a watchlist of US energy companies, while ingesting a broader signal set to build backfill for later stages.
 
 | Area | Status |
 |---|---|
 | SQLite schema + WAL connection | Implemented |
 | Idempotent config/seed loader | Implemented |
 | Entity resolution (CIK/LEI/QID anchoring; GLEIF/Wikidata enrichment; alias disambiguation) | In progress |
-| Source ingestion (EDGAR, Federal Register, press-wire RSS, NERC/FERC pages) | In progress |
+| Classified ingestion (EDGAR, Federal Register, press-wire RSS, NERC/FERC pages) | In progress |
+| Store-only ingestion for backfill (GDELT news, CISA KEV/NVD, ransomware trackers) + enrichment (EIA) | In progress |
 | Classification & scoring (rule-based; decay half-lives; account fit) | In progress |
 | License-play resolution (incl. gov-cloud gating) | In progress |
 | Streamlit UI (multi-page, dark SOC theme, card feed) | In progress |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | In progress |
+
+Later stages add incident/combo classification, GDELT-based classification, and a hiring/macro-trend layer.
 
 ## Notes
 
