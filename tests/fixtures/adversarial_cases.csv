@@ -1,0 +1,24 @@
+case,input_kind,input_value,context_text,expected_status,expected_entity
+collision_bare_common_word,name,Dominion,,review,
+collision_with_context,name,Dominion,Dominion Energy said the Virginia utility restored service,matched,E0004
+collision_bare_chord,name,Chord,,review,
+collision_bare_range,name,Range,,review,
+collision_bare_constellation,name,Constellation,,review,
+collision_full_name_county,name,Otter Tail,,review,
+collision_full_name_with_context,name,Otter Tail,Otter Tail Power filed a rate case,matched,E0038
+parent_vs_subsidiary_brand,name,PNM,,review,
+parent_vs_subsidiary_context,name,PNM,PNM Resources reported quarterly earnings for its utilities,matched,E0046
+parent_vs_subsidiary_both_contexts,name,PNM,TXNM Energy and PNM Resources both appeared in the same filing,review,
+subsidiary_dba_alias,name,Texas-New Mexico Power,,matched,E0046
+abbreviation_alias,name,AEP,,matched,E0005
+ampersand_variant,name,Pacific Gas & Electric,,matched,E0008
+legal_suffix_variant,name,Constellation Energy Corporation,,matched,E0007
+former_name_not_aliased,name,TXNM Energy,,matched,E0028
+fuzzy_typo,name,Dominon Energy,,matched,E0004
+suffix_strip_exact_twin,name,Delta Utilities Group,,matched,EX001
+fuzzy_near_twin_review,name,Delta Utilitys,,review,
+unknown_company,name,Acme Widgets International,,none,
+cik_zero_padded,cik,0000715957,,matched,E0004
+cik_unpadded,cik,715957,,matched,E0004
+ticker_case_insensitive,ticker,pcg,,matched,E0008
+ticker_subsidiary_authoritative,ticker,PNM,,matched,E0046

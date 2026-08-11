@@ -40,6 +40,7 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 - **Connection helper** — SQLite in WAL mode with foreign keys and a busy timeout, matching the single-writer / read-heavy architecture.
 - **Seed loader** — idempotent, foreign-key-ordered load of the config data with a per-table row-count report. Safe to re-run; never clobbers runtime-managed state (e.g. a source disabled by the operator stays disabled).
 - **Source policy registry** — the MVP source inventory seeded with per-source access method, poll interval, ToS status, evidence rank, and rate-limit notes.
+- **Entity resolution core** — deterministic CIK/ticker/LEI/alias matching with a fuzzy-name fallback. Known-collision names (e.g. bare "Dominion") never auto-match without corroborating context; ambiguous or low-confidence results go to a review queue instead of firing, and every match decision is logged with its terms and parser version. Covered by an adversarial test fixture set (collisions, subsidiaries, abbreviations, near-twins).
 
 ## Getting started
 
@@ -69,7 +70,8 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 |---|---|
 | SQLite schema + migrations + WAL connection | Implemented |
 | Idempotent config/seed loader + source policy registry | Implemented |
-| Entity resolution (CIK/LEI/QID anchoring; GLEIF/Wikidata enrichment; alias disambiguation) | In progress |
+| Entity resolution core (deterministic + fuzzy matching, collision guard, review queue, decision log) | Implemented |
+| Entity enrichment (GLEIF LEI / Wikidata QID population) | In progress |
 | Classified ingestion (EDGAR, Federal Register, press-wire RSS, NERC/FERC pages) | In progress |
 | Store-only ingestion for backfill (GDELT news, CISA KEV/NVD, ransomware trackers) + enrichment (EIA) | In progress |
 | Classification & scoring (rule-based; decay half-lives; account fit) | In progress |

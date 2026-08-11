@@ -1,0 +1,8 @@
+entity_id,alias,alias_type,source,verified_at
+E0005,AEP,common,curated,2026-08-11
+E0008,Pacific Gas and Electric,legal,curated,2026-08-11
+E0008,PG&E Corporation,legal,curated,2026-08-11
+E0028,TXNM Energy,common,curated,2026-08-11
+E0038,Otter Tail Power,dba,curated,2026-08-11
+E0038,Otter Tail Corporation,legal,curated,2026-08-11
+E0046,Texas-New Mexico Power,dba,curated,2026-08-11
