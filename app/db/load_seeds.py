@@ -41,6 +41,12 @@ TABLES = [
      "pk": ["entity_id"], "int_cols": [],
      # normalized into entity_aliases / entity_collision_terms (R4.4)
      "skip_cols": ["aliases", "collision_terms"]},
+    {"table": "entity_aliases", "csv": "entity_aliases.csv",
+     "pk": ["entity_id", "alias"], "int_cols": [],
+     "fk_checks": [("entity_id", "watchlist_entities")]},
+    {"table": "entity_collision_terms", "csv": "entity_collision_terms.csv",
+     "pk": ["entity_id", "term"], "int_cols": [],
+     "fk_checks": [("entity_id", "watchlist_entities")]},
     {"table": "license_matrix", "csv": "license_matrix.csv",
      "pk": ["product_id", "tier"], "int_cols": []},
     {"table": "source_policies", "csv": "source_policies.csv",
