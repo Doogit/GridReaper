@@ -1,0 +1,264 @@
+"""License facts + play candidates from seeded config (R7.5, R7.6, R7.7).
+
+Transforms the seeded ``license_matrix`` staging rows into normalized
+``license_facts`` and generates ``license_play_candidates`` from
+``indicator_map``. Rebuild is a pure function of seeded config and is safe
+to re-run:
+
+  python -m app.licensing
+
+SKU -> product family
+    ``license_matrix.product_id`` holds granular SKU ids
+    (``defender_endpoint_p1``) while ``license_facts.product_id`` and
+    ``license_play_candidates.product_id`` FK-reference ``products``
+    (family ids like ``def_endpoint``). SKU_FAMILY maps every matrix SKU to
+    its family; ``suite_*`` baseline suites map to None (they are licensing
+    context, not catalog products) and land with a NULL product_id. The SKU
+    identity stays queryable: ``fact_id = "{sku}:{tier}:{segment}"`` and
+    ``sku_or_plan = "{sku}:{tier}"`` (the matrix primary key). A matrix SKU
+    missing from SKU_FAMILY is a hard error so new rows never drop silently.
+
+gcc_high segment mapping (conservative and lossless)
+    Every matrix row yields one ``segment='commercial'`` fact whose
+    price_note is the matrix addon_price_note. The freeform ``gcc_high``
+    cell additionally yields one ``segment='gcc_high'`` fact whose
+    price_note prefixes the verbatim cell text:
+      - cell starts with "yes" (any case)           -> "available — {raw}"
+      - cell is "no" or starts with "no "/"no("     -> "not available — {raw}"
+        (unavailability is a fact; R7.10 suppression reads it)
+      - anything else (limited/partial/unknown/n-a/
+        "Azure Gov path only"/prose)                -> "needs_curation — {raw}"
+      - empty cell                                  -> no gcc_high fact
+    The raw cell is always preserved verbatim after the prefix.
+
+Play candidates
+    One candidate per indicator_map row: ``play_id = "{trigger}:{family}"``,
+    assumed_baseline 'E3' (the E5 Security add-on is the default first
+    step-up play), recommended_path taken from the family's canonical play
+    SKU in FAMILY_PLAY_SKU — chosen as the SKU/tier whose upgrade_path best
+    describes the entry step-up from an E3 baseline. The discovery question
+    is conditional and never asserts the account's current tier (R7.7).
+
+Ownership: this module is the only writer of ``license_facts`` (no
+config_version column there), so rebuild deletes all facts and regenerates.
+Candidates are versioned: rows with CONFIG_VERSION are deleted and
+regenerated, mirroring the seed loader's alias-refresh pattern.
+R7.10/R7.12 gating is a later chunk — this is the data layer only.
+"""
+import sys
+
+from app.db.connection import get_connection
+
+CONFIG_VERSION = "licensing/1.0"
+
+# Matrix SKU id -> products.product_id family (None = baseline suite, kept
+# with NULL product_id). Every license_matrix.product_id must appear here.
+SKU_FAMILY = {
+    # baseline suites: licensing context, not catalog products
+    "suite_m365_e3": None,
+    "suite_m365_e5": None,
+    "suite_m365_e7": None,
+    "suite_e5_security_addon": None,
+    "suite_e5_compliance_addon": None,
+    "suite_business_premium": None,
+    "suite_f3": None,
+    "defender_endpoint_p1": "def_endpoint",
+    "defender_endpoint_p2": "def_endpoint",
+    "defender_for_business": "def_endpoint",   # SMB endpoint SKU
+    "defender_vuln_mgmt": "def_endpoint",      # TVM is in def_endpoint keywords
+    "defender_identity": "def_identity",
+    "defender_office365_p1": "def_office",
+    "defender_office365_p2": "def_office",
+    "defender_cloud_apps": "def_cloudapps",
+    "defender_cloud_cspm": "def_cloud",
+    "defender_cloud_servers_p1": "def_cloud",
+    "defender_cloud_servers_p2": "def_cloud",
+    "defender_cloud_sql": "def_cloud",
+    "defender_cloud_containers": "def_cloud",
+    "defender_iot_ot_xs": "def_iot",
+    "defender_iot_ot_s": "def_iot",
+    "defender_iot_ot_m": "def_iot",
+    "defender_iot_ot_l": "def_iot",
+    "defender_iot_ot_xl": "def_iot",
+    "defender_iot_eiot": "def_iot",
+    "sentinel_analytics_payg": "sentinel",
+    "sentinel_analytics_commit": "sentinel",
+    "sentinel_datalake": "sentinel",
+    "sentinel_e5_grant": "sentinel",
+    "security_copilot_included": "sec_copilot",
+    "security_copilot_scu": "sec_copilot",
+    # Entra ID P1/P2 are baseline identity tiers; entra_suite is the nearest
+    # catalog family (no standalone Entra ID product in products.csv)
+    "entra_id_p1": "entra_suite",
+    "entra_id_p2": "entra_suite",
+    "entra_suite": "entra_suite",
+    "entra_id_governance": "entra_suite",
+    "entra_internet_access": "entra_suite",
+    "entra_private_access": "entra_suite",
+    "entra_agent_id": "entra_agentid",
+    "agent_365": "agent365",
+    "purview_e5_compliance": "purview",
+    "purview_dspm_ai": "purview",
+    "purview_payg_datagov": "purview",
+    "purview_payg_irm_ai": "purview",
+    "intune_p1": "intune",
+    "intune_p2": "intune",
+    "intune_suite": "intune",
+    "intune_device": "intune",
+    "defender_easm": "def_easm",
+    "defender_ti_free": "def_ti",
+    "defender_ti_premium": "def_ti",
+    "ghas_secret_protection": "github_as",
+    "ghas_code_security": "github_as",
+    "ghas_both": "github_as",
+}
+
+# family -> (matrix SKU, tier) whose upgrade_path is the recommended entry
+# step-up from an E3 baseline. Every family used in indicator_map needs one.
+FAMILY_PLAY_SKU = {
+    "def_endpoint": ("defender_endpoint_p2", "e5"),      # E3 -> E5 Security addon
+    "def_identity": ("defender_identity", "e5"),         # E3 -> E5 Security addon
+    # entry OT site size; its upgrade_path describes the purchase mechanics
+    "def_iot": ("defender_iot_ot_xs", "site_license"),
+    "def_cloud": ("defender_cloud_servers_p2", "consumption"),  # flagship CWP tier
+    "def_easm": ("defender_easm", "consumption"),
+    "def_ti": ("defender_ti_premium", "standalone"),     # paid TI workspace
+    "sentinel": ("sentinel_analytics_payg", "consumption"),  # start PAYG, commit later
+    "sec_copilot": ("security_copilot_included", "e5"),  # E5 entitlement first
+    "entra_suite": ("entra_suite", "addon"),
+    "entra_agentid": ("entra_agent_id", "e7"),
+    "agent365": ("agent_365", "addon"),
+    "purview": ("purview_e5_compliance", "e5"),          # E3 -> E5 Compliance addon
+}
+
+# unambiguous tier -> prerequisite; everything else stays ''
+TIER_PREREQUISITE = {
+    "addon_to_e3": "E3",
+    "addon_to_mdep2": "MDE P2",
+}
+
+DISCOVERY_QUESTION = (
+    "What licensing tier are you on today — E3 or E5? "
+    "If E3, {path} is the typical next step for {product}."
+)
+
+
+def gcc_high_note(cell):
+    """Map the freeform gcc_high cell to a gcc_high-segment price_note, or
+    None for an empty cell. Lossless: the raw cell follows the prefix."""
+    raw = (cell or "").strip()
+    if not raw:
+        return None
+    low = raw.lower()
+    if low.startswith("yes"):
+        return f"available — {raw}"
+    if low == "no" or low.startswith("no ") or low.startswith("no("):
+        return f"not available — {raw}"
+    return f"needs_curation — {raw}"
+
+
+def build_facts(matrix_rows):
+    """license_facts rows (as tuples in column order) from matrix rows."""
+    facts = []
+    unmapped = sorted({r["product_id"] for r in matrix_rows
+                       if r["product_id"] not in SKU_FAMILY})
+    if unmapped:
+        raise ValueError(
+            f"license_matrix product_id(s) missing from SKU_FAMILY: "
+            f"{unmapped}. Map them (or None for suites) in app/licensing.py.")
+    for r in matrix_rows:
+        sku, tier = r["product_id"], r["tier"]
+        family = SKU_FAMILY[sku]
+        prerequisite = TIER_PREREQUISITE.get(tier, "")
+        common = (family, f"{sku}:{tier}", r["included_or_addon"],
+                  prerequisite, "", r["verified_date"], r["source_quality"],
+                  r["source_url"])
+        facts.append((f"{sku}:{tier}:commercial", "commercial",
+                      r["addon_price_note"]) + common)
+        note = gcc_high_note(r["gcc_high"])
+        if note is not None:
+            facts.append((f"{sku}:{tier}:gcc_high", "gcc_high", note) + common)
+    return facts
+
+
+def rebuild(conn):
+    """Delete-and-regenerate license_facts and this config version's
+    license_play_candidates from the seeded config. Returns counts."""
+    matrix_rows = conn.execute(
+        "SELECT product_id, tier, included_or_addon, addon_price_note, "
+        " upgrade_path, gcc_high, source_quality, verified_date, source_url "
+        "FROM license_matrix ORDER BY product_id, tier").fetchall()
+    facts = build_facts(matrix_rows)
+
+    conn.execute("DELETE FROM license_facts")
+    for (fact_id, segment, price_note, family, sku_or_plan, included_or_addon,
+         prerequisite, effective_date, verified_date, source_quality,
+         source_url) in facts:
+        conn.execute(
+            "INSERT INTO license_facts (fact_id, product_id, sku_or_plan, "
+            " segment, price_note, included_or_addon, prerequisite, "
+            " effective_date, verified_date, source_quality, source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (fact_id, family, sku_or_plan, segment, price_note,
+             included_or_addon, prerequisite, effective_date, verified_date,
+             source_quality, source_url))
+
+    upgrade_paths = {(r["product_id"], r["tier"]): r["upgrade_path"]
+                     for r in matrix_rows}
+    product_names = {r["product_id"]: r["name"] for r in conn.execute(
+        "SELECT product_id, name FROM products")}
+    indicator_rows = conn.execute(
+        "SELECT trigger_id, product_id FROM indicator_map "
+        "ORDER BY trigger_id, product_id").fetchall()
+
+    conn.execute("DELETE FROM license_play_candidates WHERE config_version = ?",
+                 (CONFIG_VERSION,))
+    candidates = 0
+    for r in indicator_rows:
+        family = r["product_id"]
+        if family not in FAMILY_PLAY_SKU:
+            raise ValueError(
+                f"indicator_map family {family!r} has no FAMILY_PLAY_SKU "
+                f"entry in app/licensing.py.")
+        sku_tier = FAMILY_PLAY_SKU[family]
+        if sku_tier not in upgrade_paths:
+            raise ValueError(
+                f"FAMILY_PLAY_SKU[{family!r}] = {sku_tier!r} not found in "
+                f"license_matrix.")
+        path = upgrade_paths[sku_tier]
+        conn.execute(
+            "INSERT INTO license_play_candidates (play_id, trigger_id, "
+            " product_id, assumed_baseline, recommended_path, "
+            " discovery_question, rank_rule, config_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (f"{r['trigger_id']}:{family}", r["trigger_id"], family, "E3",
+             path,
+             DISCOVERY_QUESTION.format(path=path,
+                                       product=product_names[family]),
+             "", CONFIG_VERSION))
+        candidates += 1
+    conn.commit()
+
+    by_segment = {}
+    for f in facts:
+        by_segment[f[1]] = by_segment.get(f[1], 0) + 1
+    return {"facts": len(facts), "facts_by_segment": by_segment,
+            "candidates": candidates}
+
+
+def main():
+    conn = get_connection()
+    try:
+        counts = rebuild(conn)
+    finally:
+        conn.close()
+    seg = ", ".join(f"{k}={v}" for k, v in sorted(
+        counts["facts_by_segment"].items()))
+    print(f"license_facts: {counts['facts']} ({seg})")
+    print(f"license_play_candidates: {counts['candidates']} "
+          f"(config_version={CONFIG_VERSION})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
