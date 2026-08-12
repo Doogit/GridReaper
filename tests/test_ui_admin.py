@@ -35,11 +35,24 @@ def seed(conn):
     conn.execute("INSERT INTO source_policies (source_id, name, enabled, ttl, "
                  "access_method, evidence_rank) VALUES "
                  "('edgar','EDGAR',1,3600,'rss',1)")
-    # An active signal so a weight/half-life save has something to rescore.
+    # Watchlist entities for the entity manager (R8.7): a seeded entity that
+    # exists in the real seed CSV (so Reset can find its seed row) and an
+    # operator-added entity with a referencing signal (the delete-safety gate).
+    conn.execute("INSERT INTO watchlist_entities (entity_id, name, subsector, "
+                 "gov_cloud_likelihood, origin, active) VALUES "
+                 "('E0004','Dominion Energy','Electric','medium','seed',1)")
+    conn.execute("INSERT INTO watchlist_entities (entity_id, name, origin, "
+                 "active) VALUES ('E9001','Zzz Operator Co','operator',1)")
+    # An active signal so a weight/half-life save has something to rescore, and a
+    # signal referencing the operator entity so its Remove is FK-blocked.
     conn.execute(
         "INSERT INTO signals (signal_id, signal_scope, trigger_id, event_date, "
         " headline, status, score) VALUES "
         "('s1','sector','t_lead','2026-08-01','Card','active',2.2)")
+    conn.execute(
+        "INSERT INTO signals (signal_id, entity_id, signal_scope, trigger_id, "
+        " event_date, headline, status, score) VALUES "
+        "('s_op','E9001','account','t_lead','2026-08-01','Op card','active',1.5)")
     # Staleness: one fact stale by date, one with an unknown verified_date.
     conn.execute("INSERT INTO products (product_id, name) VALUES "
                  "('p_sent','Microsoft Sentinel')")
@@ -211,6 +224,98 @@ class TestStalenessLabels(AdminPageCase):
         self.assertRegex(text, r"verified \d+ days ago")
         self.assertIn("verification date unknown", text)
         self.assertNotIn("unverified", text)      # no interpretive verb
+
+
+class TestEntityRender(AdminPageCase):
+    def test_entity_section_renders(self):
+        at = self._run()
+        self.assertNoException(at)
+        self.assertIn("Watchlist entities", all_text(at))
+
+
+class TestEntityAdd(AdminPageCase):
+    def test_add_operator_entity(self):
+        at = self._run()
+        self._widget(at, "text_input", "ent_new_id").set_value("E9002").run()
+        self._widget(at, "text_input", "ent_new_name").set_value("New Co").run()
+        at = self._widget(at, "button", "ent_add_btn").click().run()
+        self.assertNoException(at)
+        conn = self._open_conn()
+        row = conn.execute("SELECT origin, active FROM watchlist_entities "
+                           "WHERE entity_id='E9002'").fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["origin"], "operator")
+        self.assertEqual(row["active"], 1)
+
+
+class TestEntityDisable(AdminPageCase):
+    def test_disable_seeded_entity(self):
+        # Default selectbox pick is E0004 (name-ordered first).
+        at = self._run()
+        self._widget(at, "toggle", "entactive_E0004").set_value(False).run()
+        at = self._widget(at, "button", "entactivesave_E0004").click().run()
+        self.assertNoException(at)
+        conn = self._open_conn()
+        self.assertEqual(conn.execute(
+            "SELECT active FROM watchlist_entities WHERE entity_id='E0004'"
+            ).fetchone()["active"], 0)
+        self.assertEqual(conn.execute(
+            "SELECT field FROM config_audit").fetchone()["field"], "active")
+        conn.close()
+
+
+class TestEntityEditField(AdminPageCase):
+    def test_edit_subsector(self):
+        at = self._run()
+        self._widget(at, "text_input", "entfield_subsector_E0004"
+                     ).set_value("Nuclear").run()
+        at = self._widget(at, "button", "entfieldsave_subsector_E0004"
+                          ).click().run()
+        self.assertNoException(at)
+        conn = self._open_conn()
+        self.assertEqual(conn.execute(
+            "SELECT subsector FROM watchlist_entities WHERE entity_id='E0004'"
+            ).fetchone()["subsector"], "Nuclear")
+        conn.close()
+
+
+class TestEntityAliasAdd(AdminPageCase):
+    def test_add_operator_alias(self):
+        at = self._run()
+        self._widget(at, "text_input", "aliasadd_E0004").set_value("Dominion Va").run()
+        at = self._widget(at, "button", "aliasaddbtn_E0004").click().run()
+        self.assertNoException(at)
+        conn = self._open_conn()
+        self.assertEqual(conn.execute(
+            "SELECT source FROM entity_aliases WHERE alias='Dominion Va'"
+            ).fetchone()["source"], "operator")
+        conn.close()
+
+
+class TestEntityRemoveDeleteSafety(AdminPageCase):
+    """UI-layer delete-safety gate: removing an operator entity with a
+    referencing signal shows a legible error and changes nothing."""
+
+    def _select_e9001(self, at):
+        sb = self._widget(at, "selectbox", "ent_select")
+        opt = next(o for o in sb.options if "E9001" in o)
+        return sb.set_value(opt).run()
+
+    def test_remove_blocked_by_referencing_signal(self):
+        at = self._run()
+        at = self._select_e9001(at)
+        self._widget(at, "checkbox", "rmok_E9001").set_value(True).run()
+        at = self._widget(at, "button", "rmbtn_E9001").click().run()
+        self.assertNoException(at)
+        self.assertTrue(any("reference" in e.value.lower() for e in at.error),
+                        msg=[e.value for e in at.error])
+        conn = self._open_conn()
+        self.assertIsNotNone(conn.execute(     # entity still present, no write
+            "SELECT 1 FROM watchlist_entities WHERE entity_id='E9001'").fetchone())
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+        conn.close()
 
 
 if __name__ == "__main__":

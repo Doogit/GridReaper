@@ -1,7 +1,7 @@
 """GridSignals — Admin / Config (R8.7; R3.3, R3.5, R7.4, R10.7).
 
 The operator's tuning surface and the app's FIRST write path into seeded config
-tables. Four sections:
+tables. Sections:
 
 1. Scoring weights (R7.5) — one number box + Save per weight row. Saving edits
    scoring_weights.weight and re-runs scoring ACTIVE-ONLY, so live cards move but
@@ -15,6 +15,11 @@ tables. Four sections:
 4. License-fact staleness (R10.7, read-only) — verified_date older than 180 days
    flagged; labels state only what the field says ("verified 210 days ago" /
    "verification date unknown"), never an interpretive "unverified".
+
+5. Watchlist entities (R8.7 entity manager) — add / edit / soft-disable an
+   account, edit its aliases and collision terms, and reset a seeded entity to
+   seed values or remove an operator-added one (FK-guarded). Soft-disable stops
+   FUTURE resolution/ingestion; existing cards keep their frozen scores.
 
 Plus a recent-changes panel reading the config_audit provenance trail (R3.3).
 
@@ -92,15 +97,40 @@ def _enabled_label(value):
     return "Enabled" if value else "Disabled"
 
 
+def _active_label(value):
+    return "Active" if value else "Disabled"
+
+
 def _result_msg(fn_name, result):
     if not result.get("changed", True):
         # No-op save (new == old): nothing was written or rescored.
         if fn_name == "set_source_enabled":
             return f"No change — source already {_enabled_label(result['new'])}."
+        if fn_name == "set_entity_active":
+            return f"No change — entity already {_active_label(result['new'])}."
         return f"No change — value already {result['new']}."
+    # Entity-editor creates / deletes (no old→new value pair).
+    if fn_name == "add_watchlist_entity":
+        return f"Added entity {result['entity_id']}."
+    if fn_name == "remove_operator_entity":
+        return (f"Removed entity {result['entity_id']} and its operator "
+                "aliases / collision terms.")
+    if fn_name == "reset_entity_to_seed":
+        return f"Reset {result['entity_id']} to its seed values."
+    if fn_name == "add_alias":
+        return f"Added alias “{result['alias']}”."
+    if fn_name == "remove_alias":
+        return f"Removed alias “{result['alias']}”."
+    if fn_name == "add_collision_term":
+        return f"Added collision term “{result['term']}”."
+    if fn_name == "remove_collision_term":
+        return f"Removed collision term “{result['term']}”."
     if fn_name == "set_source_enabled":
         return (f"Saved: {_enabled_label(result['old'])} → "
                 f"{_enabled_label(result['new'])}.")
+    if fn_name == "set_entity_active":
+        return (f"Saved: {_active_label(result['old'])} → "
+                f"{_active_label(result['new'])}.")
     if "scored" in result:
         return (f"Saved: {result['old']} → {result['new']}. "
                 f"{result['scored']} active card(s) rescored, "
@@ -217,6 +247,127 @@ def _render_sources(conn, reason):
             _save(data.set_source_enabled, sid, enabled, reason=reason)
 
 
+# -- watchlist entities (R8.7 entity manager) --------------------------------
+
+def _render_entity_terms(conn, eid, reason):
+    """Alias (positive) / collision-term (negative) editor for one entity (R6.3).
+    Seed rows are shown but not operator-removable; add forms write operator
+    rows that survive reload."""
+    ac = data.entity_alias_rows(conn, eid)
+    st.markdown("<span class='gs-meta'>Aliases (positive match terms) and "
+                "collision terms (negative — never auto-match alone)</span>",
+                unsafe_allow_html=True)
+    for a in ac["aliases"]:
+        c1, c2 = st.columns([4, 1])
+        c1.markdown(f"alias: **{_esc(a['alias'])}** "
+                    f"<span class='gs-meta'>({_esc(a['source'])})</span>",
+                    unsafe_allow_html=True)
+        if a["operator_editable"]:
+            if c2.button("Remove", key=f"aliasrm_{eid}_{a['alias']}"):
+                _save(data.remove_alias, eid, a["alias"], reason=reason)
+    for t in ac["collision_terms"]:
+        c1, c2 = st.columns([4, 1])
+        c1.markdown(f"collision: **{_esc(t['term'])}** "
+                    f"<span class='gs-meta'>({_esc(t['reason'])})</span>",
+                    unsafe_allow_html=True)
+        if t["operator_editable"]:
+            if c2.button("Remove", key=f"termrm_{eid}_{t['term']}"):
+                _save(data.remove_collision_term, eid, t["term"], reason=reason)
+    ca1, ca2 = st.columns([4, 1])
+    na = ca1.text_input("Add an alias", key=f"aliasadd_{eid}")
+    if ca2.button("Add", key=f"aliasaddbtn_{eid}"):
+        _save(data.add_alias, eid, na, reason=reason)
+    ct1, ct2 = st.columns([4, 1])
+    nt = ct1.text_input("Add a collision term", key=f"termadd_{eid}")
+    if ct2.button("Add", key=f"termaddbtn_{eid}"):
+        _save(data.add_collision_term, eid, nt, reason=reason)
+
+
+def _render_entity_reset(row, reason):
+    """Reset-to-seed (seeded entity) or Remove (operator-added), each behind a
+    confirm checkbox. Remove is FK-guarded in the helper — a referencing signal
+    turns the click into a legible error, never a crash (R8.7 delete safety)."""
+    eid = row["entity_id"]
+    if row["origin"] == "seed":
+        confirm = st.checkbox("Confirm reset to seed values", key=f"rstok_{eid}")
+        if st.button("Reset to seed", key=f"rstbtn_{eid}", disabled=not confirm):
+            _save(data.reset_entity_to_seed, eid, reason=reason)
+    else:
+        st.caption(
+            f"Operator-added entity. Remove is blocked while any of its "
+            f"{row['signal_count']} referencing signal(s) exist — disable it "
+            "instead of removing.")
+        confirm = st.checkbox("Confirm remove", key=f"rmok_{eid}")
+        if st.button("Remove entity", key=f"rmbtn_{eid}", disabled=not confirm):
+            _save(data.remove_operator_entity, eid, reason=reason)
+
+
+def _render_entities(conn, reason):
+    st.subheader("Watchlist entities")
+    st.caption(
+        "Add, edit, or soft-disable watchlist accounts (R8.7). Disabling an "
+        "entity stops FUTURE resolution and ingestion for it — existing cards "
+        "keep their frozen scores. The seed CSV is never touched; edits persist "
+        "across load_seeds and Reset restores a seeded entity to its seed values. "
+        "Operator-added entities have no seed, so they are Removed instead "
+        "(blocked while any signal still references them).")
+
+    with st.expander("Add an entity"):
+        new_id = st.text_input(
+            "Entity ID", key="ent_new_id",
+            help="A unique id the seed set lacks, e.g. E9001 or a ticker.")
+        new_name = st.text_input("Name", key="ent_new_name")
+        new_subsector = st.text_input("Subsector (optional)",
+                                      key="ent_new_subsector")
+        new_cloud = st.text_input(
+            "Gov-cloud likelihood (optional)", key="ent_new_cloud",
+            help="e.g. high / medium / low / unknown")
+        if st.button("Add entity", key="ent_add_btn"):
+            fields = {}
+            if new_subsector.strip():
+                fields["subsector"] = new_subsector.strip()
+            if new_cloud.strip():
+                fields["gov_cloud_likelihood"] = new_cloud.strip()
+            _save(data.add_watchlist_entity, new_id, new_name,
+                  fields=fields, reason=reason)
+
+    rows = data.entity_editor_rows(conn)
+    if not rows:
+        st.markdown("<div class='gs-empty'>No watchlist entities.</div>",
+                    unsafe_allow_html=True)
+        return
+    labels = {}
+    for r in rows:
+        labels[f"{r['name']} ({r['entity_id']}) · "
+               f"{r['origin']}/{_active_label(r['active']).lower()}"] = r
+    choice = st.selectbox("Select an entity to manage", list(labels),
+                          key="ent_select")
+    row = labels[choice]
+    eid = row["entity_id"]
+
+    st.markdown(
+        f"**{_esc(row['name'])}** <span class='gs-meta'>(`{_esc(eid)}`) · "
+        f"origin {_esc(row['origin'])} · {_esc(_active_label(row['active']))} · "
+        f"{row['signal_count']} signal(s)</span>", unsafe_allow_html=True)
+
+    tog_col, tbtn_col = st.columns([4, 1])
+    active = tog_col.toggle("Active", value=bool(row["active"]),
+                            key=f"entactive_{eid}")
+    if tbtn_col.button("Save", key=f"entactivesave_{eid}"):
+        _save(data.set_entity_active, eid, active, reason=reason)
+
+    for field, label in (("subsector", "Subsector"),
+                         ("gov_cloud_likelihood", "Gov-cloud likelihood")):
+        box_col, bbtn_col = st.columns([4, 1])
+        val = box_col.text_input(label, value=row.get(field) or "",
+                                 key=f"entfield_{field}_{eid}")
+        if bbtn_col.button("Save", key=f"entfieldsave_{field}_{eid}"):
+            _save(data.update_watchlist_entity, eid, field, val, reason=reason)
+
+    _render_entity_terms(conn, eid, reason)
+    _render_entity_reset(row, reason)
+
+
 # -- license-fact staleness (read-only) --------------------------------------
 
 def _render_staleness(conn):
@@ -300,6 +451,8 @@ def main():
         _render_half_lives(conn, reason)
         st.divider()
         _render_sources(conn, reason)
+        st.divider()
+        _render_entities(conn, reason)
         st.divider()
         _render_staleness(conn)
         st.divider()
