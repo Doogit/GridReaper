@@ -27,7 +27,7 @@ DEFAULT_MODEL_ID = os.environ.get("GRIDSIGNALS_AUDIT_MODEL", "claude-haiku-4-5")
 # model falls back to the Haiku rate so cost is never silently treated as zero.
 PRICING_PER_MTOK = {
     "claude-haiku-4-5": (1.00, 5.00),
-    "claude-sonnet-5": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
     "claude-opus-4-8": (5.00, 25.00),
 }
 _FALLBACK_PRICE = (1.00, 5.00)
