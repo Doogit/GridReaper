@@ -20,8 +20,14 @@ Connection opens via an env-overridable helper so hermetic AppTests can point it
 at a fixture DB.
 """
 import os
+import sys
 
 import streamlit as st
+
+# streamlit runs a page with app/ui/pages/ on sys.path, not the repo root; add
+# the project root (4 levels up) so `import app...` resolves on direct nav too.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))))
 
 from app.db.connection import get_connection, DEFAULT_DB_PATH
 from app.ui import data, theme

@@ -12,8 +12,13 @@ The app is a reader: it writes only feedback rows. Cards read license_play
 snapshots via data.signal_detail, never live license_facts (R7.6).
 """
 import os
+import sys
 
 import streamlit as st
+
+# `streamlit run app/ui/Home.py` puts app/ui/ on sys.path, not the repo root,
+# so `import app...` needs the project root (3 levels up) added explicitly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from app.db.connection import get_connection, DEFAULT_DB_PATH
 from app.ui import components, data, theme

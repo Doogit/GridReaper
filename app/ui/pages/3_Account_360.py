@@ -16,9 +16,15 @@ broken look. The app is a reader; the only write path here is feedback
 Timestamps are UTC ISO-8601 (R10.2).
 """
 import os
+import sys
 import html
 
 import streamlit as st
+
+# streamlit runs a page with app/ui/pages/ on sys.path, not the repo root; add
+# the project root (4 levels up) so `import app...` resolves on direct nav too.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))))
 
 from app.db.connection import get_connection, DEFAULT_DB_PATH
 from app.ui import components, data, theme
