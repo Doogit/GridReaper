@@ -229,3 +229,21 @@
 .gs-table tbody td { color: var(--gs-text); border-bottom: 1px solid var(--gs-card-border);
   padding: 6px 12px 6px 0; vertical-align: top; }
 .gs-table tbody tr:last-child td { border-bottom: none; }
+
+/* ---- Regulatory Monitor (Chunk 5) ---- */
+/* gs-record: the gs-card layout WITHOUT a severity score strip — unscored
+   regulatory chatter must never read as a moderate-severity signal card
+   (R8.4/D8). The left strip is a neutral muted gray, not a score band. Folded
+   from app/ui/theme.py's #12 addition into hand-authored CSS (no Tailwind). */
+.gs-record { position: relative; background: var(--gs-card);
+  border: 1px solid var(--gs-card-border); border-radius: 10px;
+  padding: 14px 16px 12px 20px; margin-bottom: 14px; overflow: hidden; }
+.gs-record::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 5px; background: var(--gs-muted); }
+.gs-record .gs-source-link { display: inline-block; margin-top: 6px; }
+
+/* gs-info: the honest low-signal framing banner (mirrors the Streamlit st.info
+   disclaimer). Neutral informational tone, not a warning. */
+.gs-info { background: var(--gs-chip-bg); border: 1px solid var(--gs-card-border);
+  border-left: 3px solid var(--gs-accent); border-radius: 8px; padding: 12px 14px;
+  margin-bottom: 16px; color: var(--gs-text); font-size: 0.85rem; line-height: 1.5; }

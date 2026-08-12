@@ -595,3 +595,49 @@ def card_view(detail, legend):
         "outreach": outreach_text if show_outreach else None,
         "outreach_withheld": (not show_outreach) and bool(snapshots),
     }
+
+
+def regulatory_chips(item):
+    """Neutral descriptive chips for ONE regulatory-chatter record (R8.4/D8).
+
+    Ported verbatim from app/ui/pages/6_Regulatory_Monitor._render_item so the
+    two surfaces read identically: always a 'chatter' chip, then either the
+    nerc_pages 'page snapshot' type label (its snapshots carry no compliance
+    clock, so the always-true 'no compliance clock' chip is suppressed), a
+    comment-period / effective anchor chip, or 'no compliance clock'. Never a
+    scope/score badge — this is not a signal card. Returns plain strings; the
+    template escapes them.
+    """
+    chips = ["chatter"]
+    if item["source_id"] == "nerc_pages":
+        chips.append(item["doc_type_label"])
+    elif item["has_anchor"] and item["comments_close_on"]:
+        chips.append(f"comment period closes {item['comments_close_on']}")
+    elif item["has_anchor"] and item["effective_on"]:
+        chips.append(f"effective {item['effective_on']}")
+    else:
+        chips.append("no compliance clock")
+    return chips
+
+
+def regulatory_records(items):
+    """Shape data.regulatory_monitor() rows into template view dicts (R8.4).
+
+    Pure display shaping: the source's own quoted headline, a neutral date +
+    source meta line, the descriptive chips, and an HTTP(S)-only source link
+    (non-clickable schemes drop out via safe_source_url — XSS guard). The
+    template autoescapes every string.
+    """
+    views = []
+    for item in items:
+        meta = " · ".join(b for b in (
+            str(item["event_date"] or ""),
+            item["source_name"] or item["source_id"],
+        ) if b)
+        views.append({
+            "headline": item["headline"] or "",
+            "meta": meta,
+            "chips": regulatory_chips(item),
+            "source_url": safe_source_url(item["url"]),
+        })
+    return views
