@@ -235,6 +235,98 @@ def account_header_view(header):
     }
 
 
+# Review Queue source-state presentation (R10.3/G2). Mirrors SOURCE_STATE_DISPLAY
+# in app/ui/pages/2_Review_Queue.py — each state visually distinct so error vs
+# never-run vs stale are never confused. The web UI uses a CSS class per state
+# instead of an emoji so the styling lives in app.css, not the string.
+_SOURCE_STATE_DISPLAY = {
+    "ok": ("state-ok", "OK"),
+    "stale": ("state-stale", "STALE"),
+    "never_run": ("state-never", "NEVER RUN"),
+    "error": ("state-error", "ERROR"),
+    "disabled": ("state-disabled", "DISABLED"),
+}
+
+STALE_FACT_WINDOW_DAYS = 180
+
+
+def review_row_dom_id(raw_event_id, candidate_entity_id):
+    """Stable, CSS-selector-safe row id for the HTMX accept/reject swap.
+
+    Raw event ids can be URLs; keep them in POST data only, never as a DOM id or
+    selector fragment. Same sha256 discipline as feedback_dom_id().
+    """
+    key = f"{raw_event_id or ''}|{candidate_entity_id or ''}"
+    digest = sha256(key.encode("utf-8")).hexdigest()[:16]
+    return f"gs-rq-{digest}"
+
+
+def review_pending_view(item):
+    """Shape one review_pending() row for _review_pending_row.html (R8.2).
+
+    Pure display shaping ported from app/ui/pages/2_Review_Queue._render_pending:
+    candidate label, the resolver's decision-trail reason (surfaced honestly — no
+    fabricated matched/rejected terms), formatted confidence, evidence snippet,
+    and an http(s)-only source link. Raw ids ride in POST data, never the DOM id.
+    The template autoescapes every string here.
+    """
+    raw_event_id = item["raw_event_id"]
+    candidate_entity_id = item["candidate_entity_id"]
+    conf = item.get("confidence")
+    conf_txt = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
+    subsector = item.get("subsector")
+    return {
+        "dom_id": review_row_dom_id(raw_event_id, candidate_entity_id),
+        "raw_event_id": raw_event_id,
+        "candidate_entity_id": candidate_entity_id,
+        "candidate": item.get("candidate_name") or candidate_entity_id,
+        "subsector": subsector or "",
+        "reason": item.get("reason") or "unknown",
+        "confidence": conf_txt,
+        "event_date": item.get("event_date") or "n/a",
+        "snippet": item.get("snippet") or "",
+        "source_url": safe_source_url(item.get("source_url")),
+    }
+
+
+def source_health_view(row, state):
+    """Shape one source_health() row + its source_state() label for the template.
+
+    Mirrors _render_source_health: state class + label, source name/id, verbatim
+    upstream error text (only when errored, R10.3), last success ('never' when
+    none), and ttl. Pure — the template escapes every string.
+    """
+    state_cls, state_label = _SOURCE_STATE_DISPLAY.get(
+        state, ("state-disabled", state.upper()))
+    return {
+        "state_cls": state_cls,
+        "state_label": state_label,
+        "name": row["name"],
+        "source_id": row["source_id"],
+        "error_state": row["last_error_state"] if state == "error" else None,
+        "last_success": row["last_success_at"] or "never",
+        "ttl": row["ttl"],
+    }
+
+
+def stale_fact_view(fact):
+    """Shape one stale_facts() row for the template (R10.7).
+
+    Mirrors _render_stale_facts: product label, sku/segment/source-quality meta,
+    verified date ('never' when unknown) and an age string ('Nd old' or
+    'unverified'). Pure — the template escapes every string.
+    """
+    age = fact.get("age_days")
+    return {
+        "product": fact.get("product_name") or fact.get("product_id"),
+        "sku_or_plan": fact.get("sku_or_plan") or "",
+        "segment": fact.get("segment") or "",
+        "source_quality": fact.get("source_quality") or "",
+        "verified_date": fact.get("verified_date") or "never",
+        "age": f"{age}d old" if age is not None else "unverified",
+    }
+
+
 def timeline_rows(signals):
     """Compact chronological rows for the Account 360 Timeline tab: date,
     headline, and a scope label per account signal (newest first, as ordered by

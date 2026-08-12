@@ -13,7 +13,8 @@
     <nav class="gs-nav">
       <a href="/" class="{{ 'active' if nav_active == 'home' else '' }}">Home</a>
       <a href="/account" class="{{ 'active' if nav_active == 'account' else '' }}">Account 360</a>
-      {# review / precision / regulatory / admin land in later chunks #}
+      <a href="/review" class="{{ 'active' if nav_active == 'review' else '' }}">Review</a>
+      {# precision / regulatory / admin land in later chunks #}
     </nav>
   </header>
   <div id="flash" class="gs-flash" aria-live="polite">{% block flash %}{% endblock %}</div>

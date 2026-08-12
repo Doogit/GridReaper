@@ -181,3 +181,24 @@
   color: var(--gs-accent); border-bottom-color: var(--gs-accent); }
 #gs-tab-timeline:checked ~ .gs-tabpanel-timeline { display: block; }
 #gs-tab-signals:checked ~ .gs-tabpanel-signals { display: block; }
+
+/* ---- Review Queue (Chunk 3) ----
+ * NEW hand-authored component styles (R8.9), flagged in the chunk PR. The source
+ * / stale rows are plain list rows (they reuse card tokens); the state badge is
+ * a per-state colored pill so error / never-run / stale / disabled / ok are each
+ * visually distinct (R10.3/G2) — the color, not just the word, carries the state.
+ */
+.gs-review-row .gs-feedback { margin-top: 10px; }
+
+.gs-source-row { padding: 8px 0; border-bottom: 1px solid var(--gs-card-border); }
+.gs-source-row:last-child { border-bottom: none; }
+.gs-source-row code { color: var(--gs-muted); }
+
+.gs-state-badge { display: inline-block; font-size: 0.7rem; font-weight: 600;
+  padding: 1px 8px; border-radius: 10px; letter-spacing: 0.03em;
+  border: 1px solid var(--gs-card-border); }
+.gs-state-badge.state-ok       { background: #12261a; border-color: #2c5a38; color: var(--gs-low); }
+.gs-state-badge.state-stale    { background: #2e2610; border-color: #6a5a1f; color: var(--gs-mod); }
+.gs-state-badge.state-never    { background: #12233b; border-color: #274b7a; color: #9cc6ff; }
+.gs-state-badge.state-error    { background: #331616; border-color: #7a2c2c; color: var(--gs-crit); }
+.gs-state-badge.state-disabled { background: var(--gs-chip-bg); border-color: var(--gs-card-border); color: var(--gs-muted); }

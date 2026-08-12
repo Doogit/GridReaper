@@ -1,0 +1,17 @@
+{# Stale license facts (R10.7), driven by render.stale_fact_view() rows. The
+   count is in the header (matching the Streamlit subheader). Read-only — the
+   refresh happens in the licensing pass. All text autoescaped. Empty = every
+   fact was verified within the window. #}
+<h2 class="gs-account-name">Stale license facts ({{ stale_count }})</h2>
+<p class="gs-muted-text">License facts unverified for more than {{ stale_window_days }} days (R10.7). Read-only — refresh happens in the licensing pass.</p>
+
+{% if stale %}
+{% for f in stale %}
+<div class="gs-source-row">
+  <strong>{{ f.product }}</strong>
+  <span class="gs-meta">{{ f.sku_or_plan }} · {{ f.segment }} · {{ f.source_quality }} · verified {{ f.verified_date }} · {{ f.age }}</span>
+</div>
+{% endfor %}
+{% else %}
+<div class="gs-empty">0 stale facts — every license fact was verified within the window.</div>
+{% endif %}

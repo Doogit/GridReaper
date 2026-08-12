@@ -1,0 +1,30 @@
+{# Pending entity matches (R8.2), driven by render.review_pending_view() rows.
+   All text autoescaped (XSS guard). Accept/Reject POST to /review/triage with
+   the raw ids in form data (never the DOM id), and swap the row out for a
+   confirmation via hx-swap outerHTML on the row container. Empty = the honest
+   positive state: the resolver needed no human help. #}
+<h2 class="gs-account-name">Pending entity matches</h2>
+<p class="gs-muted-text">Approving records the human decision only — creating a signal from an approved match is deferred this chunk (R8.2).</p>
+
+{% if pending %}
+{% for p in pending %}
+<div class="gs-card sev-moderate gs-review-row" id="{{ p.dom_id }}">
+  <div class="gs-headline">{{ p.candidate }}{% if p.subsector %}<span class="gs-meta"> · {{ p.subsector }}</span>{% endif %}</div>
+  <div class="gs-meta">reason: <code>{{ p.reason }}</code> · confidence {{ p.confidence }} · event {{ p.event_date }}</div>
+  {% if p.snippet %}<div class="gs-evidence">{{ p.snippet }}</div>{% endif %}
+  {% if p.source_url %}<a class="gs-source-link" href="{{ p.source_url }}" target="_blank" rel="noopener">Source</a>{% endif %}
+  <div class="gs-feedback">
+    <button type="button" class="gs-btn"
+            hx-post="/review/triage"
+            hx-vals='{{ {"raw_event_id": p.raw_event_id, "candidate_entity_id": p.candidate_entity_id, "accept": "true"} | tojson }}'
+            hx-target="#{{ p.dom_id }}" hx-swap="outerHTML">Accept</button>
+    <button type="button" class="gs-btn"
+            hx-post="/review/triage"
+            hx-vals='{{ {"raw_event_id": p.raw_event_id, "candidate_entity_id": p.candidate_entity_id, "accept": "false"} | tojson }}'
+            hx-target="#{{ p.dom_id }}" hx-swap="outerHTML">Reject</button>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="gs-empty">0 pending — the resolver needed no human help. Every event this window matched (or was rejected) with enough confidence to skip review.</div>
+{% endif %}

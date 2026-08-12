@@ -1,0 +1,3 @@
+{# Replaces a pending row after a triage decision is recorded (R8.2). The row is
+   gone from the queue (both tables written); this line confirms the outcome. #}
+<div class="gs-fb-done">Decision recorded — {{ "accepted" if accepted else "rejected" }}.</div>
