@@ -20,7 +20,7 @@ Design principles:
 
 ## Screenshots
 
-Dark-themed UI over a stored 12-month backfill, rendered against real data (US energy companies; no synthetic or placeholder content). _The shots below are from the prior Streamlit UI and are being regenerated against the current FastAPI + HTMX interface._
+The current light-themed FastAPI + HTMX interface, shown on a small seeded sample of representative US-energy-company events to illustrate the layout and the trust surfaces — scores shown with their evidence and sample sizes, prices never surfaced, outreach gated, honest empty states.
 
 **Signal Feed** — scored, sourced cards with the score decomposition, evidence/scope badges, license-play chips, and a customer-facing-gated outreach draft. Account-scoped cards sit above a labeled sector/regulatory divider.
 
