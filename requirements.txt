@@ -1,0 +1,8 @@
+# GridSignals runtime dependencies.
+#
+# The project is stdlib-only by rule (urllib + xml.etree + sqlite3), with ONE
+# approved exception: Streamlit for the UI layer (app/ui/ only). Everything
+# outside app/ui/ imports nothing from here. No component libraries
+# (Plotly/echarts/aggrid/pydeck) at this stage - R8.1 cards are custom
+# HTML/CSS per R8.9.
+streamlit>=1.57,<2
