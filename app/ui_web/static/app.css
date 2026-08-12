@@ -1,0 +1,78 @@
+/* GridSignals web UI stylesheet (R8.9 UI port — Chunk 0 scaffold).
+ *
+ * HAND-AUTHORED placeholder. This is NOT the Tailwind build output; it defines
+ * the --gs-* design tokens (ported verbatim from app/ui/theme.py) plus just
+ * enough base layout for the scaffold page to read as intentional. The first
+ * real `tailwindcss` compile (Chunk 1) overwrites this file with generated
+ * utilities built from the same @theme tokens (see tailwind.input.css). Until
+ * then, keep this in sync with theme.py by hand.
+ */
+:root {
+  --gs-bg: #0e1117;
+  --gs-card: #161b22;
+  --gs-card-border: #2b3138;
+  --gs-text: #e6edf3;
+  --gs-muted: #8b949e;
+  --gs-accent: #4da3ff;
+  --gs-crit: #f85149;
+  --gs-high: #db6d28;
+  --gs-mod: #d29922;
+  --gs-low: #3fb950;
+  --gs-chip-bg: #21262d;
+  --gs-warn-bg: #3d2b0f;
+  --gs-warn-border: #9e6a1f;
+}
+
+* { box-sizing: border-box; }
+
+.gs-body {
+  margin: 0;
+  background: var(--gs-bg);
+  color: var(--gs-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.gs-topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 24px;
+  background: var(--gs-card);
+  border-bottom: 1px solid var(--gs-card-border);
+}
+.gs-brand { font-weight: 700; letter-spacing: 0.02em; color: var(--gs-text); }
+
+.gs-nav { display: flex; gap: 16px; }
+.gs-nav a {
+  color: var(--gs-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  padding: 2px 0;
+}
+.gs-nav a:hover { color: var(--gs-text); }
+.gs-nav a.active { color: var(--gs-accent); border-bottom: 2px solid var(--gs-accent); }
+
+.gs-flash:empty { display: none; }
+.gs-flash {
+  margin: 12px 24px 0;
+  padding: 10px 14px;
+  background: var(--gs-warn-bg);
+  border: 1px solid var(--gs-warn-border);
+  border-radius: 8px;
+  color: #f0c674;
+  font-size: 0.85rem;
+}
+
+.gs-main { max-width: 960px; margin: 0 auto; padding: 24px; }
+
+.gs-panel {
+  background: var(--gs-card);
+  border: 1px solid var(--gs-card-border);
+  border-radius: 10px;
+  padding: 28px 24px;
+}
+.gs-h1 { margin: 0 0 6px; font-size: 1.4rem; font-weight: 600; }
+.gs-lead { margin: 0 0 10px; color: var(--gs-text); }
+.gs-muted-text { margin: 0; color: var(--gs-muted); font-size: 0.85rem; }

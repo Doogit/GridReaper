@@ -2,9 +2,9 @@
 
 Monitor external events across US energy companies and flag when an account becomes more likely to buy a specific Microsoft security product — with a suggested play, license path, and draft outreach opener.
 
-Stack: Python · SQLite · Streamlit. All data sources are free and read-only.
+Stack: Python · SQLite · Streamlit today, with a parallel FastAPI + HTMX + Tailwind web UI scaffold in progress. All data sources are free and read-only.
 
-> **Status: signal pipeline working end-to-end.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), normalized license facts, rule-based classification & scoring, and immutable license-play snapshots with gov-cloud gating are implemented and verified against the stored 12-month backfill. The **Streamlit UI** (signal feed, review queue, account 360, feedback/precision, admin/config) is implemented as a rule-based MVP, now with a **feedback loop, a capped Claude API accuracy-audit judge, precision reporting, and an audited Admin config surface for tuning weights, half-lives, and source policies plus managing the watchlist (add / edit / soft-disable entities, alias & collision editing)** — see [Roadmap](#roadmap).
+> **Status: signal pipeline working end-to-end.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), normalized license facts, rule-based classification & scoring, and immutable license-play snapshots with gov-cloud gating are implemented and verified against the stored 12-month backfill. The **Streamlit UI** (signal feed, review queue, account 360, feedback/precision, admin/config) is implemented as a rule-based MVP, now with a **feedback loop, a capped Claude API accuracy-audit judge, precision reporting, and an audited Admin config surface for tuning weights, half-lives, and source policies plus managing the watchlist (add / edit / soft-disable entities, alias & collision editing)**. A parallel **FastAPI + HTMX + Tailwind** scaffold is being built for the R8.9 UI port while Streamlit remains the deployed UI until cutover — see [Roadmap](#roadmap).
 
 ## How it works
 
@@ -80,14 +80,15 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 
 ## Getting started
 
-Requires Python 3.11+. The pipeline and data layer are standard-library only; the UI adds a single dependency, **Streamlit** (`requirements.txt`).
+Requires Python 3.11+. The pipeline and data layer are standard-library only; UI packages live in `requirements.txt`: **Streamlit** for the current app, plus **FastAPI**, **Uvicorn**, **Jinja2**, and **httpx** for the parallel `app/ui_web/` scaffold and its tests.
 
 ```bash
-pip install -r requirements.txt   # Streamlit (UI only); everything else is stdlib
+pip install -r requirements.txt   # UI packages only; pipeline/data code stays stdlib
 python -m app.db.load_seeds       # create data/gridsignals.db + config tables
 python -m app.licensing           # normalize license facts + play candidates
 python -m unittest discover -s tests   # hermetic tests, no network
 streamlit run app/ui/Home.py      # launch the UI: Signal Feed / Review Queue / Account 360 / Precision / Admin
+uvicorn app.ui_web.app:app --reload  # optional: launch the parallel FastAPI scaffold
 ```
 
 This creates `data/gridsignals.db` (gitignored) and populates the config layer from `seeds/`. All commands are idempotent and safe to re-run. A fresh clone has no event data yet, so the feed reads "low-volume by design" until you build a backfill (below).
@@ -112,7 +113,7 @@ python -m app.audit.judge                           # accuracy audit (needs ANTH
 python -m app.audit.goldens                         # golden-set regression check (needs a key)
 ```
 
-Signals land in the `signals` table with ranked evidence in `signal_evidence`; each signal's license plays are pinned in `license_play_snapshots`. View them in the UI with `streamlit run app/ui/Home.py`.
+Signals land in the `signals` table with ranked evidence in `signal_evidence`; each signal's license plays are pinned in `license_play_snapshots`. View the current UI with `streamlit run app/ui/Home.py`; the parallel scaffold can be smoke-tested with `uvicorn app.ui_web.app:app --reload`.
 
 ## Run it hosted (Azure App Service)
 
@@ -136,7 +137,7 @@ gridsignals . && docker run -p 8000:8000 gridsignals`).
 ## Architecture
 
 ```
-[ingestion process (writer)] --> SQLite (WAL) <-- [Streamlit app (reader + feedback / review / config writes)]
+[ingestion process (writer)] --> SQLite (WAL) <-- [Streamlit app today / FastAPI scaffold in parallel]
         |                                                |
         +--> audit job (Claude API judge) ---------------+--> audit table
 ```
@@ -160,6 +161,7 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
 | License-play snapshots + gov-cloud gating | Implemented |
 | Streamlit UI (multi-page dark theme; signal feed, review queue, account 360) | Implemented |
+| FastAPI + HTMX + Tailwind UI port scaffold | In progress |
 | Regulatory Monitor page (read-only view of non-graduated regulatory chatter) | Implemented |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | Implemented |
 | Admin / Config (weight + half-life tuning, source registry with add/enable/disable/guarded-remove, license-fact editor + add, staleness, config audit trail, watchlist entity manager + alias/collision editor + reset/remove) | Implemented (incident-tier editor next) |

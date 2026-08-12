@@ -1,0 +1,33 @@
+/* Tailwind entry point for the GridSignals web UI (R8.9 UI port).
+ *
+ * Tailwind v4 is CSS-first: this file IS the config. The @theme block below
+ * seeds the design tokens ported from app/ui/theme.py (--gs-* dark, GitHub-
+ * inspired) as Tailwind color tokens, so utilities like `bg-gs-card` and
+ * `text-gs-muted` resolve. @config points at tailwind.config.js for the
+ * content globs Tailwind scans for class usage.
+ *
+ * Build with the standalone CLI (no npm, no node_modules) from the repo root:
+ *   tailwindcss -i app/ui_web/tailwind.input.css -o app/ui_web/static/app.css --minify
+ *
+ * NOTE (Chunk 0): the committed static/app.css is a small hand-authored
+ * token+base stylesheet, NOT the output of this file. The first real Tailwind
+ * compile lands in Chunk 1 (the signal card), which overwrites static/app.css.
+ */
+@import "tailwindcss";
+@config "./tailwind.config.js";
+
+@theme {
+  --color-gs-bg: #0e1117;
+  --color-gs-card: #161b22;
+  --color-gs-card-border: #2b3138;
+  --color-gs-text: #e6edf3;
+  --color-gs-muted: #8b949e;
+  --color-gs-accent: #4da3ff;
+  --color-gs-crit: #f85149;
+  --color-gs-high: #db6d28;
+  --color-gs-mod: #d29922;
+  --color-gs-low: #3fb950;
+  --color-gs-chip-bg: #21262d;
+  --color-gs-warn-bg: #3d2b0f;
+  --color-gs-warn-border: #9e6a1f;
+}

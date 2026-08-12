@@ -1,12 +1,25 @@
 # GridSignals runtime dependencies.
 #
-# The project is stdlib-only by rule (urllib + xml.etree + sqlite3), with ONE
-# approved exception: Streamlit for the UI layer (app/ui/ only). Everything
-# outside app/ui/ imports nothing from here. No component libraries
-# (Plotly/echarts/aggrid/pydeck) at this stage - R8.1 cards are custom
-# HTML/CSS per R8.9.
-# Pinned (not >=1.57,<2) so the deployed image and CI use the exact version the
-# app is tested against. A newer 1.x changed AppTest.from_file relative-path
-# resolution, which broke the UI tests under the CI-installed version; pinning
-# keeps the artifact reproducible. Bump deliberately, re-running the suite.
+# The project is stdlib-only by rule (urllib + xml.etree + sqlite3). The ONE
+# sanctioned exception is the UI layer, which may use vetted third-party web
+# packages to reach executive/CISO-grade polish. Everything outside the UI
+# (ingest, resolve, classify, score, licensing, plays, supersede, audit, db)
+# imports nothing from here. No component libraries (Plotly/echarts/aggrid/
+# pydeck); R8.1 cards are custom HTML/CSS per R8.9.
+#
+# UI stack (app/ui_web/) — the FastAPI + HTMX + Tailwind port (R8.9). HTMX is
+# vendored (app/ui_web/static/htmx.min.js) and Tailwind builds to committed CSS
+# via the standalone CLI, so neither is a Python dependency. httpx backs
+# Starlette's TestClient used by the hermetic UI tests.
+fastapi==0.136.1
+uvicorn==0.46.0
+jinja2==3.1.6
+httpx==0.28.1
+#
+# Legacy UI (app/ui/) — Streamlit. Kept runnable alongside app/ui_web/ until the
+# Chunk 7 cutover, then removed with this pin. Pinned (not >=1.57,<2) so the
+# deployed image and CI use the exact version the app is tested against. A newer
+# 1.x changed AppTest.from_file relative-path resolution, which broke the UI
+# tests under the CI-installed version; pinning keeps the artifact reproducible.
+# Bump deliberately, re-running the suite.
 streamlit==1.57.0
