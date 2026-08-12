@@ -6,8 +6,8 @@
 #
 # Tradeoff (accepted): the build is network-dependent and non-deterministic — it
 # fetches from ~5 external feeds. Network ingests are non-fatal so one flaky
-# feed can't fail the build, but we assert signals>0 at the end so a fully-empty
-# result fails loudly instead of shipping a blank demo.
+# feed can't fail the build, but we assert signals and license plays at the end
+# so an incomplete demo fails loudly instead of shipping a blank feed/card set.
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -23,7 +23,8 @@ ENV GRIDSIGNALS_DB=/app/data/gridsignals.db
 # load_seeds (schema + config) -> licensing (license facts; REQUIRED before
 # plays, or play cards silently generate zero) -> ingest -> classify -> score ->
 # plays. Ingests are wrapped so a single flaky feed degrades instead of failing
-# the build; the final assertion guarantees the feed is not empty.
+# the build; the final assertion guarantees the feed and play cards are not
+# empty.
 RUN python -m app.db.load_seeds \
  && python -m app.licensing \
  && (python -m app.ingest.edgar             || echo "WARN: edgar ingest failed, continuing") \
@@ -36,7 +37,7 @@ RUN python -m app.db.load_seeds \
  && python -m app.classify.leadership \
  && python -m app.scoring \
  && python -m app.plays \
- && python -c "import sqlite3, os; n = sqlite3.connect(os.environ['GRIDSIGNALS_DB']).execute('select count(*) from signals').fetchone()[0]; assert n > 0, 'build pipeline produced no signals'; print(f'baked {n} signals')"
+ && python -c "import sqlite3, os; conn = sqlite3.connect(os.environ['GRIDSIGNALS_DB']); signals = conn.execute('select count(*) from signals').fetchone()[0]; plays = conn.execute('select count(*) from license_play_snapshots').fetchone()[0]; assert signals > 0, 'build pipeline produced no signals'; assert plays > 0, 'build pipeline produced no license play snapshots'; print(f'baked {signals} signals and {plays} license play snapshots')"
 
 # App Service routes to the port named by the WEBSITES_PORT app setting; keep it
 # in sync with the port Streamlit binds (see deploy/azure-deploy.ps1).

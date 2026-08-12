@@ -48,11 +48,14 @@ App Service "Easy Auth" gates the whole app behind Microsoft corporate sign-in
 with no application code. After the app exists:
 
 ```powershell
+az extension add --name authV2
 az webapp auth microsoft update -g rg-gridsignals -n <app-name> `
     --client-id "<entra-app-client-id>" `
     --issuer "https://login.microsoftonline.com/<tenant-id>/v2.0"
 az webapp auth update -g rg-gridsignals -n <app-name> `
-    --enabled true --action RequireAuthentication --redirect-provider azureactivedirectory
+    --enabled true `
+    --unauthenticated-client-action RedirectToLoginPage `
+    --redirect-provider AzureActiveDirectory
 ```
 
 ## Notes / limitations

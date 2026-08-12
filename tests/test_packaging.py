@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
+DEPLOY_README = REPO / "deploy" / "README.md"
 
 
 class PackagingContractTest(unittest.TestCase):
@@ -52,9 +53,12 @@ class PackagingContractTest(unittest.TestCase):
             "licensing must run before plays",
         )
 
-    def test_build_asserts_nonempty_feed(self):
-        # The build must fail loudly on an empty feed rather than ship a blank demo.
-        self.assertRegex(self._dockerfile(), r"count\(\*\) from signals")
+    def test_build_asserts_nonempty_feed_and_play_snapshots(self):
+        # The build must fail loudly on an incomplete demo rather than ship
+        # blank feed cards or cards with no license plays.
+        df = self._dockerfile()
+        self.assertRegex(df, r"count\(\*\) from signals")
+        self.assertRegex(df, r"count\(\*\) from license_play_snapshots")
 
     def test_dockerfile_and_deploy_agree_on_port(self):
         port = re.search(r"ENV PORT=(\d+)", self._dockerfile())
@@ -72,6 +76,12 @@ class PackagingContractTest(unittest.TestCase):
             r"az\s+acr\s+config\s+authentication-as-arm\s+update\b[^\r\n]*--status\s+enabled\b",
             "App Service managed-identity ACR pulls require ARM audience token auth",
         )
+
+    def test_entra_auth_docs_use_current_authv2_action(self):
+        readme = DEPLOY_README.read_text(encoding="utf-8")
+        self.assertIn("az extension add --name authV2", readme)
+        self.assertIn("--unauthenticated-client-action RedirectToLoginPage", readme)
+        self.assertNotIn("--action RequireAuthentication", readme)
 
 
 if __name__ == "__main__":
