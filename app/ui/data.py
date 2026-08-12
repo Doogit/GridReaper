@@ -17,6 +17,7 @@ import math
 import sqlite3
 from datetime import date, datetime, timezone
 
+from app.classify import regulatory as regulatory_classifier
 from app.db.connection import get_connection
 from app.scoring import rescore
 
@@ -992,17 +993,17 @@ def entity_alias_rows(conn, entity_id):
 
 # -- regulatory monitor (R8.4, R7.2, D8) -------------------------------------
 #
-# Raw regulatory records that DID NOT graduate to the signal feed. "Regulatory"
-# is the same source set the regulatory classifier reads (app.classify.
-# regulatory.SOURCES); kept as a constant here in lockstep with it.
-# "Graduated" = a signals row references the raw_event (the classifier's only
-# feed path). Non-graduated = NOT EXISTS(signals). By definition these carry no
-# score, no entity, no scope, and no product implication (D8) - the classifier
-# skips anchorless/routine regulatory business "that belongs to a later
-# Regulatory Monitor chunk" (regulatory.py). This view surfaces exactly that
-# chatter, verbatim from the source's own record - it never invents a verb from
-# the scope/date and never touches the signals table.
-REGULATORY_SOURCE_IDS = ("federal_register", "nerc_pages")
+# Raw regulatory records that the current regulatory classifier evaluated and
+# did NOT graduate to the signal feed. "Regulatory" is the same source set the
+# classifier reads; derive it from app.classify.regulatory.SOURCES so the UI
+# cannot silently drift when that classifier adds or removes a source.
+# Non-graduated = classified_events says this parser emitted zero signals, and
+# no signals row references the raw_event. The classified_events gate matters:
+# an unprocessed backlog item may still become a scored signal, so it must not
+# be displayed as "chatter" yet.
+REGULATORY_SOURCE_IDS = tuple(regulatory_classifier.SOURCES)
+_REGULATORY_CLASSIFIER_ID = regulatory_classifier.CLASSIFIER_ID
+_REGULATORY_PARSER_VERSION = regulatory_classifier.PARSER_VERSION
 
 # Federal Register document type -> display label; mirrors the label map in
 # app.classify.regulatory._headline so the two surfaces read identically.
@@ -1116,9 +1117,10 @@ def _regulatory_chatter_row(row):
 
 def regulatory_monitor(conn, limit=100):
     """Non-graduated regulatory chatter, newest first (R8.4). Regulatory
-    raw_events (REGULATORY_SOURCE_IDS) with NO signals row referencing them -
-    i.e. records that did NOT graduate to the signal feed. Read-only: this
-    NEVER touches signals and NEVER emits a score/confidence/entity_name/
+    raw_events (REGULATORY_SOURCE_IDS) that the current regulatory parser has
+    evaluated with zero emitted signals and with NO signals row referencing
+    them - i.e. records that did NOT graduate to the signal feed. Read-only:
+    this NEVER writes and NEVER emits a score/confidence/entity_name/
     signal_scope/signal_id. Returns up to ``limit`` display dicts."""
     placeholders = _placeholders(len(REGULATORY_SOURCE_IDS))
     rows = conn.execute(
@@ -1127,9 +1129,16 @@ def regulatory_monitor(conn, limit=100):
         "FROM raw_events re "
         "JOIN source_policies sp ON sp.source_id = re.source_id "
         f"WHERE re.source_id IN ({placeholders}) "
+        " AND EXISTS (SELECT 1 FROM classified_events ce "
+        "             WHERE ce.raw_event_id = re.raw_event_id "
+        "               AND ce.classifier_id = ? "
+        "               AND ce.parser_version = ? "
+        "               AND ce.signals_emitted = 0) "
         " AND NOT EXISTS (SELECT 1 FROM signals s "
         "                 WHERE s.raw_event_id = re.raw_event_id) "
         "ORDER BY re.event_date DESC, re.raw_event_id DESC "
         "LIMIT ?",
-        list(REGULATORY_SOURCE_IDS) + [limit]).fetchall()
+        list(REGULATORY_SOURCE_IDS) + [
+            _REGULATORY_CLASSIFIER_ID, _REGULATORY_PARSER_VERSION, limit,
+        ]).fetchall()
     return [_regulatory_chatter_row(r) for r in rows]

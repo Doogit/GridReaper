@@ -5,10 +5,11 @@ connection) built by apply_migrations + fixture rows, pointed at the page via
 the GRIDSIGNALS_DB env override. AppTest runs no server and no network.
 
 Covers the definition of non-graduated regulatory chatter: only regulatory
-sources, only raw_events with NO signals row referencing them; the headline is
-the source's own text quoted verbatim with no action verb; no signal fields
-leak; nerc_pages snapshots shape correctly; the anchor flag is descriptive; a
-malformed payload survives; and the page renders/disclaims graduation.
+sources, only raw_events the current regulatory parser evaluated with zero
+signals and with NO signals row referencing them; the headline is the source's
+own text quoted verbatim with no action verb; no signal fields leak; nerc_pages
+snapshots shape correctly; the anchor flag is descriptive; a malformed payload
+survives; and the page renders/disclaims graduation.
 """
 import json
 import os
@@ -18,6 +19,7 @@ import unittest
 
 from streamlit.testing.v1 import AppTest
 
+from app.classify import regulatory
 from app.db.migrate import apply_migrations
 from app.ui import data
 
@@ -36,6 +38,16 @@ def _add_raw_event(conn, raw_event_id, source_id, event_date, payload, url=""):
         "url, first_seen_at) VALUES (?,?,?,?,?,?)",
         (raw_event_id, source_id, event_date, json.dumps(payload), url,
          event_date + "T00:00:00+00:00"))
+
+
+def _mark_classified(conn, raw_event_id, signals_emitted=0,
+                     classifier_id=regulatory.CLASSIFIER_ID,
+                     parser_version=regulatory.PARSER_VERSION):
+    conn.execute(
+        "INSERT INTO classified_events (raw_event_id, classifier_id, "
+        "parser_version, processed_at, signals_emitted) VALUES (?,?,?,?,?)",
+        (raw_event_id, classifier_id, parser_version,
+         "2026-08-12T00:00:00+00:00", signals_emitted))
 
 
 def seed(conn):
@@ -68,6 +80,7 @@ def seed(conn):
         "VALUES ('sig_grad','re_reg_grad',NULL,'sector','nerc_cip_revision',"
         "'2026-08-05','FERC final rule','ev','http://fr/grad',0.8,'PR',1,2.75,"
         "'active')")
+    _mark_classified(conn, "re_reg_grad", signals_emitted=1)
 
     # (2) NON-GRADUATED regulatory chatter: a federal_register Notice, no signal
     # -> must be INCLUDED. No effective_on / comments_close_on -> no anchor.
@@ -77,6 +90,7 @@ def seed(conn):
                       "slug": "federal-energy-regulatory-commission"}],
         "docket_ids": ["ER26-1"]},
         url="http://fr/chatter")
+    _mark_classified(conn, "re_reg_chatter", signals_emitted=0)
 
     # (3) NON-REGULATORY: a presswire event with no signal -> must be EXCLUDED.
     _add_raw_event(conn, "re_nonreg", "presswire", "2026-08-11",
@@ -127,6 +141,18 @@ class TestRegulatoryData(RegulatoryTestBase):
         for verb in ("adopts", "directs", "approves", "requires", "mandates"):
             self.assertNotIn(verb, row["headline"].lower())
 
+    def test_unprocessed_regulatory_backlog_is_not_called_chatter(self):
+        _add_raw_event(self.conn, "re_backlog", "federal_register", "2026-08-12", {
+            "title": "Critical Infrastructure Protection Reliability Standards",
+            "type": "Rule", "effective_on": "2026-10-01",
+            "agencies": [{"name": "Federal Energy Regulatory Commission",
+                          "slug": "federal-energy-regulatory-commission"}],
+            "docket_ids": ["RM26-1"]},
+            url="http://fr/backlog")
+        self.conn.commit()
+        ids = [r["raw_event_id"] for r in data.regulatory_monitor(self.conn)]
+        self.assertNotIn("re_backlog", ids)
+
     def test_long_federal_register_headline_balances_quotes(self):
         # P1b: a long title is truncated BEFORE the quotes are composed, so the
         # closing quote is always appended - the pair never dangles.
@@ -137,6 +163,7 @@ class TestRegulatoryData(RegulatoryTestBase):
         _add_raw_event(self.conn, "re_long", "federal_register", "2026-08-04", {
             "title": long_title, "type": "Proposed Rule",
             "agencies": [{"name": "FERC"}]})
+        _mark_classified(self.conn, "re_long")
         self.conn.commit()
         rows = {r["raw_event_id"]: r for r in data.regulatory_monitor(self.conn)}
         headline = rows["re_long"]["headline"]
@@ -157,6 +184,7 @@ class TestRegulatoryData(RegulatoryTestBase):
             "fetched_date": "2026-08-12",
             "text": "CIP-013-2 in effect"},
             url="https://www.nerc.com/pa/Stand/Pages/CIPStandards.aspx")
+        _mark_classified(self.conn, "re_nerc")
         self.conn.commit()
         rows = {r["raw_event_id"]: r for r in data.regulatory_monitor(self.conn)}
         nerc = rows["re_nerc"]
@@ -172,6 +200,7 @@ class TestRegulatoryData(RegulatoryTestBase):
     def test_nerc_pages_missing_title_and_type_no_crash(self):
         _add_raw_event(self.conn, "re_nerc_bare", "nerc_pages", "2026-08-12",
                        {"text": "no page_url here"})
+        _mark_classified(self.conn, "re_nerc_bare")
         self.conn.commit()
         rows = {r["raw_event_id"]: r for r in data.regulatory_monitor(self.conn)}
         # No page_url and no url -> title falls back to a safe snippet, no crash.
@@ -186,6 +215,7 @@ class TestRegulatoryData(RegulatoryTestBase):
             "title": "Notice of Proposed Rulemaking on Something",
             "type": "Proposed Rule", "comments_close_on": "2026-09-30",
             "agencies": [{"name": "FERC"}]})
+        _mark_classified(self.conn, "re_anchor")
         self.conn.commit()
         rows = {r["raw_event_id"]: r for r in data.regulatory_monitor(self.conn)}
         self.assertTrue(rows["re_anchor"]["has_anchor"])
@@ -197,6 +227,7 @@ class TestRegulatoryData(RegulatoryTestBase):
             "payload, url, first_seen_at) VALUES "
             "('re_bad','federal_register','2026-08-08','not json at all',"
             "'http://fr/bad','2026-08-08T00:00:00+00:00')")
+        _mark_classified(self.conn, "re_bad")
         self.conn.commit()
         rows = {r["raw_event_id"]: r for r in data.regulatory_monitor(self.conn)}
         self.assertIn("re_bad", rows)                 # returned, not dropped
@@ -210,11 +241,13 @@ class TestRegulatoryData(RegulatoryTestBase):
             "payload, url, first_seen_at) VALUES "
             "('re_list','federal_register','2026-08-07','[]',"
             "'http://fr/list','2026-08-07T00:00:00+00:00')")
+        _mark_classified(self.conn, "re_list")
         self.conn.execute(
             "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
             "payload, url, first_seen_at) VALUES "
             "('re_str','nerc_pages','2026-08-06','\"x\"',"
             "'http://nerc/str','2026-08-06T00:00:00+00:00')")
+        _mark_classified(self.conn, "re_str")
         self.conn.commit()
         rows = {r["raw_event_id"]: r for r in data.regulatory_monitor(self.conn)}
         for rid in ("re_list", "re_str"):
@@ -273,6 +306,7 @@ class TestRegulatoryPage(RegulatoryTestBase):
             "page_url": "https://www.nerc.com/pa/Stand/Pages/CIPStandards.aspx",
             "fetched_date": "2026-08-13", "text": "CIP-013-2 in effect"},
             url="https://www.nerc.com/pa/Stand/Pages/CIPStandards.aspx")
+        _mark_classified(self.conn, "re_nerc")
         self.conn.commit()
         record = next(
             el.value for el in self._run().markdown
@@ -283,6 +317,8 @@ class TestRegulatoryPage(RegulatoryTestBase):
 
     def test_empty_state_renders(self):
         # Remove the only chatter row so the page hits its empty state.
+        self.conn.execute("DELETE FROM classified_events WHERE raw_event_id = ?",
+                          ("re_reg_chatter",))
         self.conn.execute("DELETE FROM raw_events WHERE raw_event_id = ?",
                            ("re_reg_chatter",))
         self.conn.commit()
