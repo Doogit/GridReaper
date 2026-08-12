@@ -4,7 +4,7 @@ Monitor external events across US energy companies and flag when an account beco
 
 Stack: Python · SQLite · Streamlit. All data sources are free and read-only.
 
-> **Status: signal pipeline working end-to-end.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), normalized license facts, rule-based classification & scoring, and immutable license-play snapshots with gov-cloud gating are implemented and verified against the stored 12-month backfill. The **Streamlit UI** (signal feed, review queue, account 360) is implemented as a rule-based MVP; the feedback/audit loop is **in progress** — see [Roadmap](#roadmap).
+> **Status: signal pipeline working end-to-end.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), normalized license facts, rule-based classification & scoring, and immutable license-play snapshots with gov-cloud gating are implemented and verified against the stored 12-month backfill. The **Streamlit UI** (signal feed, review queue, account 360, feedback/precision) is implemented as a rule-based MVP, now with a **feedback loop, a capped Claude API accuracy-audit judge, and precision reporting** — see [Roadmap](#roadmap).
 
 ## How it works
 
@@ -47,6 +47,7 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 - **Classification & scoring (rule-based MVP)** — a classifier framework (entity resolution with review-queue gating, parent rollup, deterministic signal ids, per-version bookkeeping so re-runs are incremental and rule changes reprocess history) plus two precision-first classifiers: leadership changes (8-K Item 5.02 + press-wire appointment grammar, security-relevant titles only) and regulatory actions (Federal Register FERC/TSA rules with a required compliance-clock anchor; NERC standards-page diffs). Scores follow `base_strength × 0.5^(age/half-life) × account_fit × scope_fit` with operator-tunable weights seeded from CSV; stale signals decay automatically. Every signal carries ranked evidence rows — nothing surfaces unsourced.
 - **License-play snapshots + gov-cloud gating (rule-based MVP)** — each signal gets immutable play snapshots pinning the licensing evidence basis (fact ids, display text, outreach-safe text) at generation time, so old cards stay explainable after licensing data changes. Outreach text never states non-primary prices, never asserts the account's current tier, and stays sector-phrased for sector-wide events. Security Copilot plays are suppressed for known/likely US government cloud tenants.
 - **Streamlit UI (rule-based MVP, three pages)** — a dark-themed multi-page reader. A **Signal Feed** of custom HTML/CSS cards (severity strip, decay bar, the R7.3 score decomposition `2.34 = 5 x 0.85 x 1.00 x 0.55`, evidence/scope/coverage badges, product and license-play chips, expandable sourced evidence, an outreach draft shown only when customer-facing-allowed, and useful/not-useful feedback with reason codes), scope-separated so account cards sit above a labeled sector/regulatory divider (R7.2), with keyset pagination and a status filter. A **Review Queue / Triage** page (pending entity matches with accept/reject, per-source health that distinguishes error / never-run / stale / disabled, and a stale-license-fact list). An **Account 360** page (identifiers, relationships, gov-cloud posture, timeline and signal cards). The app is a reader — it writes only feedback, review dispositions, and human match decisions; cards read immutable snapshots, never live facts (R7.6), and non-primary prices never reach the UI (R4.3). Score components are persisted by `rescore()` and a `supersede` pass flips a superseded proposal (docket-overlap only) out of the default feed. Empty and dark surfaces read "low-volume by design," never "broken" (R6.6).
+- **Feedback loop + accuracy audit + precision reporting (rule-based MVP + capped Claude judge)** — cards capture useful/not-useful feedback with reason codes; a separate **audit judge** samples recent signals and asks a capped Claude model (default Haiku 4.5, called over `urllib` — no SDK) four *objective* checks per card (entity match, classification, evidence support, license-play support). The judge never rates usefulness and never changes weights, mappings, or facts; every verdict is versioned (model id + prompt version + parser version). It reads `ANTHROPIC_API_KEY` from the environment and enforces a per-run budget ceiling — with no key or an exhausted budget it records a skipped run and exits cleanly, never blocking ingestion or fabricating confidence. A **golden set** gates prompt/model changes, and a **Feedback / Precision** page reports human useful-rate and auto-accuracy by trigger/source/scope/tier, reason-code distribution, judge-vs-human disagreement, half-life effectiveness, and the G1/G2 gate status — every rate shown with its sample size, and labeled QA precision, explicitly **not** validated sales lift.
 
 ## Getting started
 
@@ -76,6 +77,10 @@ python -m app.classify.leadership                   # offline from here on
 python -m app.classify.regulatory
 python -m app.scoring
 python -m app.plays
+
+python -m app.audit.judge                           # accuracy audit (needs ANTHROPIC_API_KEY;
+                                                    #   no key / over budget -> records a skipped run, exits 0)
+python -m app.audit.goldens                         # golden-set regression check (needs a key)
 ```
 
 Signals land in the `signals` table with ranked evidence in `signal_evidence`; each signal's license plays are pinned in `license_play_snapshots`. View them in the UI with `streamlit run app/ui/Home.py`.
@@ -107,10 +112,10 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
 | License-play snapshots + gov-cloud gating | Implemented |
 | Streamlit UI (multi-page dark theme; signal feed, review queue, account 360) | Implemented |
-| Feedback loop + automated accuracy audit (Claude judge) + precision reporting | In progress |
+| Feedback loop + automated accuracy audit (Claude judge) + precision reporting | Implemented |
 
 Later stages add incident/combo classification, GDELT-based classification, and a hiring/macro-trend layer.
 
 ## Notes
 
-Single-operator demo/portfolio project — no auth, no multi-tenancy. The only recurring cost is a capped Claude API audit judge; there are no paid data sources.
+Single-operator demo/portfolio project — no auth, no multi-tenancy. The only recurring cost is the Claude API accuracy-audit judge, held down by a per-run budget ceiling (config; a normal run is well under a cent) and gated on the `ANTHROPIC_API_KEY` env var — with no key it simply skips. There are no paid data sources.
