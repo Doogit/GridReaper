@@ -522,8 +522,9 @@ def update_weight(conn, weight_kind, key, new_weight, reason="",
     signals so live cards reflect it. Validates a finite weight >= 0 and that the
     (weight_kind, key) row exists (no key insert/delete here - value edits only,
     so scoring.py's neutral-1.0 fallback can't be tripped by a removed key).
-    Raises ValueError (the page surfaces it, never writes). Returns
-    {old, new, scored, decayed}."""
+    A no-op edit (new == old) writes nothing and does not rescore. Raises
+    ValueError (the page surfaces it, never writes). Returns
+    {old, new, changed[, scored, decayed]} (rescore stats only when changed)."""
     try:
         w = float(new_weight)
     except (TypeError, ValueError):
@@ -536,6 +537,10 @@ def update_weight(conn, weight_kind, key, new_weight, reason="",
     if row is None:
         raise ValueError(f"unknown scoring weight {(weight_kind, key)!r}")
     old = row["weight"]
+    if w == old:
+        # A no-op save writes no provenance row and skips the rescore, so the
+        # audit trail records real changes, not button presses (persona pass).
+        return {"old": old, "new": w, "changed": False}
     conn.execute(
         "UPDATE scoring_weights SET weight = ? WHERE weight_kind = ? AND key = ?",
         (w, weight_kind, key))
@@ -545,7 +550,7 @@ def update_weight(conn, weight_kind, key, new_weight, reason="",
         "weight", old, w, editor, reason, now)
     conn.commit()
     summary = rescore(conn, now=now)
-    return {"old": old, "new": w, **summary}
+    return {"old": old, "new": w, "changed": True, **summary}
 
 
 def update_half_life(conn, trigger_id, new_half_life_days, reason="",
@@ -553,8 +558,8 @@ def update_half_life(conn, trigger_id, new_half_life_days, reason="",
     """Set a triggers.decay_half_life_days (R7.4 heuristic), audit it, and
     rescore active signals. Validates a whole number of days >= 1 (it is a decay
     divisor; a fractional or non-positive value is rejected, not truncated) and
-    that the trigger exists. Raises ValueError. Returns {old, new, scored,
-    decayed}."""
+    that the trigger exists. A no-op edit writes nothing and does not rescore.
+    Raises ValueError. Returns {old, new, changed[, scored, decayed]}."""
     if isinstance(new_half_life_days, bool):
         raise ValueError("half-life must be a whole number of days")
     try:
@@ -574,6 +579,8 @@ def update_half_life(conn, trigger_id, new_half_life_days, reason="",
     if row is None:
         raise ValueError(f"unknown trigger {trigger_id!r}")
     old = row["decay_half_life_days"]
+    if hl == old:
+        return {"old": old, "new": hl, "changed": False}
     conn.execute(
         "UPDATE triggers SET decay_half_life_days = ? WHERE trigger_id = ?",
         (hl, trigger_id))
@@ -581,7 +588,7 @@ def update_half_life(conn, trigger_id, new_half_life_days, reason="",
                         old, hl, editor, reason, now)
     conn.commit()
     summary = rescore(conn, now=now)
-    return {"old": old, "new": hl, **summary}
+    return {"old": old, "new": hl, "changed": True, **summary}
 
 
 def set_source_enabled(conn, source_id, enabled, reason="",
@@ -589,7 +596,8 @@ def set_source_enabled(conn, source_id, enabled, reason="",
     """Toggle source_policies.enabled (R8.7 source-policy review; enabled is
     already runtime-managed) and audit it. No rescore - enabling/disabling a
     source affects the next ingestion run, not existing scores. Validates the
-    source exists. Raises ValueError. Returns {old, new}."""
+    source exists; a no-op toggle writes nothing. Raises ValueError. Returns
+    {old, new, changed}."""
     row = conn.execute(
         "SELECT enabled FROM source_policies WHERE source_id = ?",
         (source_id,)).fetchone()
@@ -597,12 +605,14 @@ def set_source_enabled(conn, source_id, enabled, reason="",
         raise ValueError(f"unknown source_id {source_id!r}")
     old = row["enabled"]
     new = 1 if enabled else 0
+    if new == old:
+        return {"old": old, "new": new, "changed": False}
     conn.execute("UPDATE source_policies SET enabled = ? WHERE source_id = ?",
                  (new, source_id))
     _record_config_edit(conn, "source_policies", source_id, "enabled",
                         old, new, editor, reason, now)
     conn.commit()
-    return {"old": old, "new": new}
+    return {"old": old, "new": new, "changed": True}
 
 
 def config_audit_tail(conn, limit=50):

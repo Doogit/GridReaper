@@ -138,6 +138,19 @@ class TestWeightSave(AdminPageCase):
         self.assertTrue(any("Saved" in s.value for s in at.success))
 
 
+class TestNoOpSave(AdminPageCase):
+    def test_saving_unchanged_weight_writes_nothing_and_shows_info(self):
+        at = self._run()
+        # click Save without touching the number_input (stays at seed 0.55)
+        at = self._widget(at, "button", "wsave_scope_sector").click().run()
+        self.assertNoException(at)
+        self.assertTrue(any("No change" in i.value for i in at.info))
+        conn = self._open_conn()
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+        conn.close()
+
+
 class TestHalfLifeSave(AdminPageCase):
     def test_save_edits_and_audits(self):
         at = self._run()

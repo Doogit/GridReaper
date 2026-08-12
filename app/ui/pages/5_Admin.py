@@ -27,6 +27,7 @@ input surfaces the validation error and writes nothing. UTC ISO-8601 (R10.2).
 import os
 import sys
 import html
+import json
 
 import streamlit as st
 
@@ -82,11 +83,24 @@ def _save(fn, *args, **kwargs):
     except ValueError as exc:
         st.error(str(exc))
         return False
-    st.session_state["_admin_flash"] = ("success", _result_msg(fn.__name__, result))
+    level = "success" if result.get("changed", True) else "info"
+    st.session_state["_admin_flash"] = (level, _result_msg(fn.__name__, result))
     st.rerun()
 
 
+def _enabled_label(value):
+    return "Enabled" if value else "Disabled"
+
+
 def _result_msg(fn_name, result):
+    if not result.get("changed", True):
+        # No-op save (new == old): nothing was written or rescored.
+        if fn_name == "set_source_enabled":
+            return f"No change — source already {_enabled_label(result['new'])}."
+        return f"No change — value already {result['new']}."
+    if fn_name == "set_source_enabled":
+        return (f"Saved: {_enabled_label(result['old'])} → "
+                f"{_enabled_label(result['new'])}.")
     if "scored" in result:
         return (f"Saved: {result['old']} → {result['new']}. "
                 f"{result['scored']} active card(s) rescored, "
@@ -121,6 +135,8 @@ def _render_weights(conn, reason):
             new_val = box_col.number_input(
                 f"{kind} · {r['key']}", value=float(r["weight"]),
                 min_value=0.0, step=0.05, format="%.2f",
+                help="Multiplier; typical 0.5–1.5, and 1.0 is neutral. "
+                     "Unknown/blank keys already fall back to 1.0.",
                 key=f"w_{kind}_{r['key']}")
             if btn_col.button("Save", key=f"wsave_{kind}_{r['key']}"):
                 _save(data.update_weight, kind, r["key"], new_val, reason=reason)
@@ -145,7 +161,10 @@ def _render_half_lives(conn, reason):
         box_col, btn_col = st.columns([4, 1])
         new_val = box_col.number_input(
             f"{r['name']} ({r['trigger_id']}) — half-life days",
-            value=int(r["decay_half_life_days"]), min_value=1, step=1,
+            value=int(r["decay_half_life_days"]), min_value=1, max_value=3650,
+            step=1,
+            help="Days for a card's decay factor to halve. Typical 30–600 "
+                 "(new-CISO ~90d, regulation ~540–730d). Heuristic, not measured.",
             key=f"hl_{r['trigger_id']}")
         if btn_col.button("Save", key=f"hlsave_{r['trigger_id']}"):
             _save(data.update_half_life, r["trigger_id"], new_val, reason=reason)
@@ -158,7 +177,8 @@ def _render_sources(conn, reason):
     st.caption(
         "Enable or disable a source (R8.7). Gate G2 (R9.5) recommends demotion "
         "when a source's precision falls below 40% over enough rated cards — a "
-        "recommendation to REVIEW, never an auto-action.")
+        "recommendation to REVIEW, never an auto-action. Full per-dimension "
+        "rates and judge-vs-human disagreement are on the Precision page.")
     rows = data.source_policy_rows(conn)
     if not rows:
         st.markdown("<div class='gs-empty'>No sources configured.</div>",
@@ -177,6 +197,19 @@ def _render_sources(conn, reason):
             st.markdown(
                 f"<div class='gs-meta'>G2 <span class='gs-badge'>{flag}</span> "
                 f"{_esc(g2['note'])}</div>", unsafe_allow_html=True)
+            # Reason codes at the decision point, not one page away (persona pass).
+            codes = g2.get("reason_codes") or {}
+            if codes:
+                codes_txt = ", ".join(
+                    f"{_esc(code)}={n}" for code, n in codes.items())
+                st.markdown(
+                    f"<div class='gs-meta'>reason codes: {codes_txt}</div>",
+                    unsafe_allow_html=True)
+        else:
+            st.markdown(
+                "<div class='gs-meta'>G2: no rated feedback for this source yet "
+                "— rate its cards useful / not-useful to build a signal.</div>",
+                unsafe_allow_html=True)
         tog_col, btn_col = st.columns([4, 1])
         enabled = tog_col.toggle(
             "Enabled", value=bool(r["enabled"]), key=f"src_{sid}")
@@ -211,6 +244,19 @@ def _render_staleness(conn):
 
 # -- recent config changes (provenance) --------------------------------------
 
+def _humanize_pk(table_name, pk):
+    """scoring_weights stores a JSON composite pk; render it as 'kind · key'
+    so the provenance table reads cleanly (persona pass). Other tables use a
+    bare pk already."""
+    if table_name == "scoring_weights":
+        try:
+            d = json.loads(pk)
+            return f"{d['weight_kind']} · {d['key']}"
+        except (ValueError, KeyError, TypeError):
+            return pk
+    return pk
+
+
 def _render_audit(conn):
     st.subheader("Recent config changes")
     st.caption("Provenance trail (R3.3): every Admin edit, newest first.")
@@ -223,7 +269,7 @@ def _render_audit(conn):
     st.table([{
         "when": r["ts"],
         "table": r["table_name"],
-        "row": r["pk"],
+        "row": _humanize_pk(r["table_name"], r["pk"]),
         "field": r["field"],
         "old → new": f"{r['old_value']} → {r['new_value']}",
         "reason": r["reason"] or "",
@@ -240,6 +286,10 @@ def main():
     _flash()
 
     conn = get_conn()
+    st.caption(
+        "Your edits persist across `python -m app.db.load_seeds` (the seed CSVs "
+        "are never touched); a fresh rebuild-from-seeds restores the pristine "
+        "defaults. Every save is logged in Recent config changes below.")
     reason = st.text_input(
         "Reason for the next edit (optional)", value="", key="admin_reason",
         help="Attached to the audit-trail entry of whatever you save next.")

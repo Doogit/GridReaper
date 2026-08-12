@@ -54,6 +54,7 @@ class TestUpdateWeight(unittest.TestCase):
                                     reason="tuning", now=NOW)
         self.assertEqual(result["old"], 0.55)
         self.assertEqual(result["new"], 0.80)
+        self.assertTrue(result["changed"])
         self.assertGreaterEqual(result["scored"], 1)
         # stored value changed
         self.assertEqual(conn.execute(
@@ -87,6 +88,39 @@ class TestUpdateWeight(unittest.TestCase):
             ).fetchone()["weight"], 0.55)
         self.assertEqual(
             conn.execute("SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+
+
+class TestNoOpSaves(unittest.TestCase):
+    """A save whose new value equals the current one writes no provenance row
+    and does not rescore (persona-pass trust finding: the audit trail records
+    real changes, not button presses)."""
+
+    def test_weight_noop_writes_nothing_and_skips_rescore(self):
+        conn = fixture_conn()
+        before = conn.execute(
+            "SELECT scored_at FROM signals WHERE signal_id='s_active'").fetchone()
+        r = data.update_weight(conn, "scope", "sector", 0.55, now=NOW)  # == seed
+        self.assertFalse(r["changed"])
+        self.assertNotIn("scored", r)
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+        after = conn.execute(
+            "SELECT scored_at FROM signals WHERE signal_id='s_active'").fetchone()
+        self.assertEqual(after["scored_at"], before["scored_at"])   # no rescore
+
+    def test_half_life_noop_writes_nothing(self):
+        conn = fixture_conn()
+        r = data.update_half_life(conn, "t_lead", 90, now=NOW)       # == seed
+        self.assertFalse(r["changed"])
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+
+    def test_source_noop_writes_nothing(self):
+        conn = fixture_conn()
+        r = data.set_source_enabled(conn, "edgar", True, now=NOW)    # already on
+        self.assertFalse(r["changed"])
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
 
 
 class TestFrozenScoreContract(unittest.TestCase):
