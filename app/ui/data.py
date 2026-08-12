@@ -11,9 +11,14 @@ surfaced only as provenance chips and this layer never returns a fact's
 Timestamps are UTC ISO-8601 (R10.2); functions that reason about age accept an
 injectable ``now`` so pages and tests are deterministic.
 """
+import contextlib
 import json
+import math
 import sqlite3
 from datetime import date, datetime, timezone
+
+from app.db.connection import get_connection
+from app.scoring import rescore
 
 # Signal-scope groupings for the scope-separated feed (R7.2): account cards are
 # rendered first, then a labeled divider, then sector/regulatory cards.
@@ -460,3 +465,182 @@ def triage_decision(conn, raw_event_id, entity_id, accept, now=None):
         "WHERE raw_event_id = ? AND candidate_entity_id = ?",
         (disposition, ts, raw_event_id, entity_id))
     conn.commit()
+
+
+# -- config writes (R8.7 Admin/Config) ---------------------------------------
+#
+# The first Streamlit writes into *seeded* config tables. Three rules hold every
+# one (see the plan's KTDs):
+#   * Provenance (R3.3): each edit writes a config_audit row (field, old->new,
+#     editor, reason, ts) in the SAME transaction as the edit. Append-only:
+#     these helpers only UPDATE the target row and INSERT audit - never DELETE,
+#     so nothing FK-referencing a config row can be orphaned.
+#   * Reload-safe (Pattern B): weight / decay_half_life_days are frozen against
+#     seed reload by the loader's update_cols, so a direct UPDATE here survives
+#     the next load_seeds run. Reads (scoring.load_weights, rescore) are unchanged.
+#   * Single-writer (R3.2): the page wraps each save in config_write_conn(),
+#     which takes the ingestion lock and hands back a fresh short-lived
+#     connection. A weight/half-life edit re-runs rescore() ACTIVE-ONLY (R8.1):
+#     decayed/dismissed/superseded rows keep their frozen score and components.
+CONFIG_EDITOR = "operator"          # single-operator MVP: no auth, no PII (R10.6)
+
+
+@contextlib.contextmanager
+def config_write_conn(db_path=None, lock_path=None):
+    """Fresh connection holding the single-writer ingestion lock (R3.2) for one
+    Admin save. Raises RuntimeError if an ingestion/scoring run holds the lock
+    (the page catches it -> "ingestion in progress"). Acquire this INSIDE the
+    save handler, never at page render (Streamlit reruns top-to-bottom)."""
+    from app.ingest.runner import ingest_lock, LOCK_PATH
+    with ingest_lock(lock_path or LOCK_PATH):
+        conn = get_connection(db_path) if db_path else get_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+
+def _config_str(value):
+    """Store config_audit old/new as TEXT; numbers become their str form."""
+    return None if value is None else str(value)
+
+
+def _record_config_edit(conn, table_name, pk, field, old_value, new_value,
+                        editor, reason, now):
+    """Append one config_audit provenance row (R3.3). Caller does the matching
+    UPDATE in the same transaction and commits."""
+    conn.execute(
+        "INSERT INTO config_audit (table_name, pk, field, old_value, new_value, "
+        " editor, reason, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (table_name, pk, field, _config_str(old_value), _config_str(new_value),
+         editor, reason or "", _utcnow_iso(now)))
+
+
+def update_weight(conn, weight_kind, key, new_weight, reason="",
+                  editor=CONFIG_EDITOR, now=None):
+    """Set a scoring_weights.weight (R7.5 tunable), audit it, and rescore active
+    signals so live cards reflect it. Validates a finite weight >= 0 and that the
+    (weight_kind, key) row exists (no key insert/delete here - value edits only,
+    so scoring.py's neutral-1.0 fallback can't be tripped by a removed key).
+    A no-op edit (new == old) writes nothing and does not rescore. Raises
+    ValueError (the page surfaces it, never writes). Returns
+    {old, new, changed[, scored, decayed]} (rescore stats only when changed)."""
+    try:
+        w = float(new_weight)
+    except (TypeError, ValueError):
+        raise ValueError(f"weight must be a number, got {new_weight!r}")
+    if not math.isfinite(w) or w < 0:
+        raise ValueError(f"weight must be a finite value >= 0, got {w}")
+    row = conn.execute(
+        "SELECT weight FROM scoring_weights WHERE weight_kind = ? AND key = ?",
+        (weight_kind, key)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown scoring weight {(weight_kind, key)!r}")
+    old = row["weight"]
+    if w == old:
+        # A no-op save writes no provenance row and skips the rescore, so the
+        # audit trail records real changes, not button presses (persona pass).
+        return {"old": old, "new": w, "changed": False}
+    conn.execute(
+        "UPDATE scoring_weights SET weight = ? WHERE weight_kind = ? AND key = ?",
+        (w, weight_kind, key))
+    _record_config_edit(
+        conn, "scoring_weights",
+        json.dumps({"weight_kind": weight_kind, "key": key}, sort_keys=True),
+        "weight", old, w, editor, reason, now)
+    try:
+        summary = rescore(conn, now=now)
+    except Exception:
+        conn.rollback()
+        raise
+    return {"old": old, "new": w, "changed": True, **summary}
+
+
+def update_half_life(conn, trigger_id, new_half_life_days, reason="",
+                     editor=CONFIG_EDITOR, now=None):
+    """Set a triggers.decay_half_life_days (R7.4 heuristic), audit it, and
+    rescore active signals. Validates a whole number of days >= 1 (it is a decay
+    divisor; a fractional or non-positive value is rejected, not truncated) and
+    that the trigger exists. A no-op edit writes nothing and does not rescore.
+    Raises ValueError. Returns {old, new, changed[, scored, decayed]}."""
+    if isinstance(new_half_life_days, bool):
+        raise ValueError("half-life must be a whole number of days")
+    try:
+        f = float(new_half_life_days)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"half-life must be a whole number of days, got {new_half_life_days!r}")
+    hl = int(f)
+    if hl != f:
+        raise ValueError(
+            f"half-life must be a whole number of days, got {new_half_life_days!r}")
+    if hl < 1:
+        raise ValueError(f"half-life must be >= 1 day, got {hl}")
+    row = conn.execute(
+        "SELECT decay_half_life_days FROM triggers WHERE trigger_id = ?",
+        (trigger_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown trigger {trigger_id!r}")
+    old = row["decay_half_life_days"]
+    if hl == old:
+        return {"old": old, "new": hl, "changed": False}
+    conn.execute(
+        "UPDATE triggers SET decay_half_life_days = ? WHERE trigger_id = ?",
+        (hl, trigger_id))
+    _record_config_edit(conn, "triggers", trigger_id, "decay_half_life_days",
+                        old, hl, editor, reason, now)
+    try:
+        summary = rescore(conn, now=now)
+    except Exception:
+        conn.rollback()
+        raise
+    return {"old": old, "new": hl, "changed": True, **summary}
+
+
+def set_source_enabled(conn, source_id, enabled, reason="",
+                       editor=CONFIG_EDITOR, now=None):
+    """Toggle source_policies.enabled (R8.7 source-policy review; enabled is
+    already runtime-managed) and audit it. No rescore - enabling/disabling a
+    source affects the next ingestion run, not existing scores. Validates the
+    source exists; a no-op toggle writes nothing. Raises ValueError. Returns
+    {old, new, changed}."""
+    row = conn.execute(
+        "SELECT enabled FROM source_policies WHERE source_id = ?",
+        (source_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown source_id {source_id!r}")
+    old = row["enabled"]
+    new = 1 if enabled else 0
+    if new == old:
+        return {"old": old, "new": new, "changed": False}
+    conn.execute("UPDATE source_policies SET enabled = ? WHERE source_id = ?",
+                 (new, source_id))
+    _record_config_edit(conn, "source_policies", source_id, "enabled",
+                        old, new, editor, reason, now)
+    conn.commit()
+    return {"old": old, "new": new, "changed": True}
+
+
+def config_audit_tail(conn, limit=50):
+    """Recent config edits, newest first, as plain dicts (R8.7 recent-changes
+    panel / provenance visibility)."""
+    rows = conn.execute(
+        "SELECT table_name, pk, field, old_value, new_value, editor, reason, ts "
+        "FROM config_audit ORDER BY audit_id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def source_policy_rows(conn, now=None):
+    """Source policies for the Admin review table (R8.7): each source_health row
+    as a plain dict, plus its computed state and its Gate G2 demotion
+    recommendation (report-only, R9.5) keyed off the same source_id. ``g2`` is
+    None for a source with no rated feedback yet."""
+    from app.audit.precision import g2_status
+    g2 = g2_status(precision_feedback_rows(conn), now=now)
+    out = []
+    for r in source_health(conn):
+        d = dict(r)
+        d["state"] = source_state(r, now=now)
+        d["g2"] = g2.get(r["source_id"])
+        out.append(d)
+    return out

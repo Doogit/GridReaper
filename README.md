@@ -4,7 +4,7 @@ Monitor external events across US energy companies and flag when an account beco
 
 Stack: Python · SQLite · Streamlit. All data sources are free and read-only.
 
-> **Status: signal pipeline working end-to-end.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), normalized license facts, rule-based classification & scoring, and immutable license-play snapshots with gov-cloud gating are implemented and verified against the stored 12-month backfill. The **Streamlit UI** (signal feed, review queue, account 360, feedback/precision) is implemented as a rule-based MVP, now with a **feedback loop, a capped Claude API accuracy-audit judge, and precision reporting** — see [Roadmap](#roadmap).
+> **Status: signal pipeline working end-to-end.** The database schema, seed loader, entity resolution, the core ingestion layer (EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV), normalized license facts, rule-based classification & scoring, and immutable license-play snapshots with gov-cloud gating are implemented and verified against the stored 12-month backfill. The **Streamlit UI** (signal feed, review queue, account 360, feedback/precision, admin/config) is implemented as a rule-based MVP, now with a **feedback loop, a capped Claude API accuracy-audit judge, precision reporting, and an audited Admin config surface for tuning weights, half-lives, and source policies** — see [Roadmap](#roadmap).
 
 ## How it works
 
@@ -17,6 +17,34 @@ Design principles:
 - **Read-only, free sources only.** No paid feeds, no ToS-restricted scraping, no ML.
 - **Evidence over noise.** Confidence gating and an automated accuracy audit rather than a firehose; low-volume, high-signal triggers are classified first.
 - **Config as data.** Products, triggers, mappings, watchlist, and the license matrix live as CSV seeded into SQLite — editable without code changes.
+
+## Screenshots
+
+Dark-themed Streamlit UI over a stored 12-month backfill. Rendered against real data (US energy companies; no synthetic or placeholder content).
+
+**Signal Feed** — scored, sourced cards with the score decomposition, evidence/scope badges, license-play chips, and a customer-facing-gated outreach draft. Account-scoped cards sit above a labeled sector/regulatory divider.
+
+![Signal Feed](assets/screenshots/signal-feed.png)
+
+**Admin / Config** — operator tuning for scoring weights, decay half-lives, and source policies, with a provenance trail. Edits persist across a seed reload; a fresh rebuild restores the pristine defaults.
+
+![Admin / Config](assets/screenshots/admin.png)
+
+**Feedback / Precision** — human useful-rate and automated-judge accuracy by trigger/source/scope/tier, with every rate shown alongside its sample size.
+
+![Feedback / Precision](assets/screenshots/precision.png)
+
+<details><summary>More: Review Queue &amp; Account 360</summary>
+
+**Review Queue / Triage** — pending entity matches, per-source health, and stale license facts.
+
+![Review Queue](assets/screenshots/review-queue.png)
+
+**Account 360** — per-account identifiers, relationships, gov-cloud posture, and signal timeline.
+
+![Account 360](assets/screenshots/account-360.png)
+
+</details>
 
 ## Data sources
 
@@ -38,7 +66,7 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 
 - **Schema + migrations** — the full data model (config + runtime layers, query indexes) managed by a versioned, checksummed migration runner. Applied migrations are tamper-guarded.
 - **Connection helper** — SQLite in WAL mode with foreign keys and a busy timeout, matching the single-writer / read-heavy architecture.
-- **Seed loader** — idempotent, foreign-key-ordered load of the config data with a per-table row-count report. Safe to re-run; never clobbers runtime-managed state (e.g. a source disabled by the operator stays disabled).
+- **Seed loader** — idempotent, foreign-key-ordered load of the config data with a per-table row-count report. Safe to re-run; never clobbers runtime-managed state (e.g. a source disabled by the operator, or a scoring weight / decay half-life tuned in Admin, survives a reload — while a fresh rebuild-from-seeds restores the pristine baseline).
 - **Source policy registry** — the MVP source inventory seeded with per-source access method, poll interval, ToS status, evidence rank, and rate-limit notes.
 - **Entity resolution core** — deterministic CIK/ticker/LEI/alias matching with a fuzzy-name fallback. Known-collision names (e.g. bare "Dominion") never auto-match without corroborating context; ambiguous or low-confidence results go to a review queue instead of firing, and every match decision is logged with its terms and parser version. Covered by an adversarial test fixture set (collisions, subsidiaries, abbreviations, near-twins).
 - **Entity enrichment** — an annual-refresh job that anchors the watchlist to external identifiers: Wikidata queried by SEC CIK (deterministic, one batch) for QIDs and LEIs, GLEIF fulltext as fallback accepted only on exact normalized-name match, plus GLEIF parent/child relationship import. Results are generated into reviewable seed CSVs; hand-verified values always win over generated ones.
@@ -46,8 +74,9 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 - **License facts + play candidates** — the hand-verified license matrix normalized into per-segment `license_facts` (commercial + GCC High, with a conservative, lossless mapping of the freeform gov-cloud notes) and one conditional license-play candidate per trigger→product mapping. Rebuild is deterministic from seeded config.
 - **Classification & scoring (rule-based MVP)** — a classifier framework (entity resolution with review-queue gating, parent rollup, deterministic signal ids, per-version bookkeeping so re-runs are incremental and rule changes reprocess history) plus two precision-first classifiers: leadership changes (8-K Item 5.02 + press-wire appointment grammar, security-relevant titles only) and regulatory actions (Federal Register FERC/TSA rules with a required compliance-clock anchor; NERC standards-page diffs). Scores follow `base_strength × 0.5^(age/half-life) × account_fit × scope_fit` with operator-tunable weights seeded from CSV; stale signals decay automatically. Every signal carries ranked evidence rows — nothing surfaces unsourced.
 - **License-play snapshots + gov-cloud gating (rule-based MVP)** — each signal gets immutable play snapshots pinning the licensing evidence basis (fact ids, display text, outreach-safe text) at generation time, so old cards stay explainable after licensing data changes. Outreach text never states non-primary prices, never asserts the account's current tier, and stays sector-phrased for sector-wide events. Security Copilot plays are suppressed for known/likely US government cloud tenants.
-- **Streamlit UI (rule-based MVP, three pages)** — a dark-themed multi-page reader. A **Signal Feed** of custom HTML/CSS cards (severity strip, decay bar, the R7.3 score decomposition `2.34 = 5 x 0.85 x 1.00 x 0.55`, evidence/scope/coverage badges, product and license-play chips, expandable sourced evidence, an outreach draft shown only when customer-facing-allowed, and useful/not-useful feedback with reason codes), scope-separated so account cards sit above a labeled sector/regulatory divider (R7.2), with keyset pagination and a status filter. A **Review Queue / Triage** page (pending entity matches with accept/reject, per-source health that distinguishes error / never-run / stale / disabled, and a stale-license-fact list). An **Account 360** page (identifiers, relationships, gov-cloud posture, timeline and signal cards). The app is a reader — it writes only feedback, review dispositions, and human match decisions; cards read immutable snapshots, never live facts (R7.6), and non-primary prices never reach the UI (R4.3). Score components are persisted by `rescore()` and a `supersede` pass flips a superseded proposal (docket-overlap only) out of the default feed. Empty and dark surfaces read "low-volume by design," never "broken" (R6.6).
+- **Streamlit UI (rule-based MVP, five pages)** — a dark-themed multi-page app. A **Signal Feed** of custom HTML/CSS cards (severity strip, decay bar, the R7.3 score decomposition `2.34 = 5 x 0.85 x 1.00 x 0.55`, evidence/scope/coverage badges, product and license-play chips, expandable sourced evidence, an outreach draft shown only when customer-facing-allowed, and useful/not-useful feedback with reason codes), scope-separated so account cards sit above a labeled sector/regulatory divider (R7.2), with keyset pagination and a status filter. A **Review Queue / Triage** page (pending entity matches with accept/reject, per-source health that distinguishes error / never-run / stale / disabled, and a stale-license-fact list). An **Account 360** page (identifiers, relationships, gov-cloud posture, timeline and signal cards). The **Feedback / Precision** and **Admin / Config** pages are described in their own entries below. The app is read-mostly — it writes only feedback, review dispositions, human match decisions, and explicitly-audited Admin config edits (R8.7, below); cards read immutable snapshots, never live facts (R7.6), and non-primary prices never reach the UI (R4.3). Score components are persisted by `rescore()` and a `supersede` pass flips a superseded proposal (docket-overlap only) out of the default feed. Empty and dark surfaces read "low-volume by design," never "broken" (R6.6).
 - **Feedback loop + accuracy audit + precision reporting (rule-based MVP + capped Claude judge)** — cards capture useful/not-useful feedback with reason codes; a separate **audit judge** samples recent signals and asks a capped Claude model (default Haiku 4.5, called over `urllib` — no SDK) four *objective* checks per card (entity match, classification, evidence support, license-play support). The judge never rates usefulness and never changes weights, mappings, or facts; every verdict is versioned (model id + prompt version + parser version). It reads `ANTHROPIC_API_KEY` from the environment and enforces a per-run budget ceiling — with no key or an exhausted budget it records a skipped run and exits cleanly, never blocking ingestion or fabricating confidence. A **golden set** gates prompt/model changes, and a **Feedback / Precision** page reports human useful-rate and auto-accuracy by trigger/source/scope/tier, reason-code distribution, judge-vs-human disagreement, half-life effectiveness, and the G1/G2 gate status — every rate shown with its sample size, and labeled QA precision, explicitly **not** validated sales lift.
+- **Admin / Config (tuning slice, R8.7)** — an operator page that makes scoring tunable without code changes: per-row **weight** and per-trigger **decay half-life** editors (each save re-runs scoring on active cards only, so decayed and dismissed cards keep their frozen score decomposition), **source enable/disable** with the report-only Gate G2 demotion recommendation shown alongside, and read-only `verified_date` staleness flags (>180 days). Every edit is recorded to an append-only `config_audit` provenance trail (R3.3); the hand-verified seed CSVs are never touched, so operator tuning survives a `load_seeds` reload while a fresh rebuild-from-seeds still returns the pristine baseline. Watchlist, alias, license-fact, and incident evidence-tier editors are the next slice.
 
 ## Getting started
 
@@ -58,7 +87,7 @@ pip install -r requirements.txt   # Streamlit (UI only); everything else is stdl
 python -m app.db.load_seeds       # create data/gridsignals.db + config tables
 python -m app.licensing           # normalize license facts + play candidates
 python -m unittest discover -s tests   # hermetic tests, no network
-streamlit run app/ui/Home.py      # launch the UI: Signal Feed / Review Queue / Account 360
+streamlit run app/ui/Home.py      # launch the UI: Signal Feed / Review Queue / Account 360 / Precision / Admin
 ```
 
 This creates `data/gridsignals.db` (gitignored) and populates the config layer from `seeds/`. All commands are idempotent and safe to re-run. A fresh clone has no event data yet, so the feed reads "low-volume by design" until you build a backfill (below).
@@ -88,12 +117,12 @@ Signals land in the `signals` table with ranked evidence in `signal_evidence`; e
 ## Architecture
 
 ```
-[ingestion process (writer)] --> SQLite (WAL) <-- [Streamlit app (reader + feedback writes)]
+[ingestion process (writer)] --> SQLite (WAL) <-- [Streamlit app (reader + feedback / review / config writes)]
         |                                                |
-        +--> weekly audit job (Claude API judge) --------+--> audit table
+        +--> audit job (Claude API judge) ---------------+--> audit table
 ```
 
-Ingestion runs as a separate scheduled process. The app is read-only for all signal/event/config tables and writes only feedback. One source failing never blocks a run.
+Ingestion runs as a separate scheduled process. The app never writes signal or event tables; its only writes are feedback, review dispositions, human match decisions, and audited Admin config edits (each takes the same single-writer lock as ingestion). One source failing never blocks a run.
 
 ## Roadmap
 
@@ -113,6 +142,7 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | License-play snapshots + gov-cloud gating | Implemented |
 | Streamlit UI (multi-page dark theme; signal feed, review queue, account 360) | Implemented |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | Implemented |
+| Admin / Config (weight + half-life tuning, source enable/disable, staleness, config audit trail) | Implemented (tuning slice; watchlist / alias / license-fact / incident-tier editors next) |
 
 Later stages add incident/combo classification, GDELT-based classification, and a hiring/macro-trend layer.
 
