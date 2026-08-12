@@ -99,6 +99,12 @@ class TestScoring(unittest.TestCase):
             "SELECT score, status FROM signals WHERE signal_id = ?",
             (signal_id,)).fetchone()
 
+    def components(self, signal_id):
+        return self.conn.execute(
+            "SELECT score, score_base, score_decay, score_account_fit, "
+            " score_scope_fit, scored_at FROM signals WHERE signal_id = ?",
+            (signal_id,)).fetchone()
+
     def test_formula_exact_at_age_zero(self):
         """base 4 * decay 1 * (1.1 * 1.0 * 1.0) * scope 1.0 = 4.4"""
         add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
@@ -193,6 +199,34 @@ class TestScoring(unittest.TestCase):
             "SELECT signal_id, score, status FROM signals "
             "ORDER BY signal_id").fetchall()
         self.assertEqual([tuple(r) for r in first], [tuple(r) for r in second])
+
+    def test_score_components_persisted_and_multiply_to_score(self):
+        """R8.1 explainability: the four components are stored, multiply back
+        to the score, and scored_at is the injected clock (UTC ISO-8601).
+        base 5 * (applicability 0.9 replacing richness) * scope 0.45."""
+        add_signal(self.conn, "s1", "t_reg", "regulatory_calendar", "E_IOU",
+                   days_ago(0))
+        rescore(self.conn, now=NOW)
+        c = self.components("s1")
+        self.assertAlmostEqual(c["score_base"], 5.0)
+        self.assertAlmostEqual(c["score_decay"], 1.0)
+        self.assertAlmostEqual(c["score_account_fit"], 1.1 * 0.9 * 1.0)
+        self.assertAlmostEqual(c["score_scope_fit"], 0.45)
+        product = (c["score_base"] * c["score_decay"]
+                   * c["score_account_fit"] * c["score_scope_fit"])
+        self.assertAlmostEqual(product, c["score"])
+        self.assertEqual(c["scored_at"], NOW.isoformat())
+
+    def test_decayed_component_captures_half_life_curve(self):
+        """At one half-life the decay component is exactly 0.5 and still
+        multiplies out to the stored score."""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(90))
+        rescore(self.conn, now=NOW)
+        c = self.components("s1")
+        self.assertAlmostEqual(c["score_decay"], 0.5)
+        self.assertAlmostEqual(
+            c["score_base"] * c["score_decay"] * c["score_account_fit"]
+            * c["score_scope_fit"], c["score"])
 
     def test_dismissed_and_decayed_rows_untouched(self):
         add_signal(self.conn, "gone", "t_lead", "account", "E_IOU",

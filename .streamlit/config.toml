@@ -1,0 +1,15 @@
+# GridSignals UI theme (R8.9): dark base. One injected CSS block in
+# app/ui/theme.py handles everything the theme cannot express here.
+[theme]
+base = "dark"
+primaryColor = "#4da3ff"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,9 @@
+badge_kind,code,label,description
+evidence_quality,IR,Independent record,"Independent official record - a filing, docket, or regulator document that states the fact directly."
+evidence_quality,PC,Primary channel,"Primary reporting channel for this trigger (e.g. a press wire or SEC filing) rather than an independent record."
+evidence_quality,VM,Vendor/market,"Vendor, market, or aggregated-signal source - weakest evidence tier; corroborate before acting."
+source_quality,primary,Primary source,"Fact sourced from a primary source (e.g. the vendor's own licensing page or an official filing)."
+source_quality,non-primary,Non-primary source,"Fact sourced from a non-primary source - shown for context only; price details are never surfaced (R4.3)."
+scope,account,Account,"Signal is tied to a specific watchlist account."
+scope,sector,Sector,"Sector-wide signal with no single account - applies broadly across the subsector."
+scope,regulatory_calendar,Regulatory calendar,"Regulatory compliance-clock signal (rulemaking / directive) affecting the sector."

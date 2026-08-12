@@ -74,6 +74,9 @@ TABLES = [
      # enabled is admin/G2-managed after first insert - never clobber it
      "update_cols": ["name", "access_method", "ttl", "tos_status",
                      "evidence_rank", "rate_limit", "last_policy_review"]},
+    # UI badge legend (R4.3/R8.1): plain upsert, FK-referenced by nothing.
+    {"table": "badge_legend", "csv": "badge_legend.csv",
+     "pk": ["badge_kind", "code"], "int_cols": []},
 ]
 
 
