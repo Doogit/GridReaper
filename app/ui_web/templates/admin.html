@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — Admin{% endblock %}
+{% block content %}
+<div class="gs-admin-head">
+  <h1 class="gs-h1">Admin / Config</h1>
+  <p class="gs-muted-text">Tune scoring and source policies and curate the
+    watchlist. Every edit is recorded to an audit trail; scoring edits
+    re-prioritize live cards, while source and watchlist edits take effect on the
+    next ingestion run. Seed files stay untouched. Your edits persist across
+    <code>python -m app.db.load_seeds</code>; a fresh rebuild-from-seeds restores
+    the pristine defaults.</p>
+  <label class="gs-admin-label">Reason for the next edit (optional)
+    <input type="text" name="reason" value=""
+           title="Attached to the audit-trail entry of whatever you save next."></label>
+</div>
+
+{% include "_admin_weights.html" %}
+{% include "_admin_half_lives.html" %}
+{% include "_admin_sources.html" %}
+{% include "_admin_entities.html" %}
+{% include "_admin_facts.html" %}
+{% include "_admin_audit.html" %}
+{% endblock %}

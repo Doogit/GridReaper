@@ -1,0 +1,77 @@
+{% include "_admin_flash.html" %}
+<section id="admin-facts" class="gs-admin-section">
+  <h2 class="gs-admin-h2">License facts ({{ stale_count }} stale)</h2>
+  <p class="gs-muted-text">License facts whose verified_date is older than
+    {{ stale_window_days }} days (R10.7). Editing a fact below never moves an
+    existing card — cards read frozen play snapshots (R7.6); the edit is picked up
+    by the next snapshot. There is no fact-delete (edit / add / supersede only).</p>
+  {% if not stale_facts %}
+    <div class="gs-empty">0 stale facts — every license fact was verified within
+      the window.</div>
+  {% else %}
+    {% for f in stale_facts %}
+    <div class="gs-admin-item-head"><strong>{{ f.product }}</strong>
+      <span class="gs-meta">{{ f.sku_or_plan }} · {{ f.segment }} · {{ f.age_txt }}</span></div>
+    {% endfor %}
+  {% endif %}
+
+  <details class="gs-admin-add">
+    <summary>Add a license fact</summary>
+    <form class="gs-admin-form" hx-post="/admin/fact/add" hx-target="#admin-facts"
+          hx-swap="outerHTML" hx-include="[name='reason']">
+      <label class="gs-admin-label">Fact ID <input type="text" name="fact_id"></label>
+      <label class="gs-admin-label">Product ID (optional)
+        <input type="text" name="product_id"></label>
+      <label class="gs-admin-label">Segment (optional)
+        <select name="segment"><option value=""></option>
+          {% for seg in fact_segments %}<option value="{{ seg }}">{{ seg }}</option>{% endfor %}
+        </select></label>
+      <label class="gs-admin-label">Price note (optional)
+        <input type="text" name="price_note"></label>
+      <label class="gs-admin-label">Source quality (optional)
+        <select name="source_quality"><option value=""></option>
+          {% for q in fact_source_quality %}<option value="{{ q }}">{{ q }}</option>{% endfor %}
+        </select></label>
+      <label class="gs-admin-label">Source URL (optional)
+        <input type="text" name="source_url"></label>
+      <label class="gs-admin-label">Verified date (optional)
+        <input type="text" name="verified_date" placeholder="2026-08-01"></label>
+      <button type="submit" class="gs-btn">Add fact</button>
+    </form>
+  </details>
+
+  {% if facts %}
+  <label class="gs-admin-label">Select a fact to edit
+    <select name="fact_id" hx-get="/admin/facts" hx-target="#admin-facts"
+            hx-swap="outerHTML">
+      {% for r in facts %}
+      <option value="{{ r.fact_id }}"{% if r.fact_id == selected_fact %} selected{% endif %}>{{ r.fact_id }} · {{ r.product_name or r.product_id or '—' }} · {{ r.origin }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  {% if fact %}
+  <p class="gs-muted-text">cited by {{ fact_citations }} card(s) — edit in place
+    (cards keep their frozen snapshot; the next snapshot picks up the edit).</p>
+  {% for fld in fact_fields %}
+  <form class="gs-admin-row" hx-post="/admin/fact/edit" hx-target="#admin-facts"
+        hx-swap="outerHTML" hx-include="[name='reason']">
+    <input type="hidden" name="fact_id" value="{{ fact.fact_id }}">
+    <input type="hidden" name="field" value="{{ fld.name }}">
+    <label class="gs-admin-label">{{ fld.name }}
+      {% if fld.is_quality %}
+      <select name="value">
+        <option value=""{% if not fld.value %} selected{% endif %}></option>
+        {% for q in fact_source_quality %}
+        <option value="{{ q }}"{% if q == fld.value %} selected{% endif %}>{{ q }}</option>{% endfor %}
+      </select>
+      {% else %}
+      <input type="text" name="value" value="{{ fld.value }}">
+      {% endif %}
+    </label>
+    <button type="submit" class="gs-btn">Save</button>
+  </form>
+  {% endfor %}
+  {% endif %}
+  {% endif %}
+</section>

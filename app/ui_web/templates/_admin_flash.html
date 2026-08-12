@@ -1,0 +1,9 @@
+{# OOB flash for an admin write. Rendered only on a partial (POST/selector)
+   response — the full page carries the canonical #flash from base.html, so
+   including this on the full page would stamp a duplicate id. Swaps into #flash
+   out-of-band so any section POST delivers its warning / error / success message
+   without disturbing the section's own swap; empty clears a lingering message. #}
+{% if partial %}
+<div id="flash" class="gs-flash{% if flash %} gs-flash-{{ flash.level }}{% endif %}"
+     aria-live="polite" hx-swap-oob="true">{% if flash %}{{ flash.text }}{% endif %}</div>
+{% endif %}

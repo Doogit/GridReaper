@@ -1,0 +1,137 @@
+{% include "_admin_flash.html" %}
+<section id="admin-entities" class="gs-admin-section">
+  <h2 class="gs-admin-h2">Watchlist entities</h2>
+  <p class="gs-muted-text">Add, edit, or soft-disable watchlist accounts (R8.7).
+    Disabling an entity stops FUTURE resolution and ingestion for it — existing
+    cards keep their frozen scores. The seed CSV is never touched; Reset restores
+    a seeded entity to its seed values. Operator-added entities have no seed, so
+    they are Removed instead — blocked while anything still references them.</p>
+
+  <details class="gs-admin-add">
+    <summary>Add an entity</summary>
+    <form class="gs-admin-form" hx-post="/admin/entity/add" hx-target="#admin-entities"
+          hx-swap="outerHTML" hx-include="[name='reason']">
+      <label class="gs-admin-label">Entity ID <input type="text" name="entity_id"></label>
+      <label class="gs-admin-label">Name <input type="text" name="name"></label>
+      <label class="gs-admin-label">Subsector (optional)
+        <input type="text" name="subsector"></label>
+      <label class="gs-admin-label">Gov-cloud likelihood (optional)
+        <input type="text" name="gov_cloud_likelihood"></label>
+      <button type="submit" class="gs-btn">Add entity</button>
+    </form>
+  </details>
+
+  {% if not entities %}
+    <div class="gs-empty">No watchlist entities.</div>
+  {% else %}
+  <label class="gs-admin-label">Select an entity to manage
+    <select name="entity_id" hx-get="/admin/entities" hx-target="#admin-entities"
+            hx-swap="outerHTML">
+      {% for e in entities %}
+      <option value="{{ e.entity_id }}"{% if e.entity_id == selected_entity %} selected{% endif %}>{{ e.name }} ({{ e.entity_id }}) · {{ e.origin }}/{{ 'active' if e.active else 'disabled' }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  {% if entity %}
+  <div class="gs-admin-item">
+    <div class="gs-admin-item-head"><strong>{{ entity.name }}</strong>
+      <span class="gs-meta">(<code>{{ entity.entity_id }}</code>) · origin
+        {{ entity.origin }} · {{ entity_active_label }} · {{ entity.signal_count }}
+        signal(s)</span></div>
+
+    <form class="gs-admin-row" hx-post="/admin/entity/active" hx-target="#admin-entities"
+          hx-swap="outerHTML" hx-include="[name='reason']">
+      <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+      <label class="gs-admin-toggle">
+        <input type="checkbox" name="active" value="true"
+               {% if entity.active %}checked{% endif %}> Active</label>
+      <button type="submit" class="gs-btn">Save</button>
+    </form>
+
+    {% for f in [('subsector', 'Subsector'), ('gov_cloud_likelihood', 'Gov-cloud likelihood')] %}
+    <form class="gs-admin-row" hx-post="/admin/entity/field" hx-target="#admin-entities"
+          hx-swap="outerHTML" hx-include="[name='reason']">
+      <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+      <input type="hidden" name="field" value="{{ f[0] }}">
+      <label class="gs-admin-label">{{ f[1] }}
+        <input type="text" name="value" value="{{ entity[f[0]] or '' }}"></label>
+      <button type="submit" class="gs-btn">Save</button>
+    </form>
+    {% endfor %}
+
+    <div class="gs-admin-terms">
+      <span class="gs-meta">Aliases (positive match terms) and collision terms
+        (negative — never auto-match alone)</span>
+      {% for a in aliases %}
+      <div class="gs-admin-row">
+        <span>alias: <strong>{{ a.alias }}</strong>
+          <span class="gs-meta">({{ a.source }})</span></span>
+        {% if a.operator_editable %}
+        <form hx-post="/admin/entity/alias/remove" hx-target="#admin-entities"
+              hx-swap="outerHTML" hx-include="[name='reason']">
+          <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+          <input type="hidden" name="alias" value="{{ a.alias }}">
+          <button type="submit" class="gs-btn">Remove</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% for t in collision_terms %}
+      <div class="gs-admin-row">
+        <span>collision: <strong>{{ t.term }}</strong>
+          <span class="gs-meta">({{ t.reason }})</span></span>
+        {% if t.operator_editable %}
+        <form hx-post="/admin/entity/term/remove" hx-target="#admin-entities"
+              hx-swap="outerHTML" hx-include="[name='reason']">
+          <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+          <input type="hidden" name="term" value="{{ t.term }}">
+          <button type="submit" class="gs-btn">Remove</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+      <form class="gs-admin-row" hx-post="/admin/entity/alias/add" hx-target="#admin-entities"
+            hx-swap="outerHTML" hx-include="[name='reason']">
+        <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+        <label class="gs-admin-label">Add an alias <input type="text" name="alias"></label>
+        <button type="submit" class="gs-btn">Add</button>
+      </form>
+      <form class="gs-admin-row" hx-post="/admin/entity/term/add" hx-target="#admin-entities"
+            hx-swap="outerHTML" hx-include="[name='reason']">
+        <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+        <label class="gs-admin-label">Add a collision term <input type="text" name="term"></label>
+        <button type="submit" class="gs-btn">Add</button>
+      </form>
+    </div>
+
+    {% if entity.origin == 'seed' %}
+    <form class="gs-admin-row" hx-post="/admin/entity/reset" hx-target="#admin-entities"
+          hx-swap="outerHTML" hx-include="[name='reason']">
+      <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+      <label class="gs-admin-toggle">
+        <input type="checkbox" name="confirm" value="true"> Confirm reset to seed values</label>
+      <button type="submit" class="gs-btn gs-btn-danger">Reset to seed</button>
+    </form>
+    {% else %}
+      {% if entity_ref_total %}
+      <p class="gs-muted-text">Operator-added entity. Remove is blocked —
+        {{ entity_ref_total }} row(s) reference it
+        ({% for t, n in entity_ref_breakdown.items() %}{{ t }}: {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}).
+        Disable it instead.</p>
+      {% else %}
+      <p class="gs-muted-text">Operator-added entity. Nothing references it, so
+        Remove will delete it and any operator aliases / collision terms.</p>
+      {% endif %}
+      <form class="gs-admin-row" hx-post="/admin/entity/remove" hx-target="#admin-entities"
+            hx-swap="outerHTML" hx-include="[name='reason']">
+        <input type="hidden" name="entity_id" value="{{ entity.entity_id }}">
+        <label class="gs-admin-toggle">
+          <input type="checkbox" name="confirm" value="true"> Confirm remove</label>
+        <button type="submit" class="gs-btn gs-btn-danger">Remove entity</button>
+      </form>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endif %}
+</section>
