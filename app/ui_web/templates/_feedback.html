@@ -1,0 +1,9 @@
+{# Default feedback controls for a card. 'Useful' records immediately; 'Not
+   useful' reveals the reason form (R9.1). Both swap into #gs-fb-<signal_id>. #}
+<button type="button" class="gs-btn"
+        hx-post="/feedback"
+        hx-vals='{"signal_id": "{{ signal_id }}", "verdict": "useful"}'
+        hx-target="#gs-fb-{{ signal_id }}" hx-swap="innerHTML">Useful</button>
+<button type="button" class="gs-btn"
+        hx-get="/feedback/reason?signal_id={{ signal_id }}"
+        hx-target="#gs-fb-{{ signal_id }}" hx-swap="innerHTML">Not useful</button>

@@ -76,3 +76,86 @@
 .gs-h1 { margin: 0 0 6px; font-size: 1.4rem; font-weight: 600; }
 .gs-lead { margin: 0 0 10px; color: var(--gs-text); }
 .gs-muted-text { margin: 0; color: var(--gs-muted); font-size: 0.85rem; }
+
+/* ---- signal card (R8.1) — ported verbatim from app/ui/theme.py ---- */
+.gs-feed-head { margin-bottom: 10px; }
+.gs-feed-head .gs-h1 { margin-bottom: 2px; }
+.gs-status { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px;
+  color: var(--gs-muted); font-size: 0.85rem; }
+.gs-status select { background: var(--gs-chip-bg); color: var(--gs-text);
+  border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 4px 8px; }
+
+.gs-card {
+  position: relative;
+  background: var(--gs-card);
+  border: 1px solid var(--gs-card-border);
+  border-radius: 10px;
+  padding: 14px 16px 12px 20px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+/* severity strip (score band) down the left edge */
+.gs-card::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 5px;
+  background: var(--gs-mod);
+}
+.gs-card.sev-critical::before { background: var(--gs-crit); }
+.gs-card.sev-high::before     { background: var(--gs-high); }
+.gs-card.sev-moderate::before { background: var(--gs-mod); }
+.gs-card.sev-low::before      { background: var(--gs-low); }
+.gs-card.status-superseded, .gs-card.status-decayed { opacity: 0.72; }
+
+.gs-headline { font-size: 1.02rem; font-weight: 600; color: var(--gs-text);
+  margin: 0 0 4px 0; line-height: 1.35; }
+.gs-meta { font-size: 0.8rem; color: var(--gs-muted); margin-bottom: 8px; }
+
+/* decay bar: current score vs the signal's fresh base_strength x fits */
+.gs-decay-wrap { height: 6px; background: var(--gs-chip-bg); border-radius: 3px;
+  overflow: hidden; margin: 8px 0; }
+.gs-decay-fill { height: 100%; background: var(--gs-accent); }
+
+.gs-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.gs-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px;
+  background: var(--gs-chip-bg); color: var(--gs-text); border: 1px solid var(--gs-card-border); }
+.gs-badge.nonprimary { background: #3d2b0f; border-color: var(--gs-warn-border);
+  color: #f0c674; }               /* R4.3 distinct non-primary badge */
+.gs-badge.scope { background: #12233b; border-color: #274b7a; color: #9cc6ff; }
+.gs-badge.coverage-dark { background: #2d2233; border-color: #6a4b7a; color: #d6b3f0; }
+
+.gs-chip { display: inline-block; font-size: 0.74rem; padding: 2px 8px;
+  border-radius: 6px; background: var(--gs-chip-bg); color: var(--gs-text); margin: 0 4px 4px 0; }
+
+.gs-gov-caution { background: var(--gs-warn-bg); border: 1px solid var(--gs-warn-border);
+  color: #f0c674; font-size: 0.8rem; padding: 6px 10px; border-radius: 6px; margin: 8px 0; }
+
+.gs-evidence { font-size: 0.82rem; color: var(--gs-text); border-left: 2px solid var(--gs-card-border);
+  padding-left: 10px; margin: 6px 0; }
+.gs-locator { color: var(--gs-muted); font-size: 0.74rem; }
+.gs-evidence-exp { margin: 8px 0; }
+.gs-evidence-exp > summary { cursor: pointer; color: var(--gs-muted); font-size: 0.82rem; }
+.gs-source-link { color: var(--gs-accent); font-size: 0.8rem; text-decoration: none; }
+
+.gs-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px 0;
+  color: var(--gs-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.gs-divider::before, .gs-divider::after { content: ""; flex: 1; height: 1px; background: var(--gs-card-border); }
+
+.gs-empty { background: var(--gs-card); border: 1px dashed var(--gs-card-border);
+  border-radius: 10px; padding: 20px; color: var(--gs-muted); text-align: center; }
+
+/* ---- feedback controls + load-more (HTMX) ---- */
+.gs-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.gs-btn { background: var(--gs-chip-bg); color: var(--gs-text); border: 1px solid var(--gs-card-border);
+  border-radius: 6px; padding: 4px 12px; font-size: 0.8rem; cursor: pointer; }
+.gs-btn:hover { border-color: var(--gs-accent); color: var(--gs-accent); }
+.gs-fb-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.gs-fb-field { color: var(--gs-muted); font-size: 0.8rem; display: inline-flex; gap: 6px; align-items: center; }
+.gs-fb-form select, .gs-fb-note { background: var(--gs-chip-bg); color: var(--gs-text);
+  border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 4px 8px; font-size: 0.8rem; }
+.gs-fb-done { color: var(--gs-low); font-size: 0.82rem; }
+.gs-fb-error { color: var(--gs-crit); font-size: 0.8rem; margin-bottom: 6px; }
+.gs-loadmore { display: block; margin: 4px 0 18px; background: transparent; color: var(--gs-accent);
+  border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 6px 14px; font-size: 0.82rem; cursor: pointer; }
+.gs-loadmore:hover { border-color: var(--gs-accent); }

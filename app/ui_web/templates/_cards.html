@@ -1,0 +1,9 @@
+{# A run of cards followed by an optional keyset Load more button. Used both as
+   a group's initial body and as the /feed/more response, so the button swaps
+   itself (outerHTML) with the next run + a fresh button — or nothing at the end. #}
+{% for c in cards %}{% include "_card.html" %}{% endfor %}
+{% if next %}
+<button class="gs-loadmore"
+        hx-get="/feed/more?scope={{ next.scope }}&status={{ next.status }}&after_date={{ next.after_date }}&after_id={{ next.after_id }}"
+        hx-swap="outerHTML">Load more</button>
+{% endif %}

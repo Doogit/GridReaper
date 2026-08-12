@@ -1,0 +1,5 @@
+<div class="gs-badges">
+  {% for b in c.badges %}
+  <span class="{{ b.cls }}"{% if b.title %} title="{{ b.title }}"{% endif %}>{{ b.text }}</span>
+  {% endfor %}
+</div>

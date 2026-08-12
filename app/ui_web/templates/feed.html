@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — Signal Feed{% endblock %}
+{% block content %}
+<div class="gs-feed-head">
+  <h1 class="gs-h1">GridSignals</h1>
+  <p class="gs-muted-text">Signal Feed — external events scored into Microsoft security license plays.</p>
+  <label class="gs-status">Status
+    <select name="status" hx-get="/feed" hx-target="#gs-feed-body" hx-swap="innerHTML"
+            title="Feed defaults to active; widen to see decayed / superseded / dismissed signals.">
+      {% for opt in status_options %}
+      <option value="{{ opt }}"{% if opt == status %} selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+  </label>
+</div>
+
+<div id="gs-feed-body">
+  {% include "_feed_body.html" %}
+</div>
+{% endblock %}

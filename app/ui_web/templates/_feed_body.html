@@ -1,0 +1,13 @@
+{# The scope-separated feed body (R7.2): account cards, divider, sector cards.
+   Both sections are labeled so an empty account section reads as deliberately
+   empty (R6.6), not broken. Only the account group shows an explicit empty
+   panel — a quiet sector reads fine under its labeled divider. #}
+{% with label = "Account signals" %}{% include "_divider.html" %}{% endwith %}
+{% if account_cards %}
+  {% with cards = account_cards, next = account_next %}{% include "_cards.html" %}{% endwith %}
+{% else %}
+  {% with message = "No account-scoped signals in this window — low-volume by design." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+
+{% with label = "Sector & regulatory" %}{% include "_divider.html" %}{% endwith %}
+{% with cards = sector_cards, next = sector_next %}{% include "_cards.html" %}{% endwith %}

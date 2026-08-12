@@ -30,19 +30,9 @@ class ScaffoldAppTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.text, "ok")
 
-    def test_index_renders_through_base_layout(self):
-        resp = self.client.get("/")
-        self.assertEqual(resp.status_code, 200)
-        body = resp.text
-        # base.html chrome
-        self.assertIn("gs-topbar", body)
-        self.assertIn("GridSignals", body)
-        self.assertIn('href="/"', body)
-        # index.html content block rendered inside the base
-        self.assertIn("ui_web scaffold online", body)
-        # static design assets wired into <head>
-        self.assertIn("app.css", body)
-        self.assertIn("htmx.min.js", body)
+    # The base layout rendered through "/" is now the DB-backed Home feed; that
+    # (and its base.html chrome) is covered by tests/test_ui_web_feed.py, which
+    # seeds a hermetic DB. These scaffold tests stay infra-only (no DB).
 
     def test_app_css_served_with_tokens(self):
         resp = self.client.get("/static/app.css")
