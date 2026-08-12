@@ -282,6 +282,98 @@ def stale_facts(conn, days=180, now=None):
     return stale
 
 
+# -- feedback / precision reads (R8.6, R9.3) ---------------------------------
+#
+# These feed app.audit.precision, whose PURE functions read rows with row.get()
+# — so every helper here returns plain dicts (sqlite3.Row has no .get()). The
+# dimension keys precision slices by (trigger_id, source_id, signal_scope,
+# incident_evidence_level, entity_id) are resolved once, here, by the joins:
+#   * source_id   comes from the signal's raw_event  (signals.raw_event_id ->
+#                 raw_events.source_id); NULL for sector/regulatory signals with
+#                 no raw_event.
+#   * trigger_name comes from triggers.name (signals.trigger_id -> triggers).
+# entity_id is carried through verbatim (None for sector-scope signals) so
+# precision's account-vs-sector partition (R9.4) works off the real value.
+
+def precision_feedback_rows(conn):
+    """Feedback rows joined to their signal's dimensions (R8.6, R9.3).
+
+    One dict per feedback row, carrying the keys precision.py consumes:
+    ``signal_id, verdict, reason_code, ts, trigger_id, trigger_name, source_id,
+    signal_scope, incident_evidence_level, entity_id``. source_id resolves via
+    ``signals.raw_event_id -> raw_events.source_id`` (LEFT JOIN: None when the
+    signal has no raw event); trigger_name via ``triggers.name``.
+    """
+    rows = conn.execute(
+        "SELECT f.signal_id, f.verdict, f.reason_code, f.ts, "
+        " s.trigger_id, t.name AS trigger_name, re.source_id AS source_id, "
+        " s.signal_scope, s.incident_evidence_level, s.entity_id "
+        "FROM feedback f "
+        "JOIN signals s ON s.signal_id = f.signal_id "
+        "LEFT JOIN triggers t ON t.trigger_id = s.trigger_id "
+        "LEFT JOIN raw_events re ON re.raw_event_id = s.raw_event_id "
+        "ORDER BY f.ts, f.rowid").fetchall()
+    return [dict(r) for r in rows]
+
+
+def precision_audit_rows(conn):
+    """Audit verdicts joined to their signal's dimensions (R8.6, R9.3, R9.4).
+
+    One dict per audit verdict, carrying: ``signal_id, check_type, result,
+    model_id, prompt_version, ts, trigger_id, trigger_name, source_id,
+    signal_scope, incident_evidence_level, entity_id``. Same joins as
+    ``precision_feedback_rows`` resolve source_id / trigger_name / entity_id.
+    """
+    rows = conn.execute(
+        "SELECT a.signal_id, a.check_type, a.result, a.model_id, "
+        " a.prompt_version, a.ts, s.trigger_id, t.name AS trigger_name, "
+        " re.source_id AS source_id, s.signal_scope, s.incident_evidence_level, "
+        " s.entity_id "
+        "FROM audit a "
+        "JOIN signals s ON s.signal_id = a.signal_id "
+        "LEFT JOIN triggers t ON t.trigger_id = s.trigger_id "
+        "LEFT JOIN raw_events re ON re.raw_event_id = s.raw_event_id "
+        "ORDER BY a.ts, a.rowid").fetchall()
+    return [dict(r) for r in rows]
+
+
+def precision_halflife_rows(conn):
+    """One row per signal for the half-life effectiveness view (R8.6, R9.3).
+
+    Carries ``signal_id, trigger_id, trigger_name, decay_half_life_days, score,
+    score_decay, status, event_date, verdict``. ``verdict`` comes from a LEFT
+    JOIN to feedback and is None when the signal is unrated. A signal may have
+    several feedback rows; we pick the LATEST by ts (ties broken by feedback
+    rowid) via a correlated subquery, so a signal contributes exactly one row
+    and half_life_effectiveness's rated/useful counts are per-signal, not
+    per-feedback-row.
+    """
+    rows = conn.execute(
+        "SELECT s.signal_id, s.trigger_id, t.name AS trigger_name, "
+        " t.decay_half_life_days, s.score, s.score_decay, s.status, "
+        " s.event_date, "
+        " (SELECT f.verdict FROM feedback f WHERE f.signal_id = s.signal_id "
+        "   ORDER BY f.ts DESC, f.rowid DESC LIMIT 1) AS verdict "
+        "FROM signals s "
+        "LEFT JOIN triggers t ON t.trigger_id = s.trigger_id "
+        "ORDER BY s.trigger_id, s.signal_id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def audit_run_rows(conn):
+    """audit_runs rows newest-first for the run-history panel (R8.6, R9.12).
+
+    Surfaces the R9.12 skip/budget transparency (status, verdicts_written,
+    budget_spent, skipped_reason, error_state) so an operator sees why a run
+    wrote nothing rather than a silent gap. Returns plain dicts."""
+    rows = conn.execute(
+        "SELECT run_id, started_at, finished_at, model_id, prompt_version, "
+        " parser_version, signals_sampled, verdicts_written, budget_spent, "
+        " status, error_state, skipped_reason "
+        "FROM audit_runs ORDER BY started_at DESC, run_id DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
 # -- account 360 -------------------------------------------------------------
 
 def account_header(conn, entity_id):

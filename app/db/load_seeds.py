@@ -77,6 +77,11 @@ TABLES = [
     # UI badge legend (R4.3/R8.1): plain upsert, FK-referenced by nothing.
     {"table": "badge_legend", "csv": "badge_legend.csv",
      "pk": ["badge_kind", "code"], "int_cols": []},
+    # Audit golden set (R9.10): generated-for-review fixtures, plain upsert on
+    # golden_id. No FKs, no int cols, no runtime-managed columns. JSON lives in
+    # the signal_fixture / expected_results TEXT columns and loads verbatim.
+    {"table": "audit_goldens", "csv": "audit_goldens.csv",
+     "pk": ["golden_id"], "int_cols": []},
 ]
 
 
