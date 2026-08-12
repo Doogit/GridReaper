@@ -17,6 +17,7 @@ import math
 import sqlite3
 from datetime import date, datetime, timezone
 
+from app.classify import regulatory as regulatory_classifier
 from app.db.connection import get_connection
 from app.scoring import rescore
 
@@ -988,3 +989,156 @@ def entity_alias_rows(conn, entity_id):
         "SELECT term, reason FROM entity_collision_terms "
         "WHERE entity_id = ? ORDER BY term", (entity_id,)).fetchall()]
     return {"aliases": aliases, "collision_terms": terms}
+
+
+# -- regulatory monitor (R8.4, R7.2, D8) -------------------------------------
+#
+# Raw regulatory records that the current regulatory classifier evaluated and
+# did NOT graduate to the signal feed. "Regulatory" is the same source set the
+# classifier reads; derive it from app.classify.regulatory.SOURCES so the UI
+# cannot silently drift when that classifier adds or removes a source.
+# Non-graduated = classified_events says this parser emitted zero signals, and
+# no signals row references the raw_event. The classified_events gate matters:
+# an unprocessed backlog item may still become a scored signal, so it must not
+# be displayed as "chatter" yet.
+REGULATORY_SOURCE_IDS = tuple(regulatory_classifier.SOURCES)
+_REGULATORY_CLASSIFIER_ID = regulatory_classifier.CLASSIFIER_ID
+_REGULATORY_PARSER_VERSION = regulatory_classifier.PARSER_VERSION
+
+# Federal Register document type -> display label; mirrors the label map in
+# app.classify.regulatory._headline so the two surfaces read identically.
+_FR_DOC_TYPE_LABELS = {
+    "Rule": "final rule", "Proposed Rule": "proposed rule", "Notice": "notice"}
+# nerc_pages snapshots have no document type (they are page-diff records).
+_NERC_SNAPSHOT_LABEL = "page snapshot"
+_MAX_REGULATORY_HEADLINE_CHARS = 140
+
+
+def _regulatory_agency(payload, source_id, source_name):
+    """Agency string, taken verbatim from the payload where present (never
+    inferred). nerc_pages records are NERC; a Federal Register record uses its
+    own agency name, falling back to the source policy name."""
+    if source_id == "nerc_pages":
+        return "NERC"
+    for agency in payload.get("agencies") or []:
+        if isinstance(agency, dict):
+            name = (agency.get("name") or agency.get("raw_name") or "").strip()
+            if name:
+                return name
+    for name in payload.get("agency_names") or []:
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return source_name or source_id
+
+
+def _page_label(page_url):
+    """A human page label for a nerc_pages record: the URL's last non-empty path
+    segment (e.g. 'CIPStandards.aspx'), falling back to the bare page_url when it
+    has no path segment. Derived only from the URL's own text - nothing invented."""
+    path = page_url.split("?", 1)[0].split("#", 1)[0]
+    for segment in reversed(path.split("/")):
+        if segment.strip():
+            return segment.strip()
+    return page_url
+
+
+def _truncate_title(title, budget):
+    """Trim a quoted-headline title to ``budget`` characters, breaking on a word
+    boundary when trivial and appending an ellipsis. The caller composes the
+    surrounding quotes AFTER this, so the closing quote always balances."""
+    if budget < 1 or len(title) <= budget:
+        return title
+    cut = title[:budget - 1].rstrip()
+    space = cut.rfind(" ")
+    if space >= budget // 2:            # prefer a word boundary if not too early
+        cut = cut[:space].rstrip()
+    return cut + "…"
+
+
+def _regulatory_chatter_row(row):
+    """Shape one non-graduated regulatory raw_event into a display dict, all
+    fields derived VERBATIM from payload keys - no action verb is ever inferred
+    from the scope or date (D8). Non-JSON / malformed payloads fall back to a
+    safe snippet and never raise."""
+    source_id = row["source_id"]
+    source_name = row["source_name"]
+    try:
+        payload = json.loads(row["payload"] or "")
+    except (ValueError, TypeError):
+        payload = None
+    if not isinstance(payload, dict):
+        payload = {}
+
+    agency = _regulatory_agency(payload, source_id, source_name)
+    if source_id == "nerc_pages":
+        doc_type_label = _NERC_SNAPSHOT_LABEL
+        # nerc_pages carries no title; use a human page label (the page_url's
+        # last path segment) UNQUOTED - a raw URL wrapped in quotes reads as a
+        # mis-parsed title, and the full URL stays in the record's Source link.
+        page_url = (payload.get("page_url") or row["url"] or "").strip()
+        title = _page_label(page_url)
+        # Unquoted label; the full URL is still shown via the Source link.
+        headline = f"{agency} {doc_type_label}: {title}" if title \
+            else f"{agency} {doc_type_label}"
+    else:
+        doc_type_label = _FR_DOC_TYPE_LABELS.get(
+            payload.get("type"), (payload.get("type") or "document"))
+        title = (payload.get("title") or "").strip()
+        if not title:
+            # Last resort: a safe snippet of the raw payload, never empty.
+            title = _payload_snippet(row["payload"]) or "(untitled record)"
+        # Truncate the TITLE to a budget FIRST, then compose the quoted headline
+        # around it, so the closing quote is always appended after truncation and
+        # the quote pair always balances (never a dangling opening quote).
+        budget = _MAX_REGULATORY_HEADLINE_CHARS - len(f'{agency} {doc_type_label}: ""')
+        headline = f'{agency} {doc_type_label}: "{_truncate_title(title, budget)}"'
+
+    # Descriptive "does it carry a compliance clock" flag - NOT a graduation
+    # claim (a chatter record can carry an anchor and still not have graduated).
+    has_anchor = bool(payload.get("effective_on")
+                      or payload.get("comments_close_on"))
+
+    return {
+        "raw_event_id": row["raw_event_id"],
+        "source_id": source_id,
+        "source_name": source_name,
+        "agency": agency,
+        "doc_type_label": doc_type_label,
+        "title": title,
+        "headline": headline,
+        "has_anchor": has_anchor,
+        "event_date": row["event_date"],
+        "url": row["url"],
+        "docket_ids": payload.get("docket_ids") or [],
+        "comments_close_on": payload.get("comments_close_on") or None,
+        "effective_on": payload.get("effective_on") or None,
+    }
+
+
+def regulatory_monitor(conn, limit=100):
+    """Non-graduated regulatory chatter, newest first (R8.4). Regulatory
+    raw_events (REGULATORY_SOURCE_IDS) that the current regulatory parser has
+    evaluated with zero emitted signals and with NO signals row referencing
+    them - i.e. records that did NOT graduate to the signal feed. Read-only:
+    this NEVER writes and NEVER emits a score/confidence/entity_name/
+    signal_scope/signal_id. Returns up to ``limit`` display dicts."""
+    placeholders = _placeholders(len(REGULATORY_SOURCE_IDS))
+    rows = conn.execute(
+        "SELECT re.raw_event_id, re.source_id, re.event_date, re.payload, "
+        " re.url, re.first_seen_at, sp.name AS source_name "
+        "FROM raw_events re "
+        "JOIN source_policies sp ON sp.source_id = re.source_id "
+        f"WHERE re.source_id IN ({placeholders}) "
+        " AND EXISTS (SELECT 1 FROM classified_events ce "
+        "             WHERE ce.raw_event_id = re.raw_event_id "
+        "               AND ce.classifier_id = ? "
+        "               AND ce.parser_version = ? "
+        "               AND ce.signals_emitted = 0) "
+        " AND NOT EXISTS (SELECT 1 FROM signals s "
+        "                 WHERE s.raw_event_id = re.raw_event_id) "
+        "ORDER BY re.event_date DESC, re.raw_event_id DESC "
+        "LIMIT ?",
+        list(REGULATORY_SOURCE_IDS) + [
+            _REGULATORY_CLASSIFIER_ID, _REGULATORY_PARSER_VERSION, limit,
+        ]).fetchall()
+    return [_regulatory_chatter_row(r) for r in rows]

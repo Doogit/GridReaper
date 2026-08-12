@@ -46,6 +46,26 @@ CSS = """
 .gs-card.sev-low::before      { background: var(--gs-low); }
 .gs-card.status-superseded, .gs-card.status-decayed { opacity: 0.72; }
 
+/* gs-record: same card layout as gs-card but WITHOUT the severity score strip
+   - unscored regulatory chatter must never read as a moderate-severity signal
+   card (R8.4/D8). The left strip is a neutral muted gray, not a score band. */
+.gs-record {
+  position: relative;
+  background: var(--gs-card);
+  border: 1px solid var(--gs-card-border);
+  border-radius: 10px;
+  padding: 14px 16px 12px 20px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.gs-record::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 5px;
+  background: var(--gs-muted);
+}
+
 .gs-headline { font-size: 1.02rem; font-weight: 600; color: var(--gs-text);
   margin: 0 0 4px 0; line-height: 1.35; }
 .gs-meta { font-size: 0.8rem; color: var(--gs-muted); margin-bottom: 8px; }
