@@ -1,0 +1,562 @@
+"""Precision computation for the Feedback / Precision view (R9.3, R9.4, R9.5).
+
+PURE functions only. No database, no network, no Streamlit. Every function
+takes lists of plain dict rows (fetched and shaped by the UI layer) and returns
+plain dicts / lists. Any date/age reasoning accepts an injectable ``now`` so
+callers and tests stay deterministic; all timestamps are UTC ISO-8601 (R10.2).
+
+TRUST INVARIANT (returning-maintainer rule): a rate is *never* returned as a
+bare percentage. Every computed rate ships alongside its ``n`` (denominator),
+and a rate over an empty denominator is ``None`` — not ``0.0``, not a fake
+gauge. Read a ``None`` rate as "no evidence yet", never as "0% good".
+
+What each metric means:
+
+- R9.3 precision per trigger / source / signal_scope: the human useful-rate
+  (positives over rated cards) sliced by dimension, plus the automated judge
+  accuracy (pass over pass+fail on the two objective checks entity_match +
+  evidence_support) sliced the same way.
+- R9.4 Gate G1 (Stage 1 -> 2): on BOTH primary MVP account-level trigger types,
+  human useful-rate >= 60% AND auto-accuracy >= 80%, over >= 30 days AND >= 20
+  rated account-specific cards. Sector-wide regulatory-calendar cards and
+  unconfirmed early-warning incident cards are computed SEPARATELY (returned
+  under ``reported_separately``) so they can never inflate or hide weak
+  account-level precision.
+- R9.5 Gate G2 (per source): < 40% precision over the window triggers a
+  *recommendation* to demote a source to store-only / disable it, but only
+  after checking sample size and reason-code distribution. This module is
+  REPORT-ONLY: it recommends, it never enforces.
+
+Reason codes (R9.2) are the ten in ``app.ui.data.REASON_CODES``; verdicts
+(R9.1) are the three in ``app.ui.data.VERDICTS``. "useful" OR "converted" is a
+positive; "not_useful" is a negative. The objective judge checks and results
+mirror ``app.audit.schema`` (CHECKS / RESULTS); only entity_match +
+evidence_support feed auto-accuracy, and only "pass"/"fail" are scored
+("unclear"/"not_applicable" are excluded from the denominator).
+"""
+from datetime import datetime, timezone
+
+# Verdicts counted as a human positive vs negative (R9.1).
+POSITIVE_VERDICTS = frozenset({"useful", "converted"})
+NEGATIVE_VERDICTS = frozenset({"not_useful"})
+
+# Only these two objective checks feed auto-accuracy (R9.4); only these two
+# results are scored ("unclear"/"not_applicable" excluded from the denominator).
+AUTO_ACCURACY_CHECKS = frozenset({"entity_match", "evidence_support"})
+SCORED_RESULTS = frozenset({"pass", "fail"})
+CORRECT_RESULT = "pass"
+
+# Signal scopes that count as an "account-specific" card for G1. Everything
+# else (sector / subsector / regulatory_calendar, and unconfirmed early-warning
+# incident cards) is reported separately and never counts toward the account
+# trigger's precision. Mirrors app.ui.data.SCOPE_GROUPS["account"].
+ACCOUNT_SCOPES = frozenset({"account", "parent"})
+
+# The two primary MVP account-level trigger types the G1 gate is measured on.
+DEFAULT_PRIMARY_TRIGGERS = ("leadership_change", "nerc_enforcement")
+
+# The dimensions R9.3 slices precision by, and the row key that identifies each.
+DIMENSIONS = ("trigger", "source", "signal_scope", "incident_evidence_level")
+DIMENSION_KEYS = {
+    "trigger": "trigger_id",
+    "source": "source_id",
+    "signal_scope": "signal_scope",
+    "incident_evidence_level": "incident_evidence_level",
+}
+
+# G1 thresholds (R9.4): fixed by the PRD, exposed as parameters so tests pin
+# them and the caller can override for what-if analysis.
+G1_USEFUL_RATE_MIN = 0.60
+G1_AUTO_ACCURACY_MIN = 0.80
+G1_MIN_DAYS = 30
+G1_MIN_RATED = 20
+
+# G2 thresholds (R9.5). ``G2_THRESHOLD`` is the PRD's 40% precision floor.
+# ``G2_MIN_N`` is our sample-size floor for *recommending* a demotion: below
+# it, precision is too noisy to act on, so demote_recommended stays False with
+# a "sample too small" note. We reuse the G1 rated-card floor (20) — the same
+# "one month of real feedback" bar the PRD sets for account precision — because
+# the PRD gives no separate number and demoting a source is a real action that
+# deserves at least that much evidence.
+G2_THRESHOLD = 0.40
+G2_MIN_N = 20
+
+
+def _dimension_key(dimension):
+    """Map a public dimension name to the row key that carries its value."""
+    try:
+        return DIMENSION_KEYS[dimension]
+    except KeyError:
+        raise ValueError(
+            f"unknown dimension {dimension!r}; expected one of {DIMENSIONS}")
+
+
+def _rate(numerator, denominator):
+    """Guarded rate: ``None`` over an empty denominator, else the float ratio."""
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _parse_ts(value):
+    """Parse a UTC ISO-8601 timestamp/date into an aware datetime, or None."""
+    if not value:
+        return None
+    text = str(value)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _now(now):
+    """Normalize an injected ``now`` (datetime or ISO string) to aware UTC."""
+    if now is None:
+        return datetime.now(timezone.utc)
+    if isinstance(now, datetime):
+        return now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    parsed = _parse_ts(now)
+    return parsed if parsed is not None else datetime.now(timezone.utc)
+
+
+def _is_account_scope(row):
+    """True when a row is an account-specific card (entity present + scope)."""
+    scope = row.get("signal_scope")
+    if scope not in ACCOUNT_SCOPES:
+        return False
+    return row.get("entity_id") is not None
+
+
+def useful_rate_overall(feedback_rows):
+    """Human useful-rate over all rated feedback rows.
+
+    Returns ``{"useful": int, "total": int, "rate": float|None}`` where a
+    positive is verdict in {useful, converted}, total counts every row with a
+    positive-or-negative verdict, and ``rate`` is ``None`` when total == 0.
+    """
+    useful = total = 0
+    for row in feedback_rows:
+        verdict = row.get("verdict")
+        if verdict in POSITIVE_VERDICTS:
+            useful += 1
+            total += 1
+        elif verdict in NEGATIVE_VERDICTS:
+            total += 1
+    return {"useful": useful, "total": total, "rate": _rate(useful, total)}
+
+
+def useful_rate(feedback_rows, dimension):
+    """Human useful-rate sliced by ``dimension`` (R9.3).
+
+    Returns ``{value: {"useful": int, "total": int, "rate": float|None}}`` with
+    one entry per distinct dimension value, plus an ``"overall"`` entry. A
+    positive is verdict in {useful, converted}; ``rate`` is ``None`` when that
+    value has no rated rows. Output is key-sorted for determinism.
+    """
+    key = _dimension_key(dimension)
+    buckets = {}
+    for row in feedback_rows:
+        verdict = row.get("verdict")
+        if verdict not in POSITIVE_VERDICTS and verdict not in NEGATIVE_VERDICTS:
+            continue
+        value = row.get(key)
+        bucket = buckets.setdefault(value, {"useful": 0, "total": 0})
+        bucket["total"] += 1
+        if verdict in POSITIVE_VERDICTS:
+            bucket["useful"] += 1
+    out = {}
+    for value in sorted(buckets, key=lambda v: (v is None, v)):
+        b = buckets[value]
+        out[value] = {
+            "useful": b["useful"],
+            "total": b["total"],
+            "rate": _rate(b["useful"], b["total"]),
+        }
+    out["overall"] = useful_rate_overall(feedback_rows)
+    return out
+
+
+def auto_accuracy(audit_rows, dimension):
+    """Automated judge accuracy sliced by ``dimension`` (R9.3, R9.4).
+
+    Uses ONLY entity_match + evidence_support checks; correct = result "pass",
+    scored = pass + fail ("unclear"/"not_applicable" excluded). Returns
+    ``{value: {"correct": int, "scored": int, "accuracy": float|None}}`` with an
+    ``"overall"`` entry; ``accuracy`` is ``None`` when scored == 0.
+    """
+    key = _dimension_key(dimension)
+    buckets = {}
+    overall = {"correct": 0, "scored": 0}
+    for row in audit_rows:
+        if row.get("check_type") not in AUTO_ACCURACY_CHECKS:
+            continue
+        result = row.get("result")
+        if result not in SCORED_RESULTS:
+            continue
+        value = row.get(key)
+        bucket = buckets.setdefault(value, {"correct": 0, "scored": 0})
+        bucket["scored"] += 1
+        overall["scored"] += 1
+        if result == CORRECT_RESULT:
+            bucket["correct"] += 1
+            overall["correct"] += 1
+    out = {}
+    for value in sorted(buckets, key=lambda v: (v is None, v)):
+        b = buckets[value]
+        out[value] = {
+            "correct": b["correct"],
+            "scored": b["scored"],
+            "accuracy": _rate(b["correct"], b["scored"]),
+        }
+    out["overall"] = {
+        "correct": overall["correct"],
+        "scored": overall["scored"],
+        "accuracy": _rate(overall["correct"], overall["scored"]),
+    }
+    return out
+
+
+def reason_code_distribution(feedback_rows):
+    """Reason-code counts across not_useful rows (R9.2), desc by count.
+
+    Returns an ordered list of ``{"reason_code": code, "count": n}`` for every
+    reason code that appears on a not_useful row, sorted by count desc then
+    code asc (stable, deterministic). Positive verdicts carry no reason code
+    and are ignored.
+    """
+    counts = {}
+    for row in feedback_rows:
+        if row.get("verdict") not in NEGATIVE_VERDICTS:
+            continue
+        code = row.get("reason_code")
+        if not code:
+            continue
+        counts[code] = counts.get(code, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"reason_code": code, "count": n} for code, n in ordered]
+
+
+def _judge_negative_signals(audit_rows):
+    """Signal ids the judge flagged negative on an objective check.
+
+    Mapping: a judge-negative is any signal where entity_match OR
+    evidence_support returned "fail". These are the two objective checks that
+    feed auto-accuracy (R9.4), so a "fail" on either is the judge's strongest
+    objective concern about the card. "unclear"/"not_applicable"/"pass" do not
+    make a signal judge-negative. A signal the judge only ever passed (on these
+    checks) is judge-positive.
+    """
+    seen = set()
+    negative = set()
+    for row in audit_rows:
+        if row.get("check_type") not in AUTO_ACCURACY_CHECKS:
+            continue
+        sid = row.get("signal_id")
+        seen.add(sid)
+        if row.get("result") == "fail":
+            negative.add(sid)
+    return seen, negative
+
+
+def judge_human_disagreement(audit_rows, feedback_rows):
+    """Judge-vs-human agreement over signals that have BOTH sides (QA signal).
+
+    This is a QA signal, NOT ground truth (the judge rates objective facts, the
+    human rates usefulness — they measure different things, so some disagreement
+    is expected and healthy).
+
+    Mapping (documented, defensible, deliberately coarse):
+      * judge verdict per signal: "negative" if entity_match OR evidence_support
+        returned "fail" on that signal; otherwise "positive". A signal with no
+        entity_match/evidence_support judge row is not comparable (no judge
+        side).
+      * human verdict per signal: "negative" if the human marked not_useful;
+        "positive" if the human marked useful/converted. A signal with no human
+        feedback is not comparable (no human side).
+      * agree = both negative or both positive; disagree otherwise.
+
+    Only signals with BOTH a judge side and a human side are comparable. Returns
+    ``{"comparable": n, "agree": n, "disagree": n, "disagreement_rate":
+    float|None, "items": [{signal_id, judge, human}, ...]}`` sorted by
+    signal_id; ``disagreement_rate`` is ``None`` when comparable == 0.
+    """
+    judged, judge_neg = _judge_negative_signals(audit_rows)
+
+    human = {}  # signal_id -> "positive"/"negative"; last verdict wins
+    for row in feedback_rows:
+        verdict = row.get("verdict")
+        if verdict in POSITIVE_VERDICTS:
+            human[row.get("signal_id")] = "positive"
+        elif verdict in NEGATIVE_VERDICTS:
+            human[row.get("signal_id")] = "negative"
+
+    items = []
+    agree = disagree = 0
+    for sid in sorted(judged & human.keys(), key=lambda s: (s is None, s)):
+        judge_verdict = "negative" if sid in judge_neg else "positive"
+        human_verdict = human[sid]
+        if judge_verdict == human_verdict:
+            agree += 1
+        else:
+            disagree += 1
+        items.append(
+            {"signal_id": sid, "judge": judge_verdict, "human": human_verdict})
+    comparable = len(items)
+    return {
+        "comparable": comparable,
+        "agree": agree,
+        "disagree": disagree,
+        "disagreement_rate": _rate(disagree, comparable),
+        "items": items,
+    }
+
+
+def half_life_effectiveness(halflife_rows):
+    """Per-trigger view of configured half-life vs observed feedback.
+
+    For each trigger it relates the configured ``decay_half_life_days`` to the
+    observed human useful-rate and the mean stored ``score_decay`` on that
+    trigger's cards, so the operator can eyeball whether the half-life looks
+    well-calibrated (e.g. a short half-life paired with a still-high useful-rate
+    on aged cards suggests the decay may be too aggressive). This is a
+    descriptive aid, not a recommendation — no threshold is applied.
+
+    Returns a list (sorted by trigger_id) of per-trigger dicts, each carrying
+    its own sample sizes:
+      ``{"trigger_id", "trigger_name", "decay_half_life_days",
+         "cards": int, "useful": int, "rated": int,
+         "useful_rate": float|None, "mean_score_decay": float|None,
+         "decay_samples": int}``
+    ``useful_rate`` is over rated cards only (verdict present); it is ``None``
+    when no card on the trigger has feedback. ``mean_score_decay`` averages the
+    non-null ``score_decay`` values (``decay_samples`` of them) and is ``None``
+    when none are present.
+    """
+    buckets = {}
+    for row in halflife_rows:
+        tid = row.get("trigger_id")
+        b = buckets.get(tid)
+        if b is None:
+            b = buckets[tid] = {
+                "trigger_id": tid,
+                "trigger_name": row.get("trigger_name"),
+                "decay_half_life_days": row.get("decay_half_life_days"),
+                "cards": 0,
+                "useful": 0,
+                "rated": 0,
+                "decay_sum": 0.0,
+                "decay_samples": 0,
+            }
+        b["cards"] += 1
+        verdict = row.get("verdict")
+        if verdict in POSITIVE_VERDICTS:
+            b["useful"] += 1
+            b["rated"] += 1
+        elif verdict in NEGATIVE_VERDICTS:
+            b["rated"] += 1
+        decay = row.get("score_decay")
+        if decay is not None:
+            b["decay_sum"] += decay
+            b["decay_samples"] += 1
+    out = []
+    for tid in sorted(buckets, key=lambda t: (t is None, t)):
+        b = buckets[tid]
+        mean_decay = (
+            b["decay_sum"] / b["decay_samples"] if b["decay_samples"] else None)
+        out.append({
+            "trigger_id": b["trigger_id"],
+            "trigger_name": b["trigger_name"],
+            "decay_half_life_days": b["decay_half_life_days"],
+            "cards": b["cards"],
+            "useful": b["useful"],
+            "rated": b["rated"],
+            "useful_rate": _rate(b["useful"], b["rated"]),
+            "mean_score_decay": mean_decay,
+            "decay_samples": b["decay_samples"],
+        })
+    return out
+
+
+def _days_span(timestamps, now):
+    """Span in days from the earliest timestamp to ``now`` (0 if none/future)."""
+    parsed = [t for t in (_parse_ts(ts) for ts in timestamps) if t is not None]
+    if not parsed:
+        return 0
+    earliest = min(parsed)
+    delta = (now - earliest).total_seconds() / 86400.0
+    return max(delta, 0.0)
+
+
+def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
+              min_days=G1_MIN_DAYS, min_rated=G1_MIN_RATED):
+    """Gate G1 (Stage 1 -> 2) status per primary account-level trigger (R9.4).
+
+    ONLY account-specific rated cards (entity_id present AND signal_scope in
+    {account, parent}) count toward each primary trigger's precision. Sector /
+    subsector / regulatory_calendar cards and unconfirmed early-warning incident
+    cards are computed SEPARATELY and returned under ``reported_separately`` so
+    they never inflate or hide account-level precision.
+
+    ``meets`` for a trigger requires ALL of: useful_rate >= 0.60,
+    auto_accuracy >= 0.80, days_span >= ``min_days``, useful_n >= ``min_rated``.
+    When the sample is too small (or a rate is ``None``), ``meets`` is False and
+    ``reasons`` names why — never a fake pass.
+
+    ``primary_triggers`` defaults to the two MVP account triggers; pass a list
+    to override. Returns::
+
+        {
+          "triggers": {trigger_id: {"useful_rate", "useful_n", "auto_accuracy",
+                                    "auto_n", "days_span", "meets", "reasons"}},
+          "reported_separately": {"feedback": {...useful_rate_overall shape...},
+                                  "auto": {...auto overall shape...}},
+          "eligible": bool,
+          "blocked_reasons": [...],
+        }
+
+    ``eligible`` is True only when every primary trigger ``meets``.
+    """
+    now_dt = _now(now)
+    triggers = list(primary_triggers) if primary_triggers else list(
+        DEFAULT_PRIMARY_TRIGGERS)
+
+    # Partition rows into account-specific vs reported-separately.
+    account_fb = [r for r in feedback_rows if _is_account_scope(r)]
+    other_fb = [r for r in feedback_rows if not _is_account_scope(r)]
+    account_audit = [r for r in audit_rows if _is_account_scope(r)]
+    other_audit = [r for r in audit_rows if not _is_account_scope(r)]
+
+    per_trigger = {}
+    for tid in triggers:
+        fb = [r for r in account_fb if r.get("trigger_id") == tid]
+        au = [r for r in account_audit if r.get("trigger_id") == tid]
+        ur = useful_rate_overall(fb)
+        aa = auto_accuracy(au, "trigger")["overall"]
+        rated_ts = [
+            r.get("ts") for r in fb
+            if r.get("verdict") in POSITIVE_VERDICTS
+            or r.get("verdict") in NEGATIVE_VERDICTS]
+        days_span = _days_span(rated_ts, now_dt)
+
+        reasons = []
+        useful_rate_value = ur["rate"]
+        useful_n = ur["total"]
+        auto_accuracy_value = aa["accuracy"]
+        auto_n = aa["scored"]
+
+        if useful_n < min_rated:
+            reasons.append(f"n<{min_rated} rated account cards (have {useful_n})")
+        if days_span < min_days:
+            reasons.append(
+                f"span<{min_days}d (have {days_span:.1f}d)")
+        if useful_rate_value is None:
+            reasons.append("no rated account cards for useful-rate")
+        elif useful_rate_value < G1_USEFUL_RATE_MIN:
+            reasons.append(
+                f"useful-rate {useful_rate_value:.0%}<{G1_USEFUL_RATE_MIN:.0%}")
+        if auto_accuracy_value is None:
+            reasons.append("no scored judge checks for auto-accuracy")
+        elif auto_accuracy_value < G1_AUTO_ACCURACY_MIN:
+            reasons.append(
+                f"auto-accuracy {auto_accuracy_value:.0%}"
+                f"<{G1_AUTO_ACCURACY_MIN:.0%}")
+
+        meets = (
+            useful_rate_value is not None
+            and useful_rate_value >= G1_USEFUL_RATE_MIN
+            and auto_accuracy_value is not None
+            and auto_accuracy_value >= G1_AUTO_ACCURACY_MIN
+            and days_span >= min_days
+            and useful_n >= min_rated)
+
+        per_trigger[tid] = {
+            "useful_rate": useful_rate_value,
+            "useful_n": useful_n,
+            "auto_accuracy": auto_accuracy_value,
+            "auto_n": auto_n,
+            "days_span": days_span,
+            "meets": meets,
+            "reasons": reasons,
+        }
+
+    blocked_reasons = []
+    for tid in triggers:
+        if not per_trigger[tid]["meets"]:
+            for reason in per_trigger[tid]["reasons"]:
+                blocked_reasons.append(f"{tid}: {reason}")
+    eligible = all(per_trigger[tid]["meets"] for tid in triggers)
+
+    return {
+        "triggers": per_trigger,
+        "reported_separately": {
+            "feedback": useful_rate_overall(other_fb),
+            "auto": auto_accuracy(other_audit, "trigger")["overall"],
+        },
+        "eligible": eligible,
+        "blocked_reasons": blocked_reasons,
+    }
+
+
+def g2_status(feedback_rows, threshold=G2_THRESHOLD, min_n=G2_MIN_N, now=None):
+    """Gate G2 (per source) demotion *recommendation* — REPORT-ONLY (R9.5).
+
+    G2 is reported here, never auto-enforced: this function only recommends. Per
+    source it computes precision = human useful-rate, the rated count ``n``, and
+    the reason-code distribution over that source's not_useful rows (so an
+    operator can see WHY before demoting). A demotion is recommended only when
+    precision < ``threshold`` AND ``n`` >= ``min_n``; when ``n`` is below
+    ``min_n`` the sample is too noisy to act on, so ``demote_recommended`` is
+    False with a "sample too small" note.
+
+    ``now`` is accepted for signature symmetry / future window filtering; the
+    caller is expected to have already windowed rows to the 30-day period.
+    Returns ``{source_id: {"precision", "n", "reason_codes", "below_threshold",
+    "demote_recommended", "note"}}`` sorted by source_id.
+    """
+    by_source = {}
+    for row in feedback_rows:
+        verdict = row.get("verdict")
+        if verdict not in POSITIVE_VERDICTS and verdict not in NEGATIVE_VERDICTS:
+            continue
+        sid = row.get("source_id")
+        bucket = by_source.setdefault(sid, [])
+        bucket.append(row)
+
+    out = {}
+    for sid in sorted(by_source, key=lambda s: (s is None, s)):
+        rows = by_source[sid]
+        rate = useful_rate_overall(rows)
+        precision = rate["rate"]
+        n = rate["total"]
+        reason_codes = {
+            item["reason_code"]: item["count"]
+            for item in reason_code_distribution(rows)
+        }
+        below_threshold = precision is not None and precision < threshold
+        if n < min_n:
+            demote_recommended = False
+            note = (
+                f"sample too small (n={n}<{min_n}); not enough evidence to "
+                "recommend demotion")
+        elif below_threshold:
+            demote_recommended = True
+            note = (
+                f"precision {precision:.0%}<{threshold:.0%} over n={n}; review "
+                "reason codes then consider store-only/disable")
+        else:
+            demote_recommended = False
+            note = f"precision at/above {threshold:.0%} threshold over n={n}"
+        out[sid] = {
+            "precision": precision,
+            "n": n,
+            "reason_codes": reason_codes,
+            "below_threshold": below_threshold,
+            "demote_recommended": demote_recommended,
+            "note": note,
+        }
+    return out
