@@ -1,0 +1,8 @@
+{# Account 360 body (header + tabs), swapped into #gs-account-body on entity
+   switch. account=None → an honest empty panel (no entities / bad id). #}
+{% if account %}
+  {% include "_account_header.html" %}
+  {% include "_account_tabs.html" %}
+{% else %}
+  {% with message = empty_message or "That account could not be loaded." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}

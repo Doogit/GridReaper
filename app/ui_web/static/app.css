@@ -159,3 +159,25 @@
 .gs-loadmore { display: block; margin: 4px 0 18px; background: transparent; color: var(--gs-accent);
   border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 6px 14px; font-size: 0.82rem; cursor: pointer; }
 .gs-loadmore:hover { border-color: var(--gs-accent); }
+
+/* ---- Account 360 header + tabs (Chunk 2) ----
+ * NEW hand-authored component styles (R8.9), flagged in the chunk PR. The tabs
+ * are a CSS-only radio toggle: the hidden .gs-tab-input radios drive panel
+ * visibility and the active-label underline via :checked sibling rules, so
+ * switching tabs needs no JS and no server round-trip. IDs are fixed because
+ * exactly one account body renders at a time. */
+.gs-account-header { margin-bottom: 6px; }
+.gs-account-name { margin: 0 0 4px; font-size: 1.2rem; font-weight: 600; color: var(--gs-text); }
+
+.gs-tabs { margin-top: 16px; }
+.gs-tab-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.gs-tablist { display: flex; gap: 4px; border-bottom: 1px solid var(--gs-card-border); margin-bottom: 14px; }
+.gs-tab { padding: 8px 16px; color: var(--gs-muted); font-size: 0.85rem; cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.gs-tab:hover { color: var(--gs-text); }
+.gs-tabpanel { display: none; }
+#gs-tab-timeline:checked ~ .gs-tablist label[for="gs-tab-timeline"],
+#gs-tab-signals:checked ~ .gs-tablist label[for="gs-tab-signals"] {
+  color: var(--gs-accent); border-bottom-color: var(--gs-accent); }
+#gs-tab-timeline:checked ~ .gs-tabpanel-timeline { display: block; }
+#gs-tab-signals:checked ~ .gs-tabpanel-signals { display: block; }

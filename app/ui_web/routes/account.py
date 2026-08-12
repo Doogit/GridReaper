@@ -1,0 +1,109 @@
+"""Account 360 routes (R8.3, R6.6, R7.6, R7.10, R9.1).
+
+A per-entity view for the watchlist: an entity selector, a header (identifiers,
+subsector, richness, coverage badge, gov-cloud posture, parent/children linked
+to their own account pages), and two tabs — Timeline and Signals. The Signals
+tab reuses the feed's card (_card.html) and its feedback flow verbatim, driven
+by render.card_view over data.account_signals (same row shape as feed_page).
+
+Zero account-scoped signals is the norm today (dark accounts, R6.6): the page
+stays useful from identifiers, relationships, and gov-cloud posture, and both
+tabs carry an honest low-volume-by-design empty state rather than a broken look.
+Cards read snapshots, never live facts (R7.6). The account page paginates
+nothing (Streamlit's page shows the full account history), so — unlike the feed
+— there is no keyset load-more here.
+
+Reads bind the same data.py functions the Streamlit page uses. The only write
+path is feedback (routes/feed.py owns /feedback + /feedback/reason, shared by
+the reused card), so this router adds no write of its own. The entity-selector
+list is a direct active-entity query, mirroring the Streamlit page which does
+the same — data.py exposes no active-only entity read, and per the plan the
+UI does not mutate data.py to add one (flagged in the PR).
+"""
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
+
+from app.ui import data
+from app.ui_web import render
+from app.ui_web.deps import get_db
+from app.ui_web.templating import templates
+
+router = APIRouter()
+
+# Account tabs show the active history only, matching the Streamlit page's
+# data.account_signals default; decayed/superseded rows keep their frozen scores
+# but are not surfaced here.
+STATUSES = ("active",)
+
+
+def _entities(conn):
+    """(entity_id, name) for every ACTIVE watchlist entity, name-ordered — the
+    pool the selector searches over. Mirrors the Streamlit page's _entities:
+    soft-disabled entities (R8.7) drop out of the selector; their existing cards
+    still render via the card queries' name lookup."""
+    return conn.execute(
+        "SELECT entity_id, name FROM watchlist_entities WHERE active = 1 "
+        "ORDER BY name").fetchall()
+
+
+def _resolve(entities, entity_id):
+    """The requested entity if it is a known active one, else the first (the
+    selector's deterministic default), else '' when the watchlist is empty."""
+    valid = {e["entity_id"] for e in entities}
+    if entity_id in valid:
+        return entity_id
+    return entities[0]["entity_id"] if entities else ""
+
+
+def _account_context(conn, entity_id):
+    """Header view + timeline rows + signal cards for one account, or an empty
+    body context (account=None) when the entity cannot be loaded."""
+    header = data.account_header(conn, entity_id)
+    if header is None:
+        return {"selected": entity_id, "account": None,
+                "timeline": [], "cards": [], "empty_message":
+                "That account could not be loaded."}
+    signals = data.account_signals(conn, entity_id, statuses=STATUSES)
+    legend = data.badge_legend(conn)
+    cards = []
+    for s in signals:
+        detail = data.signal_detail(conn, s["signal_id"])
+        if detail is not None:
+            cards.append(render.card_view(detail, legend))
+    return {
+        "selected": entity_id,
+        "account": render.account_header_view(header),
+        "timeline": render.timeline_rows(signals),
+        "cards": cards,
+    }
+
+
+def _page_context(conn, entity_id):
+    """Full-page context: the selector pool plus the resolved account body."""
+    entities = _entities(conn)
+    if not entities:
+        return {"entities": entities, "selected": "", "account": None,
+                "timeline": [], "cards": [], "empty_message":
+                "No watchlist entities loaded. Run the seed loader first."}
+    ctx = _account_context(conn, _resolve(entities, entity_id))
+    ctx["entities"] = entities
+    return ctx
+
+
+@router.get("/account", response_class=HTMLResponse)
+def account(request: Request, entity_id: str = "", conn=Depends(get_db)):
+    ctx = _page_context(conn, entity_id)
+    ctx["nav_active"] = "account"
+    return templates.TemplateResponse(
+        request=request, name="account.html", context=ctx)
+
+
+@router.get("/account/body", response_class=HTMLResponse)
+def account_body(request: Request, entity_id: str = "", conn=Depends(get_db)):
+    """Header + tabs only — the entity selector swaps this into #gs-account-body
+    when a different account is picked (the selector itself stays in place, so
+    its native selection persists without a re-render)."""
+    entities = _entities(conn)
+    ctx = _account_context(conn, _resolve(entities, entity_id))
+    return templates.TemplateResponse(
+        request=request, name="_account_body.html", context=ctx)
