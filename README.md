@@ -114,6 +114,25 @@ python -m app.audit.goldens                         # golden-set regression chec
 
 Signals land in the `signals` table with ranked evidence in `signal_evidence`; each signal's license plays are pinned in `license_play_snapshots`. View them in the UI with `streamlit run app/ui/Home.py`.
 
+## Run it hosted (Azure App Service)
+
+To put GridSignals on a URL instead of a laptop, `deploy/azure-deploy.ps1` builds
+a container image *inside Azure* (no local Docker) and provisions App Service for
+Containers:
+
+```powershell
+az login
+./deploy/azure-deploy.ps1
+```
+
+Because the feed is empty without event data, the image build **runs the ingest
+pipeline against live public feeds** and bakes the resulting signals in — so the
+build is network-dependent and the feed is a point-in-time snapshot. It serves
+public-event signals with no auth by default; see
+[deploy/README.md](deploy/README.md) for the one-command Entra (Microsoft
+sign-in) gate. The `Dockerfile` also runs anywhere Docker does (`docker build -t
+gridsignals . && docker run -p 8000:8000 gridsignals`).
+
 ## Architecture
 
 ```

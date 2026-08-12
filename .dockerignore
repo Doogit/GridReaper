@@ -1,0 +1,15 @@
+# Keep the build context small. NOTE: seeds/ is NOT ignored — the build loads
+# config from seeds/*.csv. .streamlit/config.toml is kept (theme). Only the
+# generated database is excluded so the build creates its own.
+.git
+tests
+docs
+data/gridsignals.db
+data/gridsignals.db-wal
+data/gridsignals.db-shm
+data/.ingest.lock
+**/__pycache__
+*.pyc
+.venv
+venv
+.env

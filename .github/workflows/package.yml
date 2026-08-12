@@ -1,0 +1,47 @@
+name: package
+
+# Builds the actual container and boots it. NOTE: for GridSignals the build runs
+# the live ingest pipeline, so this job is network-dependent and slower than a
+# typical build — that is the accepted tradeoff of baking a real feed. Individual
+# feeds are non-fatal in the build; the build (and this job) assert signals>0.
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "seeds/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "requirements.txt"
+      - "deploy/**"
+      - ".github/workflows/package.yml"
+
+jobs:
+  docker-build-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (runs the live ingest pipeline)
+        run: docker build -t gridsignals:ci .
+
+      - name: Boot container
+        run: docker run -d --name gs -p 8000:8000 gridsignals:ci
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/_stcore/health; then echo " healthy"; exit 0; fi
+            sleep 2
+          done
+          echo "container did not become healthy in time"; exit 1
+
+      - name: Assert baked signals in the running container
+        run: >
+          docker exec gs python -c "import sqlite3, os;
+          n=sqlite3.connect(os.environ['GRIDSIGNALS_DB']).execute('select count(*) from signals').fetchone()[0];
+          assert n>0, ('signals', n);
+          print('OK:', n, 'signals')"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs gs || true
