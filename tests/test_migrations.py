@@ -79,5 +79,44 @@ class TestConfigAuditMigration(unittest.TestCase):
         self.assertEqual(rows[0]["field"], "weight")
 
 
+class TestWatchlistAdminColsMigration(unittest.TestCase):
+    """0008 watchlist_entities.active / origin (R8.7 entity editors)."""
+
+    def _conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
+        return conn
+
+    def test_0008_adds_active_and_origin_columns(self):
+        conn = self._conn()
+        ran = apply_migrations(conn)
+        self.assertIn("0008_watchlist_admin_cols", ran)
+        cols = {r["name"] for r in conn.execute(
+            "PRAGMA table_info(watchlist_entities)")}
+        self.assertIn("active", cols)
+        self.assertIn("origin", cols)
+
+    def test_0008_defaults_active_seed_on_insert_without_them(self):
+        conn = self._conn()
+        apply_migrations(conn)
+        conn.execute(
+            "INSERT INTO watchlist_entities (entity_id, name) VALUES ('E1', 'Acme')")
+        row = conn.execute(
+            "SELECT active, origin FROM watchlist_entities "
+            "WHERE entity_id = 'E1'").fetchone()
+        self.assertEqual(row["active"], 1)
+        self.assertEqual(row["origin"], "seed")
+
+    def test_reapply_is_noop(self):
+        conn = self._conn()
+        apply_migrations(conn)
+        self.assertEqual(apply_migrations(conn), [])
+        version = conn.execute(
+            "SELECT version FROM schema_migrations "
+            "WHERE version = '0008_watchlist_admin_cols'").fetchone()
+        self.assertIsNotNone(version)
+
+
 if __name__ == "__main__":
     unittest.main()

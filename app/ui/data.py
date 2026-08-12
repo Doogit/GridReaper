@@ -484,6 +484,33 @@ def triage_decision(conn, raw_event_id, entity_id, accept, now=None):
 #     decayed/dismissed/superseded rows keep their frozen score and components.
 CONFIG_EDITOR = "operator"          # single-operator MVP: no auth, no PII (R10.6)
 
+# R8.7 watchlist manager: the curation columns an operator may edit on a seeded
+# entity. The loader freezes exactly these against reload (load_seeds
+# watchlist_entities update_cols excludes them); identifiers/name stay
+# seed-refreshable so seed corrections still flow. All are watchlist CSV columns,
+# so reset_entity_to_seed can restore every one of them from the seed row.
+EDITABLE_ENTITY_COLS = (
+    "subsector", "parent_id", "richness", "coverage_flag",
+    "gov_cloud_likelihood", "notes", "owning_seller",
+)
+
+# Operator-added alias / collision-term rows carry this marker (entity_aliases.
+# source / entity_collision_terms.reason) so the loader's seed-scoped DELETE
+# (load_seeds WATCHLIST_ALIAS_SOURCE / WATCHLIST_COLLISION_REASON) never wipes
+# them - Pattern B for the normalized side tables (R4.4).
+OPERATOR_SOURCE = "operator"
+
+# Tables that FK-reference watchlist_entities.entity_id. The FKs are bare (no ON
+# DELETE, so NO ACTION): a hard-delete with any referencing row raises
+# IntegrityError. remove_operator_entity counts these first and blocks legibly
+# instead of crashing or orphaning history (R8.7 delete safety; trap 2).
+_ENTITY_REFERENCING = (
+    ("signals", "entity_id"),
+    ("entity_match_decisions", "entity_id"),
+    ("review_queue", "candidate_entity_id"),
+    ("facility_assets", "owner_operator_entity_id"),
+)
+
 
 @contextlib.contextmanager
 def config_write_conn(db_path=None, lock_path=None):
@@ -644,3 +671,320 @@ def source_policy_rows(conn, now=None):
         d["g2"] = g2.get(r["source_id"])
         out.append(d)
     return out
+
+
+# -- watchlist entity editors (R8.7 entity manager; R3.3, R4.4, R6.3) ---------
+#
+# Write helpers mirror the config-write path above: the page's
+# config_write_conn() owns the single-writer lock + fresh connection; each helper
+# takes that open conn, validates (ValueError -> the page surfaces it, no write),
+# writes + one config_audit row, and commits. NONE of them rescore: entity edits
+# change FUTURE resolution/ingestion, never an existing signal's frozen score
+# (R8.1). Soft-disable + edits are UPDATE-in-place; the only hard-delete is
+# remove_operator_entity, guarded by an FK-referencing-row check.
+
+def _entity_exists(conn, entity_id):
+    return conn.execute(
+        "SELECT 1 FROM watchlist_entities WHERE entity_id = ?",
+        (entity_id,)).fetchone() is not None
+
+
+def add_watchlist_entity(conn, entity_id, name, fields=None, reason="",
+                         editor=CONFIG_EDITOR, now=None):
+    """Add an operator watchlist entity (origin='operator', active=1) that the
+    seed CSV lacks (R8.7). ``fields`` may set curation columns (a subset of
+    EDITABLE_ENTITY_COLS); identifiers are the enrichment pipeline's job. New
+    entity rows are not deleted by load_seeds, so they survive reload; a
+    from-scratch rebuild drops them (replayable from config_audit). Raises
+    ValueError. Returns {'entity_id', 'created': True}."""
+    eid = (entity_id or "").strip()
+    nm = (name or "").strip()
+    if not eid:
+        raise ValueError("entity_id is required")
+    if not nm:
+        raise ValueError("name is required")
+    if _entity_exists(conn, eid):
+        raise ValueError(f"entity_id {eid!r} already exists")
+    fields = fields or {}
+    bad = set(fields) - set(EDITABLE_ENTITY_COLS)
+    if bad:
+        raise ValueError(f"not editable column(s): {sorted(bad)}")
+    cols = ["entity_id", "name", "origin", "active"] + list(fields)
+    vals = [eid, nm, "operator", 1] + [fields[c] for c in fields]
+    placeholders = ",".join("?" * len(cols))
+    conn.execute(
+        f"INSERT INTO watchlist_entities ({','.join(cols)}) VALUES ({placeholders})",
+        vals)
+    _record_config_edit(conn, "watchlist_entities", eid, "__add__",
+                        None, nm, editor, reason, now)
+    conn.commit()
+    return {"entity_id": eid, "created": True}
+
+
+def update_watchlist_entity(conn, entity_id, field, new_value, reason="",
+                            editor=CONFIG_EDITOR, now=None):
+    """Edit one curation column of a watchlist entity (R8.7). ``field`` must be in
+    EDITABLE_ENTITY_COLS - identifiers/name are seed-managed, not edited here.
+    A no-op edit writes nothing. Raises ValueError. Returns {old,new,changed}."""
+    if field not in EDITABLE_ENTITY_COLS:
+        raise ValueError(
+            f"{field!r} is not an editable column "
+            f"(editable: {', '.join(EDITABLE_ENTITY_COLS)})")
+    row = conn.execute(
+        f"SELECT {field} AS v FROM watchlist_entities WHERE entity_id = ?",
+        (entity_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown entity {entity_id!r}")
+    old = row["v"]
+    new = "" if new_value is None else str(new_value)
+    if new == ("" if old is None else str(old)):
+        return {"old": old, "new": new, "changed": False}
+    conn.execute(
+        f"UPDATE watchlist_entities SET {field} = ? WHERE entity_id = ?",
+        (new, entity_id))
+    _record_config_edit(conn, "watchlist_entities", entity_id, field,
+                        old, new, editor, reason, now)
+    conn.commit()
+    return {"old": old, "new": new, "changed": True}
+
+
+def set_entity_active(conn, entity_id, active, reason="",
+                      editor=CONFIG_EDITOR, now=None):
+    """Soft-disable / re-enable a watchlist entity (R8.7). No rescore - a disable
+    stops FUTURE resolution/ingestion (EntityResolver, EDGAR, Account 360 all
+    filter active=1) while existing signals keep their frozen scores. A no-op
+    toggle writes nothing. Raises ValueError. Returns {old,new,changed}."""
+    row = conn.execute(
+        "SELECT active FROM watchlist_entities WHERE entity_id = ?",
+        (entity_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown entity {entity_id!r}")
+    old = row["active"]
+    new = 1 if active else 0
+    if new == old:
+        return {"old": old, "new": new, "changed": False}
+    conn.execute("UPDATE watchlist_entities SET active = ? WHERE entity_id = ?",
+                 (new, entity_id))
+    _record_config_edit(conn, "watchlist_entities", entity_id, "active",
+                        old, new, editor, reason, now)
+    conn.commit()
+    return {"old": old, "new": new, "changed": True}
+
+
+def add_alias(conn, entity_id, alias, alias_type="common", reason="",
+              editor=CONFIG_EDITOR, now=None):
+    """Add an operator positive alias for entity resolution (R6.1/R6.3). Written
+    with source='operator' so a reload never wipes it. Raises ValueError.
+    Returns {'entity_id','alias','created': True}."""
+    al = (alias or "").strip()
+    if not _entity_exists(conn, entity_id):
+        raise ValueError(f"unknown entity {entity_id!r}")
+    if not al:
+        raise ValueError("alias is required")
+    if conn.execute("SELECT 1 FROM entity_aliases WHERE entity_id = ? AND alias = ?",
+                    (entity_id, al)).fetchone():
+        raise ValueError(f"alias {al!r} already exists for this entity")
+    conn.execute(
+        "INSERT INTO entity_aliases (entity_id, alias, alias_type, source) "
+        "VALUES (?, ?, ?, ?)", (entity_id, al, alias_type or "common",
+                                OPERATOR_SOURCE))
+    _record_config_edit(conn, "entity_aliases", entity_id, "alias",
+                        None, al, editor, reason, now)
+    conn.commit()
+    return {"entity_id": entity_id, "alias": al, "created": True}
+
+
+def remove_alias(conn, entity_id, alias, reason="",
+                 editor=CONFIG_EDITOR, now=None):
+    """Remove an operator-added alias (R6.3). Refuses to touch a seed alias -
+    seed aliases change via reset_entity_to_seed. Raises ValueError. Returns
+    {'entity_id','alias','removed': True}."""
+    row = conn.execute(
+        "SELECT source FROM entity_aliases WHERE entity_id = ? AND alias = ?",
+        (entity_id, alias)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown alias {alias!r} for entity {entity_id!r}")
+    if row["source"] != OPERATOR_SOURCE:
+        raise ValueError(
+            f"alias {alias!r} is seed data - reset the entity to change it")
+    conn.execute("DELETE FROM entity_aliases WHERE entity_id = ? AND alias = ?",
+                 (entity_id, alias))
+    _record_config_edit(conn, "entity_aliases", entity_id, "alias",
+                        alias, None, editor, reason, now)
+    conn.commit()
+    return {"entity_id": entity_id, "alias": alias, "removed": True}
+
+
+def add_collision_term(conn, entity_id, term, reason="",
+                       editor=CONFIG_EDITOR, now=None):
+    """Add an operator known-collision negative term (R6.3). Written with
+    reason='operator' so a reload never wipes it. Raises ValueError. Returns
+    {'entity_id','term','created': True}."""
+    tm = (term or "").strip()
+    if not _entity_exists(conn, entity_id):
+        raise ValueError(f"unknown entity {entity_id!r}")
+    if not tm:
+        raise ValueError("term is required")
+    if conn.execute(
+            "SELECT 1 FROM entity_collision_terms WHERE entity_id = ? AND term = ?",
+            (entity_id, tm)).fetchone():
+        raise ValueError(f"collision term {tm!r} already exists for this entity")
+    conn.execute(
+        "INSERT INTO entity_collision_terms (entity_id, term, reason) "
+        "VALUES (?, ?, ?)", (entity_id, tm, OPERATOR_SOURCE))
+    _record_config_edit(conn, "entity_collision_terms", entity_id, "term",
+                        None, tm, editor, reason, now)
+    conn.commit()
+    return {"entity_id": entity_id, "term": tm, "created": True}
+
+
+def remove_collision_term(conn, entity_id, term, reason="",
+                          editor=CONFIG_EDITOR, now=None):
+    """Remove an operator-added collision term (R6.3). Refuses to touch a seed
+    term. Raises ValueError. Returns {'entity_id','term','removed': True}."""
+    row = conn.execute(
+        "SELECT reason FROM entity_collision_terms WHERE entity_id = ? AND term = ?",
+        (entity_id, term)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown collision term {term!r} for entity {entity_id!r}")
+    if row["reason"] != OPERATOR_SOURCE:
+        raise ValueError(
+            f"collision term {term!r} is seed data - reset the entity to change it")
+    conn.execute(
+        "DELETE FROM entity_collision_terms WHERE entity_id = ? AND term = ?",
+        (entity_id, term))
+    _record_config_edit(conn, "entity_collision_terms", entity_id, "term",
+                        term, None, editor, reason, now)
+    conn.commit()
+    return {"entity_id": entity_id, "term": term, "removed": True}
+
+
+def entity_reference_breakdown(conn, entity_id):
+    """{table: count} for each FK source that references this entity (only
+    non-zero entries; both directions of entity_relationships combined). An
+    empty dict means a hard-delete is FK-safe. Drives the remove caption/error
+    so the operator sees exactly what blocks a remove, not a signals-only count."""
+    out = {}
+    for table, col in _ENTITY_REFERENCING:
+        n = conn.execute(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE {col} = ?",
+            (entity_id,)).fetchone()["n"]
+        if n:
+            out[table] = n
+    rel = conn.execute(
+        "SELECT COUNT(*) AS n FROM entity_relationships "
+        "WHERE parent_entity_id = ? OR child_entity_id = ?",
+        (entity_id, entity_id)).fetchone()["n"]
+    if rel:
+        out["entity_relationships"] = rel
+    return out
+
+
+def _count_entity_references(conn, entity_id):
+    """Total rows across every table that FK-references this entity. Zero means
+    a hard-delete is FK-safe."""
+    return sum(entity_reference_breakdown(conn, entity_id).values())
+
+
+def reset_entity_to_seed(conn, entity_id, reason="",
+                         editor=CONFIG_EDITOR, now=None):
+    """Restore a SEEDED entity's editable columns to their seed-CSV values,
+    re-enable it, and drop its operator-added aliases / collision terms (R8.7).
+    An operator-added entity has no seed to reset to - remove it instead. Reads
+    the seed row via the loader; performs NO entity-row delete (FK-safe). Raises
+    ValueError. Returns {'entity_id','reset': True}."""
+    import os
+    from app.db.load_seeds import read_rows, SEEDS_DIR
+    row = conn.execute(
+        "SELECT origin FROM watchlist_entities WHERE entity_id = ?",
+        (entity_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown entity {entity_id!r}")
+    if row["origin"] != "seed":
+        raise ValueError(
+            f"entity {entity_id!r} is operator-added and has no seed to reset to "
+            "- remove it instead")
+    _, seed_rows = read_rows(os.path.join(SEEDS_DIR, "watchlist_entities.csv"))
+    seed = next((r for r in seed_rows if r.get("entity_id") == entity_id), None)
+    if seed is None:
+        raise ValueError(f"no seed row for entity {entity_id!r}")
+    assignments = [f"{c} = ?" for c in EDITABLE_ENTITY_COLS] + ["active = 1"]
+    params = [seed.get(c, "") for c in EDITABLE_ENTITY_COLS] + [entity_id]
+    conn.execute(
+        f"UPDATE watchlist_entities SET {', '.join(assignments)} "
+        "WHERE entity_id = ?", params)
+    conn.execute("DELETE FROM entity_aliases WHERE entity_id = ? AND source = ?",
+                 (entity_id, OPERATOR_SOURCE))
+    conn.execute(
+        "DELETE FROM entity_collision_terms WHERE entity_id = ? AND reason = ?",
+        (entity_id, OPERATOR_SOURCE))
+    _record_config_edit(conn, "watchlist_entities", entity_id, "__reset__",
+                        None, "seed values", editor, reason, now)
+    conn.commit()
+    return {"entity_id": entity_id, "reset": True}
+
+
+def remove_operator_entity(conn, entity_id, reason="",
+                           editor=CONFIG_EDITOR, now=None):
+    """Hard-delete an OPERATOR-added entity - the one delete path in the chunk,
+    guarded by an FK-referencing-row check (R8.7 delete safety; trap 2). Blocks
+    with a legible ValueError when any signal / match decision / review-queue /
+    facility / relationship row references it (disable it instead). Refuses to
+    touch a seeded entity. Deletes the entity's own operator aliases/collision
+    terms (leaf rows) with it. Raises ValueError. Returns
+    {'entity_id','removed': True}."""
+    row = conn.execute(
+        "SELECT name, origin FROM watchlist_entities WHERE entity_id = ?",
+        (entity_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown entity {entity_id!r}")
+    if row["origin"] != "operator":
+        raise ValueError(
+            f"entity {entity_id!r} is seed data - disable it instead of removing")
+    breakdown = entity_reference_breakdown(conn, entity_id)
+    if breakdown:
+        detail = ", ".join(f"{table}: {n}" for table, n in breakdown.items())
+        total = sum(breakdown.values())
+        raise ValueError(
+            f"{total} row(s) reference this entity ({detail}) - disable it "
+            "instead of removing")
+    conn.execute("DELETE FROM entity_aliases WHERE entity_id = ?", (entity_id,))
+    conn.execute("DELETE FROM entity_collision_terms WHERE entity_id = ?",
+                 (entity_id,))
+    conn.execute("DELETE FROM watchlist_entities WHERE entity_id = ?", (entity_id,))
+    _record_config_edit(conn, "watchlist_entities", entity_id, "__remove__",
+                        row["name"], None, editor, reason, now)
+    conn.commit()
+    return {"entity_id": entity_id, "removed": True}
+
+
+def entity_editor_rows(conn):
+    """Watchlist entities for the Admin manager table (R8.7): id, name, a couple
+    of curation columns, active/origin, and a signal-reference count (so the
+    operator sees which entities a remove would block). Plain dicts, name-ordered."""
+    rows = conn.execute(
+        "SELECT e.entity_id, e.name, e.subsector, e.gov_cloud_likelihood, "
+        "       e.active, e.origin, "
+        "       (SELECT COUNT(*) FROM signals s WHERE s.entity_id = e.entity_id) "
+        "         AS signal_count "
+        "FROM watchlist_entities e ORDER BY e.name").fetchall()
+    return [dict(r) for r in rows]
+
+
+def entity_alias_rows(conn, entity_id):
+    """Aliases + collision terms for one entity (R8.7 alias/collision editor),
+    each flagged operator_editable when it is an operator-added row (seed rows
+    change only via reset). Returns {'aliases': [...], 'collision_terms': [...]}."""
+    aliases = [{
+        "alias": r["alias"], "alias_type": r["alias_type"], "source": r["source"],
+        "operator_editable": r["source"] == OPERATOR_SOURCE,
+    } for r in conn.execute(
+        "SELECT alias, alias_type, source FROM entity_aliases "
+        "WHERE entity_id = ? ORDER BY alias", (entity_id,)).fetchall()]
+    terms = [{
+        "term": r["term"], "reason": r["reason"],
+        "operator_editable": r["reason"] == OPERATOR_SOURCE,
+    } for r in conn.execute(
+        "SELECT term, reason FROM entity_collision_terms "
+        "WHERE entity_id = ? ORDER BY term", (entity_id,)).fetchall()]
+    return {"aliases": aliases, "collision_terms": terms}

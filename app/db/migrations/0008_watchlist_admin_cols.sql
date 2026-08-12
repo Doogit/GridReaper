@@ -1,0 +1,25 @@
+-- 0008_watchlist_admin_cols: operator soft-disable + provenance on watchlist
+-- entities (R8.7 watchlist manager; R3.5, R4.5).
+--
+-- The Admin/Config entity editors (R8.7 follow-up) let the operator curate the
+-- watchlist without editing the read-only seed CSV. Two runtime/provenance
+-- columns support that:
+--
+--   active  1 = resolvable/ingested, 0 = soft-disabled. Disabling an entity
+--           stops FUTURE resolution/ingestion for it (EntityResolver + the
+--           EDGAR per-entity fetch + the Account 360 selector all filter
+--           active = 1) while its existing signals keep their frozen scores
+--           (R8.1). No hard-delete of a seeded entity — soft-disable only.
+--   origin  'seed' for the ~171-250 hand-verified rows, 'operator' for rows the
+--           operator adds at runtime. Drives the reset-vs-remove affordance:
+--           a seeded entity resets to its CSV values; an operator-added entity
+--           (no seed to reset to) is removed, guarded by an FK-referencing-row
+--           check (R8.7 delete safety).
+--
+-- Both are Pattern B runtime-managed columns: NOT present in the watchlist seed
+-- CSV, so the loader's ON CONFLICT DO UPDATE (which only sets CSV columns) never
+-- clobbers them on reload. Additive, append-only migration — 0001-0007 unchanged.
+-- SQLite ALTER TABLE ADD COLUMN takes a literal default (satisfied below), and
+-- backfills existing rows with it: every current entity becomes active seed.
+ALTER TABLE watchlist_entities ADD COLUMN active INTEGER DEFAULT 1;
+ALTER TABLE watchlist_entities ADD COLUMN origin TEXT DEFAULT 'seed';

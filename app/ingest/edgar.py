@@ -79,7 +79,8 @@ def fetch_events(conn, window_days, limit):
               - timedelta(days=window_days)).date().isoformat()
     entities = conn.execute(
         "SELECT entity_id, cik FROM watchlist_entities "
-        "WHERE TRIM(COALESCE(cik,'')) != '' ORDER BY entity_id").fetchall()
+        "WHERE TRIM(COALESCE(cik,'')) != '' AND active = 1 "
+        "ORDER BY entity_id").fetchall()
     yielded = 0
     for i, row in enumerate(entities):
         if i:

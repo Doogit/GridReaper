@@ -45,10 +45,19 @@ def _utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _active_entity_exists(conn, entity_id):
+    """True only for watchlist entities that can receive new account signals."""
+    return conn.execute(
+        "SELECT 1 FROM watchlist_entities "
+        "WHERE entity_id = ? AND active = 1",
+        (entity_id,)).fetchone() is not None
+
+
 def top_level_entity(conn, entity_id):
     """R6.5: follow parent links (entity_relationships, then
-    watchlist_entities.parent_id) to the top-level account. Cycle-guarded;
-    a parent_id pointing outside the watchlist stops the walk."""
+    watchlist_entities.parent_id) to the top-level account. Cycle-guarded.
+    Soft-disabled parents (R8.7) are not valid rollup targets because disabling
+    an entity must prevent any future signal from being minted for it."""
     seen = set()
     current = entity_id
     while current not in seen:
@@ -63,10 +72,10 @@ def top_level_entity(conn, entity_id):
                 "SELECT parent_id FROM watchlist_entities WHERE entity_id = ?",
                 (current,)).fetchone()
             parent = (row["parent_id"] or "").strip() if row else ""
-            if parent and not conn.execute(
-                    "SELECT 1 FROM watchlist_entities WHERE entity_id = ?",
-                    (parent,)).fetchone():
+            if parent and not _active_entity_exists(conn, parent):
                 parent = ""
+        elif not _active_entity_exists(conn, parent):
+            parent = ""
         if not parent:
             return current
         current = parent
@@ -126,6 +135,9 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
             else:
                 counts["dropped_no_entity"] += 1
                 return 0
+        elif not _active_entity_exists(conn, entity_id):
+            counts["dropped_no_entity"] += 1
+            return 0
         entity_id = top_level_entity(conn, entity_id)
 
     signal_id = (f"{cand['trigger_id']}:{raw['raw_event_id']}:"

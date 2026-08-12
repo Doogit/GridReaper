@@ -58,9 +58,17 @@ class EntityResolver:
         self._collisions = {}   # normalized term -> set(entity_id)
         self._terms = {}        # entity_id -> set of normalized positive terms
 
+        # R8.7 soft-disable: only active entities are resolvable. A disabled
+        # entity contributes no identifiers, name, aliases, or collision terms,
+        # so no source can mint a new signal for it; its existing signals keep
+        # their frozen scores. active defaults to 1 (migration 0008), so a
+        # pre-0008 or hand-built row without the column still resolves.
+        active_ids = set()
         for r in conn.execute(
-                "SELECT entity_id, name, cik, lei, ticker FROM watchlist_entities"):
+                "SELECT entity_id, name, cik, lei, ticker FROM watchlist_entities "
+                "WHERE active = 1"):
             eid = r["entity_id"]
+            active_ids.add(eid)
             if (r["cik"] or "").strip():
                 self._by_cik[r["cik"].strip().lstrip("0")] = eid
             if (r["ticker"] or "").strip():
@@ -73,12 +81,16 @@ class EntityResolver:
                 self._terms.setdefault(eid, set()).add(n)
 
         for r in conn.execute("SELECT entity_id, alias FROM entity_aliases"):
+            if r["entity_id"] not in active_ids:
+                continue
             a = normalize(r["alias"])
             if a:
                 self._by_name.setdefault(a, set()).add(r["entity_id"])
                 self._terms.setdefault(r["entity_id"], set()).add(a)
 
         for r in conn.execute("SELECT entity_id, term FROM entity_collision_terms"):
+            if r["entity_id"] not in active_ids:
+                continue
             t = normalize(r["term"])
             if t:
                 self._collisions.setdefault(t, set()).add(r["entity_id"])

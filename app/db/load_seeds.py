@@ -58,7 +58,17 @@ TABLES = [
     {"table": "watchlist_entities", "csv": "watchlist_entities.csv",
      "pk": ["entity_id"], "int_cols": [],
      # normalized into entity_aliases / entity_collision_terms (R4.4)
-     "skip_cols": ["aliases", "collision_terms"]},
+     "skip_cols": ["aliases", "collision_terms"],
+     # R8.7 watchlist manager: the operator edits the "curation" columns
+     # (subsector, parent_id, richness, coverage_flag, gov_cloud_likelihood,
+     # notes, owning_seller) at runtime, so a reload must not clobber those back
+     # to the CSV (Pattern B, same guard as source_policies.enabled). Identifier
+     # and name columns stay refreshable so seed corrections (CIK fixes, renames)
+     # still flow on reload. The runtime columns active/origin (migration 0008)
+     # are not in the CSV, so they are never in this SET clause regardless. A
+     # fresh rebuild-from-seeds restores pristine curation values (replayable
+     # from config_audit). Editable set mirrors data.EDITABLE_ENTITY_COLS.
+     "update_cols": ["name", "cik", "lei", "wikidata_qid", "ticker"]},
     {"table": "entity_aliases", "csv": "entity_aliases.csv",
      "pk": ["entity_id", "alias"], "int_cols": [],
      "fk_checks": [("entity_id", "watchlist_entities")]},

@@ -75,5 +75,69 @@ class TestReloadGuard(unittest.TestCase):
         self.assertNotEqual(after_t["name"], "JUNK_OPERATOR_TYPO")
 
 
+class TestWatchlistReloadGuard(unittest.TestCase):
+    """R8.7 entity editors: operator watchlist edits survive a seed reload.
+
+    Curation columns (subsector, ...) are guarded like the #9 columns; the
+    runtime active flag (not a CSV column) is untouched by the upsert; operator
+    aliases written with a distinct source escape the loader's seed-scoped
+    DELETE. Identifier/name columns still refresh so seed corrections flow.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.db = os.path.join(self.tmpdir, "wl_guard.db")
+        load(db_path=self.db)
+
+    def _conn(self):
+        conn = sqlite3.connect(self.db)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def test_operator_watchlist_edits_survive_reload(self):
+        conn = self._conn()
+        e = conn.execute("SELECT entity_id, name, subsector FROM watchlist_entities "
+                         "WHERE TRIM(COALESCE(subsector,'')) != '' LIMIT 1").fetchone()
+        eid, seed_name, seed_subsector = e["entity_id"], e["name"], e["subsector"]
+        op_subsector = seed_subsector + " -- OPERATOR EDIT"
+
+        # Operator edits: a guarded curation column + a soft-disable + operator
+        # alias/collision rows; and a JUNK edit to an unguarded column (name).
+        conn.execute("UPDATE watchlist_entities SET subsector = ?, active = 0 "
+                     "WHERE entity_id = ?", (op_subsector, eid))
+        conn.execute("UPDATE watchlist_entities SET name = 'JUNK_TYPO' "
+                     "WHERE entity_id = ?", (eid,))
+        conn.execute("INSERT INTO entity_aliases (entity_id, alias, source) "
+                     "VALUES (?, 'Operator Added Alias', 'operator')", (eid,))
+        conn.execute("INSERT INTO entity_collision_terms (entity_id, term, reason) "
+                     "VALUES (?, 'op collision', 'operator')", (eid,))
+        conn.commit()
+        conn.close()
+
+        load(db_path=self.db)          # reload must preserve operator state
+
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT subsector, active, name FROM watchlist_entities "
+            "WHERE entity_id = ?", (eid,)).fetchone()
+        alias = conn.execute(
+            "SELECT 1 FROM entity_aliases WHERE entity_id = ? AND source = 'operator'",
+            (eid,)).fetchone()
+        term = conn.execute(
+            "SELECT 1 FROM entity_collision_terms "
+            "WHERE entity_id = ? AND reason = 'operator'", (eid,)).fetchone()
+        conn.close()
+
+        # Guarded curation column + runtime flag survived.
+        self.assertEqual(row["subsector"], op_subsector)
+        self.assertEqual(row["active"], 0)
+        # Unguarded identifier/name column reverted to the seed CSV value.
+        self.assertEqual(row["name"], seed_name)
+        # Operator alias/collision rows escaped the loader's seed-scoped DELETE.
+        self.assertIsNotNone(alias)
+        self.assertIsNotNone(term)
+
+
 if __name__ == "__main__":
     unittest.main()
