@@ -21,6 +21,7 @@ at a fixture DB.
 """
 import os
 import sys
+import html
 
 import streamlit as st
 
@@ -45,6 +46,10 @@ SOURCE_STATE_DISPLAY = {
 STALE_FACT_WINDOW_DAYS = 180
 
 
+def _esc(value):
+    return html.escape("" if value is None else str(value))
+
+
 def get_conn():
     return get_connection(os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH)
 
@@ -64,13 +69,20 @@ def _render_pending(conn):
         return
 
     for item in pending:
+        raw_event_id = item["raw_event_id"]
+        candidate_entity_id = item["candidate_entity_id"]
+        item = dict(item)
+        for field in ("candidate_name", "candidate_entity_id", "subsector",
+                      "reason", "event_date", "snippet"):
+            item[field] = _esc(item.get(field))
         rowid = item["rowid"]
         subsector = f" · {item['subsector']}" if item.get("subsector") else ""
+        candidate = item.get("candidate_name") or item["candidate_entity_id"]
         conf = item.get("confidence")
         conf_txt = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
         with st.container(border=True):
             st.markdown(
-                f"<div class='gs-headline'>{item.get('candidate_name') or item['candidate_entity_id']}"
+                f"<div class='gs-headline'>{candidate}"
                 f"<span class='gs-meta'>{subsector}</span></div>",
                 unsafe_allow_html=True)
             # The resolver's decision-trail label, surfaced honestly (no
@@ -88,12 +100,12 @@ def _render_pending(conn):
             accept_col, reject_col = st.columns(2)
             if accept_col.button("Accept", key=f"accept_{rowid}"):
                 data.triage_decision(
-                    conn, item["raw_event_id"], item["candidate_entity_id"],
+                    conn, raw_event_id, candidate_entity_id,
                     accept=True)
                 st.rerun()
             if reject_col.button("Reject", key=f"reject_{rowid}"):
                 data.triage_decision(
-                    conn, item["raw_event_id"], item["candidate_entity_id"],
+                    conn, raw_event_id, candidate_entity_id,
                     accept=False)
                 st.rerun()
 
@@ -110,6 +122,10 @@ def _render_source_health(conn):
         return
     for row in rows:
         state = data.source_state(row)
+        row = dict(row)
+        for field in ("name", "source_id", "last_error_state",
+                      "last_success_at", "ttl"):
+            row[field] = _esc(row.get(field))
         emoji, label = SOURCE_STATE_DISPLAY.get(state, ("⚪", state.upper()))
         st.markdown(
             f"**{emoji} {label}** · {row['name']} "
@@ -141,6 +157,10 @@ def _render_stale_facts(conn):
     for fact in stale:
         age = fact.get("age_days")
         age_txt = f"{age}d old" if age is not None else "unverified"
+        fact = dict(fact)
+        for field in ("product_name", "product_id", "segment", "sku_or_plan",
+                      "source_quality", "verified_date"):
+            fact[field] = _esc(fact.get(field))
         segment = fact.get("segment") or ""
         sku = fact.get("sku_or_plan") or ""
         st.markdown(

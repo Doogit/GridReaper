@@ -100,6 +100,37 @@ def seed_empty(conn):
     _facts(conn)
 
 
+def seed_hostile_html(conn):
+    """HTML-looking upstream/DB text should render as text, never markup."""
+    _base(conn)
+    _facts(conn)
+    conn.execute(
+        "UPDATE watchlist_entities SET name=?, subsector=? "
+        "WHERE entity_id='E_DARK'",
+        ("<img src=x onerror=alert(1)>", "<b>muni</b>"))
+    conn.execute(
+        "UPDATE raw_events SET payload=? WHERE raw_event_id='re_rev'",
+        ('{"title": "<script>alert(2)</script>"}',))
+    conn.execute(
+        "UPDATE source_policies SET name=? WHERE source_id='sp_err'",
+        ("<b>Err Source</b>",))
+    conn.execute(
+        "UPDATE source_runs SET error_state=? WHERE run_id='r_err'",
+        ("<img src=x onerror=alert(3)>",))
+    conn.execute(
+        "UPDATE products SET name=? WHERE product_id='p_sentinel'",
+        ("<svg onload=alert(4)>",))
+    conn.execute(
+        "UPDATE license_facts SET segment=?, source_quality=? "
+        "WHERE fact_id='f_stale'",
+        ("<script>segment</script>", "<i>non-primary</i>"))
+    conn.execute(
+        "INSERT INTO review_queue (raw_event_id, candidate_entity_id, reason, "
+        "confidence, created_at, disposition) VALUES "
+        "('re_rev','E_DARK','<b>resolver</b>', 0.82, ?, 'pending')",
+        (iso(NOW),))
+
+
 def make_db(seed):
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -251,6 +282,21 @@ class TestEmptyState(ReviewPageCase):
         self.assertIn("needed no human help", text)
         # page still renders the other sections without error
         self.assertIn("Source health", text)
+
+
+class TestHtmlEscaping(ReviewPageCase):
+    def test_upstream_text_is_escaped_inside_html_blocks(self):
+        at = self._run(seed_hostile_html)
+        self.assertNoException(at)
+        text = all_text(at)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", text)
+        self.assertIn("&lt;script&gt;alert(2)&lt;/script&gt;", text)
+        self.assertIn("&lt;b&gt;resolver&lt;/b&gt;", text)
+        self.assertIn("&lt;img src=x onerror=alert(3)&gt;", text)
+        self.assertIn("&lt;svg onload=alert(4)&gt;", text)
+        self.assertIn("&lt;script&gt;segment&lt;/script&gt;", text)
+        for raw in ("<img", "<script>", "<b>resolver</b>", "<svg"):
+            self.assertNotIn(raw, text)
 
 
 if __name__ == "__main__":
