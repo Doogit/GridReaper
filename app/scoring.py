@@ -37,16 +37,30 @@ age 0 rather than silently decaying) to an injectable clock:
 rescore(conn, now=None) defaults to current UTC; tests inject a fixed now
 for determinism - same DB + same now -> identical scores.
 
+Score explainability (R8.1): compute_score returns the four multiplicative
+components (base_strength, decay, account_fit, scope_fit) alongside the score,
+and rescore() persists them to signals.score_base / score_decay /
+score_account_fit / score_scope_fit plus scored_at (the injected-clock time,
+UTC ISO-8601). The components always multiply to the stored score, so the card
+can render "2.34 = 5 x 0.85 x 1.00 x 0.55". Only status='active' rows are
+rescored; superseded/decayed/dismissed rows keep their frozen score and
+components.
+
 CLI: python -m app.scoring - takes the single-writer ingestion lock (R3.2),
 rescores data/gridsignals.db, prints a one-line summary.
 """
 import sys
+from collections import namedtuple
 from datetime import date, datetime, timezone
 
 from app.db.connection import get_connection
 
 DECAY_THRESHOLD = 1.0
 NEUTRAL_WEIGHT = 1.0
+
+# The four multiplicative factors behind a score (R8.1 explainability):
+# score == base * decay * account_fit * scope_fit.
+Score = namedtuple("Score", "score base decay account_fit scope_fit")
 
 
 def load_weights(conn):
@@ -90,14 +104,17 @@ def account_fit(weights, scope, entity_id, subsector, richness, coverage_flag):
 
 
 def compute_score(weights, row, now):
-    """Score one signal row (joined with its trigger and entity columns)."""
+    """Score one signal row (joined with its trigger and entity columns).
+    Returns a Score namedtuple carrying the score and its four components
+    (base, decay, account_fit, scope_fit) - they multiply to the score."""
     age = _age_days(row["event_date"], now)
     half_life = row["decay_half_life_days"] or 1
     decay = 0.5 ** (age / half_life)
     fit = account_fit(weights, row["signal_scope"], row["entity_id"],
                       row["subsector"], row["richness"], row["coverage_flag"])
     scope_fit = _weight(weights, "scope", row["signal_scope"])
-    return row["base_strength"] * decay * fit * scope_fit
+    base = row["base_strength"]
+    return Score(base * decay * fit * scope_fit, base, decay, fit, scope_fit)
 
 
 def rescore(conn, now=None):
@@ -106,6 +123,8 @@ def rescore(conn, now=None):
     {'scored': n, 'decayed': n}."""
     if now is None:
         now = datetime.now(timezone.utc)
+    scored_at = now.astimezone(timezone.utc).isoformat() if now.tzinfo \
+        else now.replace(tzinfo=timezone.utc).isoformat()
     weights = load_weights(conn)
     rows = conn.execute(
         "SELECT s.signal_id, s.signal_scope, s.entity_id, s.event_date, "
@@ -117,11 +136,14 @@ def rescore(conn, now=None):
         "WHERE s.status = 'active'").fetchall()
     scored = decayed = 0
     for row in rows:
-        score = compute_score(weights, row, now)
-        status = "decayed" if score < DECAY_THRESHOLD else "active"
+        sc = compute_score(weights, row, now)
+        status = "decayed" if sc.score < DECAY_THRESHOLD else "active"
         conn.execute(
-            "UPDATE signals SET score = ?, status = ? WHERE signal_id = ?",
-            (score, status, row["signal_id"]))
+            "UPDATE signals SET score = ?, status = ?, score_base = ?, "
+            " score_decay = ?, score_account_fit = ?, score_scope_fit = ?, "
+            " scored_at = ? WHERE signal_id = ?",
+            (sc.score, status, sc.base, sc.decay, sc.account_fit,
+             sc.scope_fit, scored_at, row["signal_id"]))
         scored += 1
         if status == "decayed":
             decayed += 1
