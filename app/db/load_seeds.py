@@ -41,7 +41,13 @@ TABLES = [
      "pk": ["product_id"], "int_cols": ["energy_ot_flag"]},
     {"table": "triggers", "csv": "triggers.csv",
      "pk": ["trigger_id"],
-     "int_cols": ["base_strength", "decay_half_life_days", "mvp_flag"]},
+     "int_cols": ["base_strength", "decay_half_life_days", "mvp_flag"],
+     # decay_half_life_days is Admin-tunable (R8.7 half-life sliders) - once an
+     # operator edits it, a reload must not clobber it back to the CSV value
+     # (Pattern B, same guard as source_policies.enabled below). Sibling columns
+     # still refresh from the seed CSV so seed corrections keep flowing in.
+     "update_cols": ["name", "description", "base_strength", "mvp_flag",
+                     "evidence_quality", "primary_sources"]},
     {"table": "indicator_map", "csv": "indicator_map.csv",
      "pk": ["trigger_id", "product_id"], "int_cols": [],
      "col_map": {"notes": "rationale"},
@@ -68,7 +74,10 @@ TABLES = [
      "pk": ["product_id", "tier"], "int_cols": []},
     {"table": "scoring_weights", "csv": "scoring_weights.csv",
      # weight is REAL; loader passes CSV strings, SQLite REAL affinity coerces
-     "pk": ["weight_kind", "key"], "int_cols": []},
+     "pk": ["weight_kind", "key"], "int_cols": [],
+     # weight is Admin-tunable (R8.7 weight sliders) - never clobber an operator
+     # edit on reload (Pattern B). notes still refreshes from the seed CSV.
+     "update_cols": ["notes"]},
     {"table": "source_policies", "csv": "source_policies.csv",
      "pk": ["source_id"], "int_cols": ["ttl", "enabled", "evidence_rank"],
      # enabled is admin/G2-managed after first insert - never clobber it
