@@ -1,0 +1,15 @@
+{# Reason form for a not_useful verdict (R9.1/R9.2). Server enforces the
+   reason-required rule; on error this comes back with the message. #}
+{% if error %}<div class="gs-fb-error">{{ error }}</div>{% endif %}
+<form class="gs-fb-form" hx-post="/feedback"
+      hx-target="#{{ target_id }}" hx-swap="innerHTML">
+  <input type="hidden" name="signal_id" value="{{ signal_id }}">
+  <input type="hidden" name="verdict" value="not_useful">
+  <label class="gs-fb-field">Reason
+    <select name="reason_code">
+      {% for rc in reason_codes %}<option value="{{ rc }}">{{ rc }}</option>{% endfor %}
+    </select>
+  </label>
+  <input class="gs-fb-note" type="text" name="note" placeholder="Note (optional)">
+  <button type="submit" class="gs-btn">Submit</button>
+</form>
