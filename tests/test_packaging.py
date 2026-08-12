@@ -30,9 +30,10 @@ class PackagingContractTest(unittest.TestCase):
             self.assertTrue((REPO / rel).exists(), f"seed {rel} referenced by the build is missing")
 
     def test_pipeline_modules_present(self):
-        # Every module the Dockerfile invokes with `python -m` must exist.
+        # Every module the Dockerfile invokes (CMD entrypoint + `python -m`
+        # steps) must exist.
         for rel in (
-            "app/ui/Home.py",
+            "app/ui_web/app.py",
             "app/db/load_seeds.py",
             "app/licensing.py",
             "app/scoring.py",
@@ -41,6 +42,13 @@ class PackagingContractTest(unittest.TestCase):
             "app/classify/leadership.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
+
+    def test_cmd_launches_fastapi_ui(self):
+        # Post-cutover (Chunk 7): the image serves the FastAPI + HTMX UI via
+        # uvicorn, not Streamlit. Pin it so the deploy entrypoint can't regress.
+        df = self._dockerfile()
+        self.assertIn("uvicorn app.ui_web.app:app", df, "Dockerfile CMD must launch the FastAPI app via uvicorn")
+        self.assertNotIn("streamlit", df, "Streamlit was removed at the Chunk 7 cutover")
 
     def test_build_runs_licensing_before_plays(self):
         # Silent-failure guard: without `app.licensing`, plays generate ZERO

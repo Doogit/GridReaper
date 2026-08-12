@@ -70,8 +70,8 @@ az role assignment create --assignee-object-id $PrincipalId `
 az webapp config set -g $ResourceGroup -n $AppName `
     --generic-configurations '{"acrUseManagedIdentityCreds": true}' -o none
 
-# 6. Tell App Service the container port, enable WebSockets (Streamlit needs the
-#    socket), and keep the app warm.
+# 6. Tell App Service the container port and keep the app warm. WebSockets are
+#    left enabled (harmless; the FastAPI + HTMX app does not require them).
 az webapp config appsettings set -g $ResourceGroup -n $AppName --settings WEBSITES_PORT=$Port -o none
 az webapp config set -g $ResourceGroup -n $AppName --web-sockets-enabled true --always-on true -o none
 
