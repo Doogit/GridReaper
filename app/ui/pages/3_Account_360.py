@@ -44,10 +44,13 @@ def get_conn():
 
 
 def _entities(conn):
-    """(entity_id, name) for every watchlist entity, name-ordered — the pool
-    the selector searches over."""
+    """(entity_id, name) for every ACTIVE watchlist entity, name-ordered — the
+    pool the selector searches over. Soft-disabled entities (R8.7) drop out of
+    the account list; their existing cards still render via the card queries'
+    LEFT JOIN, which is a name lookup, not an entity gate."""
     return conn.execute(
-        "SELECT entity_id, name FROM watchlist_entities ORDER BY name"
+        "SELECT entity_id, name FROM watchlist_entities WHERE active = 1 "
+        "ORDER BY name"
     ).fetchall()
 
 

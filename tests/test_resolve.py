@@ -181,5 +181,47 @@ class TestResolverBehavior(unittest.TestCase):
         conn.close()
 
 
+class TestSoftDisable(unittest.TestCase):
+    """R8.7: a soft-disabled (active=0) entity is excluded from resolution -
+    identifiers, name, aliases, and collision terms all drop out. The resolver
+    caches, so a rebuild after the edit is what applies the change."""
+
+    def _disable(self, conn, eid):
+        conn.execute("UPDATE watchlist_entities SET active = 0 WHERE entity_id = ?",
+                     (eid,))
+        conn.commit()
+
+    def test_disabled_entity_excluded_from_id_name_and_alias(self):
+        conn = fixture_conn()
+        r = EntityResolver(conn)
+        self.assertEqual(r.resolve(cik="0000004904").entity_id, "E0005")
+        self.assertEqual(r.resolve(ticker="AEP").entity_id, "E0005")
+        self.assertEqual(r.resolve(name="American Electric Power").entity_id, "E0005")
+        self.assertEqual(r.resolve(name="AEP").entity_id, "E0005")   # via alias
+
+        self._disable(conn, "E0005")
+        r2 = EntityResolver(conn)
+        self.assertIsNone(r2.resolve(cik="0000004904").entity_id)
+        self.assertIsNone(r2.resolve(ticker="AEP").entity_id)
+        self.assertIsNone(r2.resolve(name="American Electric Power").entity_id)
+        self.assertIsNone(r2.resolve(name="AEP").entity_id)          # alias dropped
+
+    def test_active_sibling_still_resolves(self):
+        conn = fixture_conn()
+        self._disable(conn, "E0005")
+        r = EntityResolver(conn)
+        self.assertEqual(r.resolve(cik="0001004980").entity_id, "E0008")  # PG&E
+
+    def test_disabled_entity_collision_term_dropped(self):
+        conn = fixture_conn()
+        # 'Dominion' is a collision term for E0004 -> a bare term yields review.
+        self.assertEqual(EntityResolver(conn).resolve(name="Dominion").status,
+                         "review")
+        self._disable(conn, "E0004")
+        res = EntityResolver(conn).resolve(name="Dominion")
+        self.assertNotEqual(res.status, "matched")
+        self.assertNotIn("E0004", [eid for eid, _ in res.candidates])
+
+
 if __name__ == "__main__":
     unittest.main()
