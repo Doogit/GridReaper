@@ -11,6 +11,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 DEPLOY_README = REPO / "deploy" / "README.md"
+PACKAGE_WORKFLOW = REPO / ".github" / "workflows" / "package.yml"
 
 
 class PackagingContractTest(unittest.TestCase):
@@ -49,6 +50,11 @@ class PackagingContractTest(unittest.TestCase):
         df = self._dockerfile()
         self.assertIn("uvicorn app.ui_web.app:app", df, "Dockerfile CMD must launch the FastAPI app via uvicorn")
         self.assertNotIn("streamlit", df, "Streamlit was removed at the Chunk 7 cutover")
+
+    def test_package_workflow_probes_fastapi_health(self):
+        workflow = PACKAGE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("/healthz", workflow)
+        self.assertNotIn("/_stcore/health", workflow)
 
     def test_build_runs_licensing_before_plays(self):
         # Silent-failure guard: without `app.licensing`, plays generate ZERO
