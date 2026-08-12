@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — Regulatory Monitor{% endblock %}
+{% block content %}
+<div class="gs-feed-head">
+  <h1 class="gs-h1">Regulatory Monitor</h1>
+  <p class="gs-muted-text">Raw regulatory records that did NOT graduate to the Signal Feed — not scored signals.</p>
+</div>
+
+<div class="gs-info">
+  These are raw Federal Register / NERC records, <strong>NOT</strong> scored
+  signals. A record graduates to the Signal Feed only when it carries a durable
+  compliance clock, an affected scope, a mapped product implication, and a
+  concrete next action (D8/R7.2). Everything here is shown verbatim from the
+  source — no score, no account, no product implication.
+</div>
+
+{% if records %}
+  {% for r in records %}
+  <div class="gs-record">
+    <div class="gs-headline">{{ r.headline }}</div>
+    {% if r.meta %}<div class="gs-meta">{{ r.meta }}</div>{% endif %}
+    <div class="gs-badges">
+      {% for chip in r.chips %}<span class="gs-badge">{{ chip }}</span>{% endfor %}
+    </div>
+    {% if r.source_url %}<a class="gs-source-link" href="{{ r.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>{% endif %}
+  </div>
+  {% endfor %}
+{% else %}
+  {% with message = empty_message %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+{% endblock %}
