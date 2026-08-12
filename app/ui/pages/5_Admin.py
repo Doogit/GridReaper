@@ -286,23 +286,26 @@ def main():
     _flash()
 
     conn = get_conn()
-    st.caption(
-        "Your edits persist across `python -m app.db.load_seeds` (the seed CSVs "
-        "are never touched); a fresh rebuild-from-seeds restores the pristine "
-        "defaults. Every save is logged in Recent config changes below.")
-    reason = st.text_input(
-        "Reason for the next edit (optional)", value="", key="admin_reason",
-        help="Attached to the audit-trail entry of whatever you save next.")
+    try:
+        st.caption(
+            "Your edits persist across `python -m app.db.load_seeds` (the seed CSVs "
+            "are never touched); a fresh rebuild-from-seeds restores the pristine "
+            "defaults. Every save is logged in Recent config changes below.")
+        reason = st.text_input(
+            "Reason for the next edit (optional)", value="", key="admin_reason",
+            help="Attached to the audit-trail entry of whatever you save next.")
 
-    _render_weights(conn, reason)
-    st.divider()
-    _render_half_lives(conn, reason)
-    st.divider()
-    _render_sources(conn, reason)
-    st.divider()
-    _render_staleness(conn)
-    st.divider()
-    _render_audit(conn)
+        _render_weights(conn, reason)
+        st.divider()
+        _render_half_lives(conn, reason)
+        st.divider()
+        _render_sources(conn, reason)
+        st.divider()
+        _render_staleness(conn)
+        st.divider()
+        _render_audit(conn)
+    finally:
+        conn.close()
 
 
 main()

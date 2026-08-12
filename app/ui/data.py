@@ -548,8 +548,11 @@ def update_weight(conn, weight_kind, key, new_weight, reason="",
         conn, "scoring_weights",
         json.dumps({"weight_kind": weight_kind, "key": key}, sort_keys=True),
         "weight", old, w, editor, reason, now)
-    conn.commit()
-    summary = rescore(conn, now=now)
+    try:
+        summary = rescore(conn, now=now)
+    except Exception:
+        conn.rollback()
+        raise
     return {"old": old, "new": w, "changed": True, **summary}
 
 
@@ -586,8 +589,11 @@ def update_half_life(conn, trigger_id, new_half_life_days, reason="",
         (hl, trigger_id))
     _record_config_edit(conn, "triggers", trigger_id, "decay_half_life_days",
                         old, hl, editor, reason, now)
-    conn.commit()
-    summary = rescore(conn, now=now)
+    try:
+        summary = rescore(conn, now=now)
+    except Exception:
+        conn.rollback()
+        raise
     return {"old": old, "new": hl, "changed": True, **summary}
 
 
