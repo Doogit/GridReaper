@@ -180,6 +180,33 @@ class TestRunClassifier(unittest.TestCase):
         self.assertEqual(sig["entity_id"], "EP1")
         self.assertEqual(sig["signal_id"], f"t_lead:{SOURCE}:1:EP1")
 
+    def test_pre_attributed_disabled_entity_dropped(self):
+        """R8.7: explicit entity_id candidates bypass EntityResolver, so the
+        classifier boundary must still honor soft-disable."""
+        self.conn.execute(
+            "UPDATE watchlist_entities SET active = 0 WHERE entity_id = 'EA1'")
+        self.conn.commit()
+        s = self.run_one({f"{SOURCE}:1": [account_candidate(entity_id="EA1")]})
+        self.assertEqual((s["signals_new"], s["dropped_no_entity"]), (0, 1))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM signals").fetchone()[0], 0)
+        book = self.conn.execute(
+            "SELECT signals_emitted FROM classified_events "
+            "WHERE raw_event_id = ?", (f"{SOURCE}:1",)).fetchone()
+        self.assertEqual(book["signals_emitted"], 0)
+
+    def test_parent_rollup_skips_disabled_parent(self):
+        """R8.7: an active child must not mint a new signal for a disabled
+        parent through the R6.5 rollup path."""
+        self.conn.execute(
+            "UPDATE watchlist_entities SET active = 0 WHERE entity_id = 'EP1'")
+        self.conn.commit()
+        s = self.run_one({f"{SOURCE}:1": [account_candidate(entity_id="EC1")]})
+        self.assertEqual(s["signals_new"], 1)
+        sig = self.conn.execute("SELECT * FROM signals").fetchone()
+        self.assertEqual(sig["entity_id"], "EC1")
+        self.assertEqual(sig["signal_id"], f"t_lead:{SOURCE}:1:EC1")
+
     def test_sector_scope_has_null_entity(self):
         s = self.run_one({f"{SOURCE}:1": [{
             "trigger_id": "t_reg", "signal_scope": "sector",
@@ -236,6 +263,14 @@ class TestTopLevelEntity(unittest.TestCase):
         self.assertEqual(top_level_entity(conn, "EC1"), "EP1")
         self.assertEqual(top_level_entity(conn, "EP1"), "EP1")
         self.assertEqual(top_level_entity(conn, "EA1"), "EA1")
+        conn.close()
+
+    def test_rollup_stops_before_disabled_parent(self):
+        conn = fixture_conn()
+        conn.execute(
+            "UPDATE watchlist_entities SET active = 0 WHERE entity_id = 'EP1'")
+        conn.commit()
+        self.assertEqual(top_level_entity(conn, "EC1"), "EC1")
         conn.close()
 
 
