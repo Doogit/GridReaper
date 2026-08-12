@@ -93,6 +93,9 @@ def _render_feed(conn):
     statuses = STATUS_FILTERS[choice]
     on_feedback = _feedback_cb(conn)
 
+    # Label both sections so the (often empty) account section reads as a
+    # deliberately-empty labeled section, not a stray warning box (R7.2/R6.6).
+    components.render_feed_divider(st, "Account signals")
     _render_group(conn, "account", statuses, legend, on_feedback)
     components.render_feed_divider(st, "Sector & regulatory")
     _render_group(conn, "sector", statuses, legend, on_feedback)

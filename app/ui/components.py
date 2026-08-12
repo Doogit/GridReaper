@@ -63,6 +63,19 @@ def _decay_ceiling(signal):
     return ceiling if ceiling > 0 else None
 
 
+def _score_breakdown(signal):
+    """R7.3 explainability line: 'score 2.34 = 5 x 0.85 x 1.00 x 0.55'
+    (base x decay x account-fit x scope-fit) from the persisted score
+    components. None until the signal has been rescored under this build."""
+    comps = (signal["score_base"], signal["score_decay"],
+             signal["score_account_fit"], signal["score_scope_fit"])
+    if signal["score"] is None or any(c is None for c in comps):
+        return None
+    base, decay, acct, scope = (float(c) for c in comps)
+    return (f"score {_fmt_score(signal['score'])} = {_fmt_score(base)} "
+            f"&times; {decay:.2f} &times; {acct:.2f} &times; {scope:.2f}")
+
+
 def render_signal_card(container, detail, legend, *, key, on_feedback=None):
     """Render one signal card (full R8.1 anatomy) into a Streamlit container.
 
@@ -110,6 +123,12 @@ def render_signal_card(container, detail, legend, *, key, on_feedback=None):
         parts.append(
             f"<div class='gs-meta'>strength {_fmt_score(score)} of "
             f"{_fmt_score(ceiling)} fresh ceiling</div>")
+    # R7.3 score decomposition (Kevin-operator "explain the number at a glance")
+    breakdown = _score_breakdown(signal)
+    if breakdown:
+        parts.append(
+            "<div class='gs-meta' title='base strength &times; time decay "
+            "&times; account fit &times; scope fit'>" + breakdown + "</div>")
 
     # badges: confidence, evidence (with legend tooltip), scope, coverage
     badges = []
@@ -129,10 +148,27 @@ def render_signal_card(container, detail, legend, *, key, on_feedback=None):
     # coverage badge only on account cards flagged dark
     if signal["signal_scope"] in ("account", "parent") and signal["coverage_flag"] == "dark":
         badges.append("<span class='gs-badge coverage-dark'>low coverage</span>")
+    # one deduped non-primary provenance badge (R4.3): a card's licensing facts
+    # can include many non-primary rows - render ONE badge listing the distinct
+    # segments, not a wall of identical chips. Price is never shown (the data
+    # layer omits price_note - R4.3/R7.11).
+    np_segments = sorted({(f["segment"] or "").strip()
+                          for snap in snapshots for f in snap.get("facts", [])
+                          if f["source_quality"] == "non-primary"
+                          and (f["segment"] or "").strip()})
+    if np_segments:
+        np_label = legend.get("source_quality", {}).get(
+            "non-primary", {}).get("label", "non-primary")
+        badges.append(
+            "<span class='gs-badge nonprimary' title='Backed in part by "
+            "non-primary licensing sources; prices never shown (R4.3)'>"
+            f"{html.escape(np_label)}: {html.escape(', '.join(np_segments))}"
+            "</span>")
     if badges:
         parts.append("<div class='gs-badges'>" + "".join(badges) + "</div>")
 
-    # product/play chips + gov-cloud caution + non-primary fact chips per snapshot
+    # product/play chips + gov-cloud caution per snapshot (non-primary provenance
+    # is summarized once in the badge row above, not repeated per fact here)
     for snap in snapshots:
         chip_label = snap.get("product_name") or snap.get("product_id") or "play"
         path = snap.get("recommended_path")
@@ -141,14 +177,6 @@ def render_signal_card(container, detail, legend, *, key, on_feedback=None):
         gov_line = _gov_caution_line(snap.get("display_text"))
         if gov_line:
             parts.append(f"<div class='gs-gov-caution'>{html.escape(gov_line)}</div>")
-        np_label = legend.get("source_quality", {}).get(
-            "non-primary", {}).get("label", "non-primary")
-        for fact in snap.get("facts", []):
-            if fact["source_quality"] == "non-primary":
-                seg = fact["segment"] or ""
-                text = f"{np_label}: {seg}".strip().rstrip(":")
-                parts.append(
-                    f"<span class='gs-badge nonprimary'>{html.escape(text)}</span>")
 
     parts.append("</div>")  # /gs-card
     container.markdown("".join(parts), unsafe_allow_html=True)

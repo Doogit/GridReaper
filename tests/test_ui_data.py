@@ -249,6 +249,28 @@ class TestSignalDetail(unittest.TestCase):
             self.assertNotIn("price_note", fact.keys())
             self.assertIn("source_quality", fact.keys())
 
+    def test_snapshot_and_facts_immune_to_license_fact_mutation(self):
+        """R7.6 + R4.3: mutating a referenced license_fact (price + verified
+        date) after the snapshot exists changes NOTHING the card reads - the
+        snapshot text is pinned and the fact projection omits price_note, so a
+        leaked price cannot reach the DOM by construction (persona: maintainer
+        + Renn)."""
+        before = data.signal_detail(self.conn, "S_ACC1")
+        self.conn.execute(
+            "UPDATE license_facts SET price_note = 'LEAKED-9999', "
+            "verified_date = '1999-01-01' WHERE fact_id = 'f_nonprimary'")
+        self.conn.commit()
+        after = data.signal_detail(self.conn, "S_ACC1")
+        # pinned snapshot text unchanged
+        self.assertEqual(before["snapshots"][0]["display_text"],
+                         after["snapshots"][0]["display_text"])
+        self.assertEqual(before["snapshots"][0]["outreach_safe_text"],
+                         after["snapshots"][0]["outreach_safe_text"])
+        # leaked price appears nowhere in the returned structure
+        for fact in after["snapshots"][0]["facts"]:
+            self.assertNotIn("LEAKED-9999", tuple(fact))
+            self.assertNotIn("price_note", fact.keys())
+
     def test_unknown_signal_returns_none(self):
         self.assertIsNone(data.signal_detail(self.conn, "nope"))
 
