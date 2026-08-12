@@ -1,6 +1,6 @@
 # Keep the build context small. NOTE: seeds/ is NOT ignored — the build loads
-# config from seeds/*.csv. .streamlit/config.toml is kept (theme). Only the
-# generated database is excluded so the build creates its own.
+# config from seeds/*.csv. Only the generated database is excluded so the build
+# creates its own.
 .git
 tests
 docs

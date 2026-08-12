@@ -17,11 +17,3 @@ uvicorn==0.46.0
 jinja2==3.1.6
 python-multipart==0.0.22
 httpx==0.28.1
-#
-# Legacy UI (app/ui/) — Streamlit. Kept runnable alongside app/ui_web/ until the
-# Chunk 7 cutover, then removed with this pin. Pinned (not >=1.57,<2) so the
-# deployed image and CI use the exact version the app is tested against. A newer
-# 1.x changed AppTest.from_file relative-path resolution, which broke the UI
-# tests under the CI-installed version; pinning keeps the artifact reproducible.
-# Bump deliberately, re-running the suite.
-streamlit==1.57.0

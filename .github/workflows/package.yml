@@ -30,7 +30,7 @@ jobs:
       - name: Wait for health
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8000/_stcore/health; then echo " healthy"; exit 0; fi
+            if curl -sf http://127.0.0.1:8000/healthz; then echo " healthy"; exit 0; fi
             sleep 2
           done
           echo "container did not become healthy in time"; exit 1
