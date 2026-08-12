@@ -318,5 +318,58 @@ class TestEntityRemoveDeleteSafety(AdminPageCase):
         conn.close()
 
 
+class TestEntityConfirmGate(AdminPageCase):
+    """The confirm checkbox is a real server-side gate (persona-pass P0): a
+    destructive action fires only when the box is checked, not on a bare click."""
+
+    def _select_e9001(self, at):
+        sb = self._widget(at, "selectbox", "ent_select")
+        opt = next(o for o in sb.options if "E9001" in o)
+        return sb.set_value(opt).run()
+
+    def test_remove_without_confirm_does_nothing(self):
+        at = self._run()
+        at = self._select_e9001(at)
+        at = self._widget(at, "button", "rmbtn_E9001").click().run()  # no confirm
+        self.assertNoException(at)
+        self.assertTrue(any("Check the box" in w.value for w in at.warning),
+                        msg=[w.value for w in at.warning])
+        conn = self._open_conn()
+        self.assertIsNotNone(conn.execute(
+            "SELECT 1 FROM watchlist_entities WHERE entity_id='E9001'").fetchone())
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+        conn.close()
+
+    def test_reset_without_confirm_does_nothing(self):
+        at = self._run()          # default selection is E0004 (seeded)
+        at = self._widget(at, "button", "rstbtn_E0004").click().run()  # no confirm
+        self.assertNoException(at)
+        self.assertTrue(any("Check the box" in w.value for w in at.warning))
+        conn = self._open_conn()
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit WHERE field='__reset__'"
+            ).fetchone()["c"], 0)
+        conn.close()
+
+    def test_reset_with_confirm_restores_and_reenables(self):
+        at = self._run()
+        # Disable + mis-edit E0004, then reset with the box checked.
+        self._widget(at, "toggle", "entactive_E0004").set_value(False).run()
+        at = self._widget(at, "button", "entactivesave_E0004").click().run()
+        self._widget(at, "text_input", "entfield_subsector_E0004"
+                     ).set_value("Wrong").run()
+        at = self._widget(at, "button", "entfieldsave_subsector_E0004").click().run()
+        self._widget(at, "checkbox", "rstok_E0004").set_value(True).run()
+        at = self._widget(at, "button", "rstbtn_E0004").click().run()
+        self.assertNoException(at)          # widget-clear flag path must not raise
+        conn = self._open_conn()
+        row = conn.execute("SELECT subsector, active FROM watchlist_entities "
+                           "WHERE entity_id='E0004'").fetchone()
+        conn.close()
+        self.assertEqual(row["subsector"], "iou_electric")   # restored from seed
+        self.assertEqual(row["active"], 1)                   # re-enabled
+
+
 if __name__ == "__main__":
     unittest.main()

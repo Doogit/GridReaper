@@ -225,7 +225,9 @@ class TestRemoveOperatorEntityDeleteSafety(unittest.TestCase):
         _seed_signal(conn, "s_op", "E_OP")           # a referencing row present
         with self.assertRaises(ValueError) as ctx:
             data.remove_operator_entity(conn, "E_OP")
-        self.assertIn("reference", str(ctx.exception).lower())
+        msg = str(ctx.exception).lower()
+        self.assertIn("reference", msg)
+        self.assertIn("signals", msg)      # breakdown names the blocking table
         # No partial delete: entity AND its alias still present.
         self.assertIsNotNone(conn.execute(
             "SELECT 1 FROM watchlist_entities WHERE entity_id='E_OP'").fetchone())

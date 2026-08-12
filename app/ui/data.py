@@ -859,19 +859,31 @@ def remove_collision_term(conn, entity_id, term, reason="",
     return {"entity_id": entity_id, "term": term, "removed": True}
 
 
-def _count_entity_references(conn, entity_id):
-    """Count rows across every table that FK-references this entity (plus both
-    directions of entity_relationships). Zero means a hard-delete is FK-safe."""
-    total = 0
+def entity_reference_breakdown(conn, entity_id):
+    """{table: count} for each FK source that references this entity (only
+    non-zero entries; both directions of entity_relationships combined). An
+    empty dict means a hard-delete is FK-safe. Drives the remove caption/error
+    so the operator sees exactly what blocks a remove, not a signals-only count."""
+    out = {}
     for table, col in _ENTITY_REFERENCING:
-        total += conn.execute(
+        n = conn.execute(
             f"SELECT COUNT(*) AS n FROM {table} WHERE {col} = ?",
             (entity_id,)).fetchone()["n"]
-    total += conn.execute(
+        if n:
+            out[table] = n
+    rel = conn.execute(
         "SELECT COUNT(*) AS n FROM entity_relationships "
         "WHERE parent_entity_id = ? OR child_entity_id = ?",
         (entity_id, entity_id)).fetchone()["n"]
-    return total
+    if rel:
+        out["entity_relationships"] = rel
+    return out
+
+
+def _count_entity_references(conn, entity_id):
+    """Total rows across every table that FK-references this entity. Zero means
+    a hard-delete is FK-safe."""
+    return sum(entity_reference_breakdown(conn, entity_id).values())
 
 
 def reset_entity_to_seed(conn, entity_id, reason="",
@@ -929,11 +941,13 @@ def remove_operator_entity(conn, entity_id, reason="",
     if row["origin"] != "operator":
         raise ValueError(
             f"entity {entity_id!r} is seed data - disable it instead of removing")
-    refs = _count_entity_references(conn, entity_id)
-    if refs:
+    breakdown = entity_reference_breakdown(conn, entity_id)
+    if breakdown:
+        detail = ", ".join(f"{table}: {n}" for table, n in breakdown.items())
+        total = sum(breakdown.values())
         raise ValueError(
-            f"{refs} row(s) reference this entity (signals / matches / review / "
-            "facilities / relationships) - disable it instead of removing")
+            f"{total} row(s) reference this entity ({detail}) - disable it "
+            "instead of removing")
     conn.execute("DELETE FROM entity_aliases WHERE entity_id = ?", (entity_id,))
     conn.execute("DELETE FROM entity_collision_terms WHERE entity_id = ?",
                  (entity_id,))

@@ -113,10 +113,11 @@ def _result_msg(fn_name, result):
     if fn_name == "add_watchlist_entity":
         return f"Added entity {result['entity_id']}."
     if fn_name == "remove_operator_entity":
-        return (f"Removed entity {result['entity_id']} and its operator "
+        return (f"Removed entity {result['entity_id']} and any operator "
                 "aliases / collision terms.")
     if fn_name == "reset_entity_to_seed":
-        return f"Reset {result['entity_id']} to its seed values."
+        return (f"Reset {result['entity_id']} to its seed values "
+                "(re-enabled; operator aliases / collision terms cleared).")
     if fn_name == "add_alias":
         return f"Added alias “{result['alias']}”."
     if fn_name == "remove_alias":
@@ -283,34 +284,65 @@ def _render_entity_terms(conn, eid, reason):
         _save(data.add_collision_term, eid, nt, reason=reason)
 
 
-def _render_entity_reset(row, reason):
-    """Reset-to-seed (seeded entity) or Remove (operator-added), each behind a
-    confirm checkbox. Remove is FK-guarded in the helper — a referencing signal
-    turns the click into a legible error, never a crash (R8.7 delete safety)."""
+def _render_entity_reset(conn, row, reason):
+    """Reset-to-seed (seeded entity) or Remove (operator-added). The confirm
+    checkbox is a REAL server-side gate — the action fires only when it is
+    checked (a `disabled=` hint alone is not a guard). Remove is additionally
+    FK-guarded in the helper: a referencing row turns the click into a legible
+    error, never a crash or orphan (R8.7 delete safety)."""
     eid = row["entity_id"]
     if row["origin"] == "seed":
         confirm = st.checkbox("Confirm reset to seed values", key=f"rstok_{eid}")
-        if st.button("Reset to seed", key=f"rstbtn_{eid}", disabled=not confirm):
-            _save(data.reset_entity_to_seed, eid, reason=reason)
+        if st.button("Reset to seed", key=f"rstbtn_{eid}"):
+            if not confirm:
+                st.warning("Check the box to confirm — Reset reverts your edits "
+                           "to the seed values and re-enables the entity.")
+            else:
+                # Flag the entity's sticky widget keys for clearing at the top of
+                # the next render (clearing them here would trip Streamlit's
+                # "modified after instantiation" guard), so the post-reset page
+                # shows the restored seed values, not the operator's typed edits.
+                st.session_state["_entity_reset_clear"] = eid
+                _save(data.reset_entity_to_seed, eid, reason=reason)
     else:
-        st.caption(
-            f"Operator-added entity. Remove is blocked while any of its "
-            f"{row['signal_count']} referencing signal(s) exist — disable it "
-            "instead of removing.")
+        refs = data.entity_reference_breakdown(conn, eid)
+        if refs:
+            detail = ", ".join(f"{t}: {n}" for t, n in refs.items())
+            st.caption(
+                f"Operator-added entity. Remove is blocked — "
+                f"{sum(refs.values())} row(s) reference it ({detail}). "
+                "Disable it instead.")
+        else:
+            st.caption("Operator-added entity. Nothing references it, so Remove "
+                       "will delete it and any operator aliases / collision terms.")
         confirm = st.checkbox("Confirm remove", key=f"rmok_{eid}")
-        if st.button("Remove entity", key=f"rmbtn_{eid}", disabled=not confirm):
-            _save(data.remove_operator_entity, eid, reason=reason)
+        if st.button("Remove entity", key=f"rmbtn_{eid}"):
+            if not confirm:
+                st.warning("Check the box to confirm — Remove permanently deletes "
+                           "this operator-added entity.")
+            else:
+                _save(data.remove_operator_entity, eid, reason=reason)
 
 
 def _render_entities(conn, reason):
+    # A just-completed reset flags its entity's sticky widget keys for clearing
+    # BEFORE those widgets are re-instantiated below, so the restored seed values
+    # display instead of the operator's now-reverted typed-in edits.
+    cleared = st.session_state.pop("_entity_reset_clear", None)
+    if cleared:
+        for k in (f"entfield_subsector_{cleared}",
+                  f"entfield_gov_cloud_likelihood_{cleared}",
+                  f"entactive_{cleared}"):
+            st.session_state.pop(k, None)
     st.subheader("Watchlist entities")
     st.caption(
         "Add, edit, or soft-disable watchlist accounts (R8.7). Disabling an "
         "entity stops FUTURE resolution and ingestion for it — existing cards "
         "keep their frozen scores. The seed CSV is never touched; edits persist "
         "across load_seeds and Reset restores a seeded entity to its seed values. "
-        "Operator-added entities have no seed, so they are Removed instead "
-        "(blocked while any signal still references them).")
+        "Operator-added entities have no seed, so they are Removed instead — "
+        "blocked while anything still references them (signals, match decisions, "
+        "review queue, facilities, or relationships).")
 
     with st.expander("Add an entity"):
         new_id = st.text_input(
@@ -365,7 +397,7 @@ def _render_entities(conn, reason):
             _save(data.update_watchlist_entity, eid, field, val, reason=reason)
 
     _render_entity_terms(conn, eid, reason)
-    _render_entity_reset(row, reason)
+    _render_entity_reset(conn, row, reason)
 
 
 # -- license-fact staleness (read-only) --------------------------------------
@@ -432,8 +464,10 @@ def main():
     theme.inject(st)
     st.title("Admin / Config")
     st.caption(
-        "Tune scoring and source policies. Every edit is recorded to an audit "
-        "trail and re-prioritizes live cards; seed files stay untouched.")
+        "Tune scoring and source policies and curate the watchlist. Every edit "
+        "is recorded to an audit trail; scoring edits re-prioritize live cards, "
+        "while source and watchlist edits take effect on the next ingestion run. "
+        "Seed files stay untouched.")
     _flash()
 
     conn = get_conn()
