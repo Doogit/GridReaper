@@ -126,8 +126,8 @@ class TestRender(AdminPageCase):
         at = self._run()
         self.assertNoException(at)
         text = all_text(at)
-        for section in ("Scoring weights", "Decay half-lives", "Source policies",
-                        "License-fact staleness", "Recent config changes"):
+        for section in ("Scoring weights", "Decay half-lives", "Source registry",
+                        "License facts", "Recent config changes"):
             self.assertIn(section, text)
 
 
@@ -369,6 +369,84 @@ class TestEntityConfirmGate(AdminPageCase):
         conn.close()
         self.assertEqual(row["subsector"], "iou_electric")   # restored from seed
         self.assertEqual(row["active"], 1)                   # re-enabled
+
+
+class TestSourceAdd(AdminPageCase):
+    def test_add_operator_source(self):
+        at = self._run()
+        self._widget(at, "text_input", "src_new_id").set_value("myfeed").run()
+        self._widget(at, "text_input", "src_new_name").set_value("My Feed").run()
+        at = self._widget(at, "button", "src_add_btn").click().run()
+        self.assertNoException(at)
+        conn = self._open_conn()
+        row = conn.execute("SELECT origin, enabled FROM source_policies "
+                           "WHERE source_id='myfeed'").fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["origin"], "operator")
+        self.assertEqual(row["enabled"], 1)
+        # Provenance table humanizes the __add__ sentinel (P2 render-only fix).
+        fields = [v for t in at.table for v in t.value["field"].tolist()]
+        self.assertIn("added", fields)
+        self.assertNotIn("__add__", fields)
+
+
+class TestSourceRemoveConfirmGate(AdminPageCase):
+    """The source Remove confirm checkbox is a real server-side gate
+    (persona-pass P0): removal fires only when the box is checked."""
+
+    def _add_operator_source(self, at):
+        self._widget(at, "text_input", "src_new_id").set_value("myfeed").run()
+        self._widget(at, "text_input", "src_new_name").set_value("My Feed").run()
+        return self._widget(at, "button", "src_add_btn").click().run()
+
+    def test_remove_without_confirm_does_nothing(self):
+        at = self._run()
+        at = self._add_operator_source(at)
+        at = self._widget(at, "button", "srcrmbtn_myfeed").click().run()  # no confirm
+        self.assertNoException(at)
+        self.assertTrue(any("Check the box" in w.value for w in at.warning),
+                        msg=[w.value for w in at.warning])
+        conn = self._open_conn()
+        self.assertIsNotNone(conn.execute(
+            "SELECT 1 FROM source_policies WHERE source_id='myfeed'").fetchone())
+        conn.close()
+
+    def test_remove_with_confirm_deletes(self):
+        at = self._run()
+        at = self._add_operator_source(at)
+        self._widget(at, "checkbox", "srcrmok_myfeed").set_value(True).run()
+        at = self._widget(at, "button", "srcrmbtn_myfeed").click().run()
+        self.assertNoException(at)
+        conn = self._open_conn()
+        self.assertIsNone(conn.execute(
+            "SELECT 1 FROM source_policies WHERE source_id='myfeed'").fetchone())
+        self.assertEqual(conn.execute(
+            "SELECT field FROM config_audit ORDER BY audit_id DESC LIMIT 1"
+            ).fetchone()["field"], "__remove__")
+        conn.close()
+
+
+class TestFactEdit(AdminPageCase):
+    def test_edit_fact_source_url_audits(self):
+        at = self._run()
+        # f_old is operator-origin (sku_or_plan NULL). Its selectbox label leads
+        # with the fact_id, so pick the option containing 'f_old'.
+        sb = self._widget(at, "selectbox", "fact_select")
+        opt = next(o for o in sb.options if "f_old" in o)
+        at = sb.set_value(opt).run()
+        self._widget(at, "text_input", "factfield_source_url_f_old"
+                     ).set_value("http://new").run()
+        at = self._widget(at, "button", "factsave_source_url_f_old"
+                          ).click().run()
+        self.assertNoException(at)
+        conn = self._open_conn()
+        self.assertEqual(conn.execute(
+            "SELECT source_url FROM license_facts WHERE fact_id='f_old'"
+            ).fetchone()["source_url"], "http://new")
+        self.assertEqual(conn.execute(
+            "SELECT field FROM config_audit").fetchone()["field"], "source_url")
+        conn.close()
 
 
 if __name__ == "__main__":

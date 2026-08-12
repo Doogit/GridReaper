@@ -39,8 +39,14 @@ Play candidates
     describes the entry step-up from an E3 baseline. The discovery question
     is conditional and never asserts the account's current tier (R7.7).
 
-Ownership: this module is the only writer of ``license_facts`` (no
-config_version column there), so rebuild deletes all facts and regenerates.
+Ownership: this module is the transform writer of ``license_facts`` (no
+config_version column there). rebuild upserts every transform-produced fact in
+place, refreshing ONLY the matrix-derived columns and EXCLUDING every column in
+EDITABLE_FACT_COLS, so an operator's Admin edit (price_note / verified_date /
+...) is never clobbered (Pattern B). Operator-added facts (fact_ids the
+transform never produces) are left untouched. Transform-owned facts that stop
+being produced are dropped only when no snapshot references them (mirrors the
+candidate keep-referenced logic); a fact cited by a snapshot is always kept.
 Candidates are upserted in place (play_ids are deterministic), never
 delete+regenerated: ``license_play_snapshots.play_id`` FK-references
 candidates, so a delete would crash the refresh on any DB that has ever
@@ -57,6 +63,17 @@ import sys
 from app.db.connection import get_connection
 
 CONFIG_VERSION = "licensing/1.0"
+
+# Fact columns an operator may edit in the Admin license-fact editor (R8.7).
+# Canonical here (a low-level module with no UI deps) so app.ui.data imports it
+# without a cycle. rebuild() EXCLUDES these from its ON CONFLICT refresh so an
+# operator edit survives a rebuild (Pattern B, the license-facts analogue of the
+# seed loader's update_cols). fact_id/product_id/sku_or_plan/segment encode the
+# fact's matrix identity and are never editable.
+EDITABLE_FACT_COLS = (
+    "price_note", "included_or_addon", "prerequisite", "effective_date",
+    "verified_date", "source_quality", "source_url",
+)
 
 # Matrix SKU id -> products.product_id family (None = baseline suite, kept
 # with NULL product_id). Every license_matrix.product_id must appear here.
@@ -150,6 +167,21 @@ DISCOVERY_QUESTION = (
 )
 
 
+def _snapshot_cited_fact_ids(conn):
+    """Set of fact_ids cited by any license_play_snapshots row. fact_ids is a
+    JSON array TEXT (not a real FK), so this hand-scans and json.loads each,
+    guarding malformed JSON the same way signal_detail does."""
+    cited = set()
+    for r in conn.execute("SELECT fact_ids FROM license_play_snapshots"):
+        try:
+            ids = json.loads(r["fact_ids"] or "[]")
+        except ValueError:
+            ids = []
+        if isinstance(ids, list):
+            cited.update(ids)
+    return cited
+
+
 def gcc_high_note(cell):
     """Map the freeform gcc_high cell to a gcc_high-segment price_note, or
     None for an empty cell. Lossless: the raw cell follows the prefix."""
@@ -189,15 +221,31 @@ def build_facts(matrix_rows):
 
 
 def rebuild(conn):
-    """Delete-and-regenerate license_facts and this config version's
-    license_play_candidates from the seeded config. Returns counts."""
+    """Regenerate this config version's license_facts and
+    license_play_candidates from the seeded config, preserving operator edits.
+    Returns counts.
+
+    license_facts is upserted in place: each transform-produced fact refreshes
+    ONLY its matrix identity columns (product_id, sku_or_plan, segment) and
+    EXCLUDES every EDITABLE_FACT_COL, so an operator's Admin edit is never
+    clobbered (Pattern B). Operator-added facts (sku_or_plan IS NULL, never in
+    the transform output) are left untouched. Transform-owned facts that stop
+    being produced are dropped only when no snapshot cites them.
+
+    Tradeoff: because the EDITABLE_FACT_COLs are frozen on an existing fact, a
+    seed CONTENT correction to one of those columns (e.g. a new price_note or
+    verified_date in license_matrix.csv) does NOT propagate to an already-existing
+    fact on rebuild - the frozen value protects operator edits. A from-scratch
+    rebuild (empty license_facts) yields pristine matrix values for every fact."""
     matrix_rows = conn.execute(
         "SELECT product_id, tier, included_or_addon, addon_price_note, "
         " upgrade_path, gcc_high, source_quality, verified_date, source_url "
         "FROM license_matrix ORDER BY product_id, tier").fetchall()
     facts = build_facts(matrix_rows)
 
-    conn.execute("DELETE FROM license_facts")
+    # Upsert in place. The DO UPDATE refreshes only the matrix-derived identity
+    # columns (product_id, sku_or_plan, segment); every EDITABLE_FACT_COL is
+    # omitted from the SET clause, so an operator edit survives a rebuild.
     for (fact_id, segment, price_note, family, sku_or_plan, included_or_addon,
          prerequisite, effective_date, verified_date, source_quality,
          source_url) in facts:
@@ -205,10 +253,26 @@ def rebuild(conn):
             "INSERT INTO license_facts (fact_id, product_id, sku_or_plan, "
             " segment, price_note, included_or_addon, prerequisite, "
             " effective_date, verified_date, source_quality, source_url) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(fact_id) DO UPDATE SET product_id=excluded.product_id, "
+            " sku_or_plan=excluded.sku_or_plan, segment=excluded.segment",
             (fact_id, family, sku_or_plan, segment, price_note,
              included_or_addon, prerequisite, effective_date, verified_date,
              source_quality, source_url))
+
+    # Drop transform-owned facts (sku_or_plan IS NOT NULL) that this rebuild no
+    # longer produced AND that no snapshot cites - mirrors the stale-candidate
+    # keep-referenced logic below. Operator-added facts (sku_or_plan IS NULL)
+    # are never dropped here.
+    produced_fact_ids = {f[0] for f in facts}
+    snapshot_cited = _snapshot_cited_fact_ids(conn)
+    for r in conn.execute(
+            "SELECT fact_id FROM license_facts "
+            "WHERE sku_or_plan IS NOT NULL ORDER BY fact_id").fetchall():
+        fid = r["fact_id"]
+        if fid in produced_fact_ids or fid in snapshot_cited:
+            continue
+        conn.execute("DELETE FROM license_facts WHERE fact_id = ?", (fid,))
 
     upgrade_paths = {(r["product_id"], r["tier"]): r["upgrade_path"]
                      for r in matrix_rows}
@@ -268,16 +332,20 @@ def rebuild(conn):
                 "DELETE FROM license_play_candidates WHERE play_id = ?",
                 (r["play_id"],))
 
-    # Integrity sweep: snapshot fact_ids must still resolve after the facts
-    # delete+regenerate (a SKU/tier rename orphans pinned evidence).
-    fact_ids = {f[0] for f in facts}
+    # Integrity sweep: snapshot fact_ids must still resolve in license_facts
+    # after the rebuild (a SKU/tier rename orphans pinned evidence). Checked
+    # against the live table, so an operator-added cited fact resolves too.
+    live_fact_ids = {r["fact_id"] for r in conn.execute(
+        "SELECT fact_id FROM license_facts")}
     orphaned_fact_refs = 0
     for r in conn.execute("SELECT fact_ids FROM license_play_snapshots"):
         try:
             ids = json.loads(r["fact_ids"] or "[]")
         except ValueError:
             ids = []
-        orphaned_fact_refs += sum(1 for i in ids if i not in fact_ids)
+        if not isinstance(ids, list):
+            ids = []
+        orphaned_fact_refs += sum(1 for i in ids if i not in live_fact_ids)
     conn.commit()
 
     by_segment = {}

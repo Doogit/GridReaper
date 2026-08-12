@@ -224,22 +224,47 @@ class TestPlayCandidates(LicensingTestCase):
         self.assertEqual(counts["stale_kept"], ["own_incident:def_endpoint"])
         self.assertEqual(len(self.candidates()), 1)   # kept, not deleted
 
-    def test_rebuild_reports_orphaned_snapshot_fact_refs(self):
-        """A SKU/tier rename must be loud: pinned fact_ids that no longer
-        resolve are counted, never silently orphaned."""
+    def test_rebuild_preserves_snapshot_cited_fact_across_rename(self):
+        """A SKU/tier rename must not orphan pinned evidence. Under the Pattern B
+        guard rebuild upserts in place and never drops a snapshot-cited fact, so
+        the old cited fact_ids still resolve after the rename (the renamed tier
+        adds new facts alongside). orphaned_fact_refs stays 0: the pinned card
+        keeps explaining itself (R7.6)."""
         self._seed_play()
         self.add_matrix("defender_endpoint_p1", "e3")
         rebuild(self.conn)
-        self._add_snapshot("sig-1", "own_incident:def_endpoint",
-                           ["defender_endpoint_p1:e3:commercial",
-                            "defender_endpoint_p1:e3:gcc_high"])
+        cited = ["defender_endpoint_p1:e3:commercial",
+                 "defender_endpoint_p1:e3:gcc_high"]
+        self._add_snapshot("sig-1", "own_incident:def_endpoint", cited)
         # rename the tier (a normal quarterly Microsoft move)
         self.conn.execute(
             "UPDATE license_matrix SET tier = 'e3_new' "
             "WHERE product_id = 'defender_endpoint_p1'")
         self.conn.commit()
         counts = rebuild(self.conn)
-        self.assertEqual(counts["orphaned_fact_refs"], 2)
+        self.assertEqual(counts["orphaned_fact_refs"], 0)
+        # The cited facts survive the rebuild (pinned, not dropped).
+        for fid in cited:
+            self.assertIsNotNone(self.conn.execute(
+                "SELECT 1 FROM license_facts WHERE fact_id = ?", (fid,)).fetchone())
+
+    def test_rebuild_ignores_non_array_snapshot_fact_ids(self):
+        """Only JSON arrays are citation lists. A malformed-but-valid JSON string
+        must not keep a stale transform fact alive after a SKU/tier rename."""
+        self._seed_play()
+        self.add_matrix("defender_endpoint_p1", "e3")
+        rebuild(self.conn)
+        stale_fid = "defender_endpoint_p1:e3:commercial"
+        self._add_snapshot("sig-1", "own_incident:def_endpoint", stale_fid)
+        self.conn.execute(
+            "UPDATE license_matrix SET tier = 'e3_new' "
+            "WHERE product_id = 'defender_endpoint_p1'")
+        self.conn.commit()
+        counts = rebuild(self.conn)
+        self.assertEqual(counts["orphaned_fact_refs"], 0)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM license_facts WHERE fact_id = ?",
+            (stale_fid,)).fetchone())
 
     def test_missing_canonical_sku_row_raises(self):
         # indicator family present but its canonical play SKU row is absent

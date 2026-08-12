@@ -90,7 +90,11 @@ TABLES = [
      "update_cols": ["notes"]},
     {"table": "source_policies", "csv": "source_policies.csv",
      "pk": ["source_id"], "int_cols": ["ttl", "enabled", "evidence_rank"],
-     # enabled is admin/G2-managed after first insert - never clobber it
+     # enabled is admin/G2-managed after first insert - never clobber it. origin
+     # (migration 0009) is a runtime/provenance column absent from the CSV, so it
+     # is never in this SET clause (like watchlist active/origin) - operator-added
+     # sources keep origin='operator' across reload. No seed-scoped DELETE here,
+     # so operator-added source rows survive reload too (Pattern B, R9.5).
      "update_cols": ["name", "access_method", "ttl", "tos_status",
                      "evidence_rank", "rate_limit", "last_policy_review"]},
     # UI badge legend (R4.3/R8.1): plain upsert, FK-referenced by nothing.
