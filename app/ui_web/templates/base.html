@@ -12,7 +12,8 @@
     <span class="gs-brand">GridSignals</span>
     <nav class="gs-nav">
       <a href="/" class="{{ 'active' if nav_active == 'home' else '' }}">Home</a>
-      {# feed / account / review / precision / regulatory / admin land in later chunks #}
+      <a href="/account" class="{{ 'active' if nav_active == 'account' else '' }}">Account 360</a>
+      {# review / precision / regulatory / admin land in later chunks #}
     </nav>
   </header>
   <div id="flash" class="gs-flash" aria-live="polite">{% block flash %}{% endblock %}</div>

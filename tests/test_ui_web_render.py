@@ -91,5 +91,64 @@ class TestExtraction(unittest.TestCase):
         self.assertEqual(render.first_outreach([{"outreach_safe_text": ""}]), "")
 
 
+class TestAccountHeaderView(unittest.TestCase):
+    def _entity(self, **over):
+        base = {"entity_id": "E1", "name": "Acme", "subsector": "iou_electric",
+                "richness": "high", "coverage_flag": "edgar-visible",
+                "gov_cloud_likelihood": "possible",
+                "tenant_cloud_environment": "commercial",
+                "cik": "0000123", "lei": None, "wikidata_qid": None,
+                "ticker": "ACME"}
+        base.update(over)
+        return base
+
+    def _view(self, entity=None, parent=None, children=None):
+        return render.account_header_view(
+            {"entity": entity or self._entity(), "parent": parent,
+             "children": children or []})
+
+    def test_identifiers_skip_blank_and_append_entity_id(self):
+        v = self._view()
+        self.assertEqual(v["identifiers"],
+                         ["CIK 0000123", "Ticker ACME", "entity_id E1"])
+
+    def test_dark_coverage_reads_low_coverage(self):
+        v = self._view(self._entity(coverage_flag="dark"))
+        self.assertEqual(v["coverage_badge"]["cls"], "gs-badge coverage-dark")
+        self.assertIn("low coverage", v["coverage_badge"]["text"])
+
+    def test_non_dark_coverage_labeled(self):
+        self.assertEqual(self._view()["coverage_badge"]["text"],
+                         "coverage: edgar-visible")
+
+    def test_missing_columns_default_unknown_and_name_falls_back(self):
+        # a sparse row missing posture columns still shapes without raising
+        v = self._view({"entity_id": "E2", "name": None})
+        self.assertEqual(v["name"], "E2")           # falls back to entity_id
+        self.assertEqual(v["subsector"], "unknown")
+        self.assertEqual(v["gov_cloud"], "unknown")
+        self.assertEqual(v["identifiers"], ["entity_id E2"])
+
+    def test_parent_and_children_carry_entity_id_for_links(self):
+        v = self._view(parent={"entity_id": "E0", "name": "Parent Co"},
+                       children=[{"entity_id": "E9", "name": "Sub Co"}])
+        self.assertEqual(v["parent"], {"entity_id": "E0", "name": "Parent Co"})
+        self.assertEqual(v["children"][0]["entity_id"], "E9")
+
+
+class TestTimelineRows(unittest.TestCase):
+    def test_rows_shape_and_scope_label(self):
+        rows = render.timeline_rows([
+            {"event_date": "2026-07-27", "headline": "Acme names CISO",
+             "signal_scope": "account"},
+            {"event_date": None, "headline": None,
+             "signal_scope": "regulatory_calendar"}])
+        self.assertEqual(rows[0], {"date": "2026-07-27",
+                                   "headline": "Acme names CISO",
+                                   "scope_label": "Account"})
+        self.assertEqual(rows[1], {"date": "", "headline": "",
+                                   "scope_label": "Regulatory"})
+
+
 if __name__ == "__main__":
     unittest.main()

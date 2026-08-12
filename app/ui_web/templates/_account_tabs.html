@@ -1,0 +1,31 @@
+{# Account 360 tabs — Timeline + Signals (R8.3). CSS-only tab toggle (radio
+   inputs + :checked sibling rules); no JS, no server round-trip to switch tabs.
+   Timeline is a compact chronological list; Signals reuses _card.html and its
+   feedback flow verbatim. Both tabs carry an honest low-volume-by-design empty
+   state (R6.6) — a dark, zero-signal account renders these, never a crash. #}
+<div class="gs-tabs">
+  <input type="radio" name="gs-acct-tab" id="gs-tab-timeline" class="gs-tab-input" checked>
+  <input type="radio" name="gs-acct-tab" id="gs-tab-signals" class="gs-tab-input">
+  <div class="gs-tablist">
+    <label class="gs-tab" for="gs-tab-timeline">Timeline</label>
+    <label class="gs-tab" for="gs-tab-signals">Signals</label>
+  </div>
+
+  <div class="gs-tabpanel gs-tabpanel-timeline">
+    {% if timeline %}
+    {% for t in timeline %}
+    <div class="gs-evidence"><span class="gs-locator">{{ t.date }}</span> &nbsp; {{ t.headline }} <span class="gs-badge scope">{{ t.scope_label }}</span></div>
+    {% endfor %}
+    {% else %}
+    {% with message = "No account-scoped signals yet for this account — low volume by design. When an external event maps to this entity it appears here, newest first." %}{% include "_empty.html" %}{% endwith %}
+    {% endif %}
+  </div>
+
+  <div class="gs-tabpanel gs-tabpanel-signals">
+    {% if cards %}
+    {% for c in cards %}{% include "_card.html" %}{% endfor %}
+    {% else %}
+    {% with message = "No account-scoped signal cards yet — low volume by design. This account currently surfaces only through its profile above." %}{% include "_empty.html" %}{% endwith %}
+    {% endif %}
+  </div>
+</div>

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — Account 360{% endblock %}
+{% block content %}
+<div class="gs-feed-head">
+  <h1 class="gs-h1">Account 360</h1>
+  <p class="gs-muted-text">Per-account signal history, relationships, and gov-cloud posture.</p>
+  {% if entities %}
+  <label class="gs-status">Account
+    <select name="entity_id" hx-get="/account/body" hx-target="#gs-account-body" hx-swap="innerHTML"
+            title="Switch accounts; the header and tabs reload for the selected entity.">
+      {% for e in entities %}
+      <option value="{{ e['entity_id'] }}"{% if e['entity_id'] == selected %} selected{% endif %}>{{ e['name'] }}  ·  {{ e['entity_id'] }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endif %}
+</div>
+
+<div id="gs-account-body">
+  {% include "_account_body.html" %}
+</div>
+{% endblock %}

@@ -31,6 +31,16 @@ _SCOPE_LABELS = {
     "regulatory_calendar": "Regulatory",
 }
 
+# Account 360 header identifier columns, in display order (R8.3). Rendered only
+# when the entity row actually carries a value — many entities are sparse.
+# Mirrors _ID_FIELDS in app/ui/pages/3_Account_360.py.
+_ID_FIELDS = (
+    ("cik", "CIK"),
+    ("lei", "LEI"),
+    ("wikidata_qid", "Wikidata"),
+    ("ticker", "Ticker"),
+)
+
 
 def severity_band(score):
     """Map a signal ``score`` to a severity band (R8.1). None reads low."""
@@ -168,6 +178,71 @@ def _chips(snapshots):
         chips.append({"text": label + (f": {path}" if path else ""),
                       "gov_caution": gov_caution_line(snap.get("display_text"))})
     return chips
+
+
+def _row_get(row, key):
+    """sqlite3.Row has no .get(); return the value or None if the column is
+    absent (entity rows are sparse). Mirrors the Streamlit page's _row_get."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
+def account_header_view(header):
+    """Assemble the Account 360 header (R8.3) from data.account_header().
+
+    Pure display shaping ported from app/ui/pages/3_Account_360._render_header:
+    the sparse identifier line, the subsector/richness/coverage badges (dark
+    accounts read 'low coverage', never 'no activity', R6.6), gov-cloud posture
+    (R7.10), and parent/child rows carrying entity_id so the template can link
+    to the related account. The template autoescapes every string here.
+    """
+    entity = header["entity"]
+    name = entity["name"] or entity["entity_id"]
+
+    identifiers = []
+    for col, label in _ID_FIELDS:
+        val = _row_get(entity, col)
+        if val is not None and str(val).strip():
+            identifiers.append(f"{label} {str(val).strip()}")
+    identifiers.append(f"entity_id {entity['entity_id']}")
+
+    coverage = _row_get(entity, "coverage_flag") or "unknown"
+    if coverage == "dark":
+        coverage_badge = {"cls": "gs-badge coverage-dark",
+                          "text": "low coverage (dark)"}
+    else:
+        coverage_badge = {"cls": "gs-badge",
+                          "text": f"coverage: {coverage}"}
+
+    parent = header.get("parent")
+    children = header.get("children") or []
+    return {
+        "name": name,
+        "entity_id": entity["entity_id"],
+        "identifiers": identifiers,
+        "subsector": str(_row_get(entity, "subsector") or "unknown"),
+        "richness": str(_row_get(entity, "richness") or "unknown"),
+        "coverage_badge": coverage_badge,
+        "gov_cloud": str(_row_get(entity, "gov_cloud_likelihood") or "unknown"),
+        "tenant_env": str(_row_get(entity, "tenant_cloud_environment")
+                          or "unknown"),
+        "parent": ({"entity_id": parent["entity_id"], "name": parent["name"]}
+                   if parent is not None else None),
+        "children": [{"entity_id": c["entity_id"], "name": c["name"]}
+                     for c in children],
+    }
+
+
+def timeline_rows(signals):
+    """Compact chronological rows for the Account 360 Timeline tab: date,
+    headline, and a scope label per account signal (newest first, as ordered by
+    data.account_signals). Pure — the template escapes the strings."""
+    return [{"date": str(s["event_date"] or ""),
+             "headline": s["headline"] or "",
+             "scope_label": scope_label(s["signal_scope"])}
+            for s in signals]
 
 
 def card_view(detail, legend):

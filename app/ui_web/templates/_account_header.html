@@ -1,0 +1,22 @@
+{# Account 360 header (R8.3), driven by render.account_header_view() as `account`.
+   All text autoescaped (XSS guard). Dark accounts read "low coverage", never
+   "no activity" (R6.6). Parent/children link to their own account pages. #}
+<div class="gs-account-header">
+  <h2 class="gs-account-name">{{ account.name }}</h2>
+  <p class="gs-muted-text">{{ account.identifiers | join(" · ") }}</p>
+  <div class="gs-badges">
+    <span class="gs-badge scope">{{ account.subsector }}</span>
+    <span class="gs-badge">richness: {{ account.richness }}</span>
+    <span class="{{ account.coverage_badge.cls }}">{{ account.coverage_badge.text }}</span>
+  </div>
+  <div class="gs-meta">Gov-cloud likelihood: <strong>{{ account.gov_cloud }}</strong> · tenant environment: {{ account.tenant_env }}</div>
+  {% if account.parent %}
+  <div class="gs-meta">Parent: <a class="gs-source-link" href="/account?entity_id={{ account.parent.entity_id | urlencode }}">{{ account.parent.name }}</a></div>
+  {% endif %}
+  {% if account.children %}
+  <div class="gs-meta">Subsidiaries: {% for c in account.children %}<a class="gs-source-link" href="/account?entity_id={{ c.entity_id | urlencode }}">{{ c.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</div>
+  {% endif %}
+  {% if not account.parent and not account.children %}
+  <div class="gs-meta">No mapped parent or subsidiaries.</div>
+  {% endif %}
+</div>
