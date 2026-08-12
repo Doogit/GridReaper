@@ -12,7 +12,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# The pipeline + data layer are stdlib-only; requirements.txt is just Streamlit.
+# The pipeline + data layer are stdlib-only; requirements.txt installs UI-only
+# packages: Streamlit for the deployed app and FastAPI stack for the parallel
+# web scaffold/tests.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
