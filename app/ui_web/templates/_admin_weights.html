@@ -1,0 +1,28 @@
+{% include "_admin_flash.html" %}
+<section id="admin-weights" class="gs-admin-section">
+  <h2 class="gs-admin-h2">Scoring weights</h2>
+  <p class="gs-muted-text">Account-fit and scope-fit multipliers (R7.5). Saving a
+    weight re-runs scoring on active cards only — decayed and dismissed cards keep
+    their frozen score. Unknown keys already fall back to a neutral 1.0.</p>
+  {% if not weight_groups %}
+    <div class="gs-empty">No scoring weights seeded.</div>
+  {% else %}
+    {% for group in weight_groups %}
+    <div class="gs-admin-group">
+      <div class="gs-admin-group-head">{{ group.label }}
+        <span class="gs-meta">({{ group.kind }})</span></div>
+      {% for r in group.rows %}
+      <form class="gs-admin-row" hx-post="/admin/weight" hx-target="#admin-weights"
+            hx-swap="outerHTML" hx-include="[name='reason']">
+        <input type="hidden" name="weight_kind" value="{{ r.kind }}">
+        <input type="hidden" name="key" value="{{ r.key }}">
+        <label class="gs-admin-label">{{ r.kind }} · {{ r.key }}
+          <input class="gs-admin-num" type="number" name="weight" step="0.05"
+                 min="0" value="{{ '%.2f' % r.weight }}"></label>
+        <button type="submit" class="gs-btn">Save</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  {% endif %}
+</section>

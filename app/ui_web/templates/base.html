@@ -16,7 +16,7 @@
       <a href="/review" class="{{ 'active' if nav_active == 'review' else '' }}">Review</a>
       <a href="/precision" class="{{ 'active' if nav_active == 'precision' else '' }}">Precision</a>
       <a href="/regulatory" class="{{ 'active' if nav_active == 'regulatory' else '' }}">Regulatory</a>
-      {# admin lands in a later chunk #}
+      <a href="/admin" class="{{ 'active' if nav_active == 'admin' else '' }}">Admin</a>
     </nav>
   </header>
   <div id="flash" class="gs-flash" aria-live="polite">{% block flash %}{% endblock %}</div>

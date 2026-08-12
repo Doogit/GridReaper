@@ -247,3 +247,59 @@
 .gs-info { background: var(--gs-chip-bg); border: 1px solid var(--gs-card-border);
   border-left: 3px solid var(--gs-accent); border-radius: 8px; padding: 12px 14px;
   margin-bottom: 16px; color: var(--gs-text); font-size: 0.85rem; line-height: 1.5; }
+
+/* ---- Admin (Chunk 6) ----
+ * NEW hand-authored component styles (R8.9), flagged in the chunk PR. The admin
+ * page is form-heavy (a Save button per config row) plus a provenance table and
+ * a flash region that carries success / info / warning / error levels via an
+ * OOB swap. Reuses --gs-* tokens and the existing .gs-btn / .gs-empty / .gs-meta
+ * primitives; only the section/form/table/flash-level rules are new here. */
+.gs-admin-head { margin-bottom: 18px; }
+.gs-admin-head .gs-h1 { margin-bottom: 6px; }
+
+.gs-admin-section { margin: 22px 0; padding-top: 16px; border-top: 1px solid var(--gs-card-border); }
+.gs-admin-h2 { margin: 0 0 4px; font-size: 1.05rem; font-weight: 600; color: var(--gs-text); }
+.gs-admin-section .gs-muted-text { margin-bottom: 10px; }
+
+.gs-admin-group { margin: 10px 0; }
+.gs-admin-group-head { font-weight: 600; margin: 8px 0 4px; color: var(--gs-text); }
+
+.gs-admin-row, .gs-admin-form {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0;
+}
+.gs-admin-form { flex-direction: column; align-items: stretch; max-width: 420px;
+  background: var(--gs-card); border: 1px solid var(--gs-card-border);
+  border-radius: 8px; padding: 12px 14px; }
+.gs-admin-label { display: inline-flex; flex-direction: column; gap: 4px;
+  color: var(--gs-muted); font-size: 0.82rem; }
+.gs-admin-toggle { display: inline-flex; align-items: center; gap: 6px;
+  color: var(--gs-text); font-size: 0.85rem; }
+.gs-admin-num { width: 120px; }
+.gs-admin-label input[type="text"], .gs-admin-label input[type="number"],
+.gs-admin-label select {
+  background: var(--gs-chip-bg); color: var(--gs-text);
+  border: 1px solid var(--gs-card-border); border-radius: 6px;
+  padding: 4px 8px; font-size: 0.85rem;
+}
+.gs-btn-danger:hover { border-color: var(--gs-crit); color: var(--gs-crit); }
+
+.gs-admin-item { background: var(--gs-card); border: 1px solid var(--gs-card-border);
+  border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+.gs-admin-item-head { margin-bottom: 4px; color: var(--gs-text); }
+.gs-admin-terms { margin: 10px 0; padding: 8px 0; border-top: 1px dashed var(--gs-card-border); }
+.gs-admin-add { margin: 8px 0 14px; }
+.gs-admin-add > summary { cursor: pointer; color: var(--gs-accent); font-size: 0.85rem; }
+
+.gs-admin-table-wrap { overflow-x: auto; }
+.gs-admin-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.gs-admin-table th, .gs-admin-table td {
+  text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--gs-card-border);
+  color: var(--gs-text); white-space: nowrap;
+}
+.gs-admin-table th { color: var(--gs-muted); font-weight: 600; }
+
+/* Flash levels: base .gs-flash is warning-toned; success/info/error recolor it. */
+.gs-flash-success { background: #12261a; border-color: #2ea043; color: var(--gs-low); }
+.gs-flash-info { background: #12233b; border-color: #274b7a; color: #9cc6ff; }
+.gs-flash-warning { background: var(--gs-warn-bg); border-color: var(--gs-warn-border); color: #f0c674; }
+.gs-flash-error { background: #3d1418; border-color: var(--gs-crit); color: var(--gs-crit); }

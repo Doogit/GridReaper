@@ -528,6 +528,144 @@ def precision_run_history(run_rows):
     return out
 
 
+# -- Admin / config (Chunk 6) ------------------------------------------------
+#
+# Pure display helpers ported from app/ui/pages/5_Admin.py so the admin route +
+# templates render the exact same result messages and provenance labels the
+# Streamlit page did. Every string returned here is autoescaped by the template.
+
+# Friendly headers for the scoring_weights.weight_kind groups (R7.5); mirrors
+# WEIGHT_KIND_LABELS in the Streamlit Admin page.
+WEIGHT_KIND_LABELS = {
+    "subsector": "Subsector fit",
+    "richness": "Account richness",
+    "coverage": "Coverage",
+    "applicability": "Regulatory applicability",
+    "scope": "Signal scope fit",
+}
+
+# config_audit "field" sentinels for row-level lifecycle edits -> operator-facing
+# labels (render only; config_audit still stores the sentinel). Mirrors
+# _FIELD_LABELS in the Streamlit page.
+_AUDIT_FIELD_LABELS = {
+    "__add__": "added",
+    "__remove__": "removed",
+    "__reset__": "reset to seed",
+}
+
+
+def weight_kind_label(kind):
+    return WEIGHT_KIND_LABELS.get(kind, kind)
+
+
+def _enabled_label(value):
+    return "Enabled" if value else "Disabled"
+
+
+def _active_label(value):
+    return "Active" if value else "Disabled"
+
+
+def result_message(fn_name, result):
+    """Operator-facing flash text for one config-write result (ported verbatim
+    from the Streamlit page's _result_msg). ``fn_name`` is the data.py helper
+    name; ``result`` is its return dict."""
+    if not result.get("changed", True):
+        if fn_name == "set_source_enabled":
+            return f"No change — source already {_enabled_label(result['new'])}."
+        if fn_name == "set_entity_active":
+            return f"No change — entity already {_active_label(result['new'])}."
+        return f"No change — value already {result['new']}."
+    if fn_name == "add_watchlist_entity":
+        return f"Added entity {result['entity_id']}."
+    if fn_name == "remove_operator_entity":
+        return (f"Removed entity {result['entity_id']} and any operator "
+                "aliases / collision terms.")
+    if fn_name == "reset_entity_to_seed":
+        return (f"Reset {result['entity_id']} to its seed values "
+                "(re-enabled; operator aliases / collision terms cleared).")
+    if fn_name == "add_alias":
+        return f"Added alias “{result['alias']}”."
+    if fn_name == "remove_alias":
+        return f"Removed alias “{result['alias']}”."
+    if fn_name == "add_collision_term":
+        return f"Added collision term “{result['term']}”."
+    if fn_name == "remove_collision_term":
+        return f"Removed collision term “{result['term']}”."
+    if fn_name == "add_license_fact":
+        return f"Added license fact {result['fact_id']}."
+    if fn_name == "add_source":
+        return f"Added source {result['source_id']}."
+    if fn_name == "remove_source":
+        return f"Removed source {result['source_id']}."
+    if fn_name == "set_source_enabled":
+        return (f"Saved: {_enabled_label(result['old'])} → "
+                f"{_enabled_label(result['new'])}.")
+    if fn_name == "set_entity_active":
+        return (f"Saved: {_active_label(result['old'])} → "
+                f"{_active_label(result['new'])}.")
+    if "scored" in result:
+        return (f"Saved: {result['old']} → {result['new']}. "
+                f"{result['scored']} active card(s) rescored, "
+                f"{result['decayed']} decayed.")
+    return f"Saved: {result['old']} → {result['new']}."
+
+
+def result_level(fn_name, result):
+    """The flash level for a successful config write: 'info' for a no-op save
+    (nothing written), 'success' otherwise — mirrors the Streamlit page."""
+    return "success" if result.get("changed", True) else "info"
+
+
+def humanize_audit_field(field):
+    return _AUDIT_FIELD_LABELS.get(field, field)
+
+
+def humanize_audit_pk(table_name, pk):
+    """scoring_weights stores a JSON composite pk; render it 'kind · key' so the
+    provenance table reads cleanly. Other tables use a bare pk already. Mirrors
+    _humanize_pk in the Streamlit page."""
+    if table_name == "scoring_weights":
+        from json import loads
+        try:
+            d = loads(pk)
+            return f"{d['weight_kind']} · {d['key']}"
+        except (ValueError, KeyError, TypeError):
+            return pk
+    return pk
+
+
+def audit_view(rows):
+    """Provenance rows for the Recent config changes table, humanizing the pk +
+    field sentinels. Pure; the template autoescapes every string."""
+    return [{
+        "when": r["ts"],
+        "table": r["table_name"],
+        "row": humanize_audit_pk(r["table_name"], r["pk"]),
+        "field": humanize_audit_field(r["field"]),
+        "old_new": f"{r['old_value']} → {r['new_value']}",
+        "reason": r["reason"] or "",
+    } for r in rows]
+
+
+def staleness_view(stale):
+    """Stale license-fact rows for the R10.7 list, with literal field-stating age
+    labels ('verified N days ago' / 'verification date unknown' — never an
+    interpretive 'unverified'). Mirrors _render_staleness."""
+    out = []
+    for fact in stale:
+        age = fact.get("age_days")
+        age_txt = (f"verified {age} days ago" if age is not None
+                   else "verification date unknown")
+        out.append({
+            "product": fact.get("product_name") or fact.get("product_id"),
+            "sku_or_plan": fact.get("sku_or_plan"),
+            "segment": fact.get("segment"),
+            "age_txt": age_txt,
+        })
+    return out
+
+
 def timeline_rows(signals):
     """Compact chronological rows for the Account 360 Timeline tab: date,
     headline, and a scope label per account signal (newest first, as ordered by

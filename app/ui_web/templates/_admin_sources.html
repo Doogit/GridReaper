@@ -1,0 +1,71 @@
+{% include "_admin_flash.html" %}
+<section id="admin-sources" class="gs-admin-section">
+  <h2 class="gs-admin-h2">Source registry</h2>
+  <p class="gs-muted-text">Enable or disable a source (R8.7), or add / remove an
+    operator source (R9.5). Gate G2 recommends demotion when a source's precision
+    falls below 40% over enough rated cards — a recommendation to REVIEW, never an
+    auto-action. Seeded sources are disabled, never removed; only an operator-added,
+    zero-reference source can be removed.</p>
+
+  <details class="gs-admin-add">
+    <summary>Add a source</summary>
+    <form class="gs-admin-form" hx-post="/admin/source/add" hx-target="#admin-sources"
+          hx-swap="outerHTML" hx-include="[name='reason']">
+      <label class="gs-admin-label">Source ID
+        <input type="text" name="source_id"></label>
+      <label class="gs-admin-label">Name
+        <input type="text" name="name"></label>
+      <label class="gs-admin-label">Access method (optional)
+        <input type="text" name="access_method"></label>
+      <label class="gs-admin-label">Evidence rank (optional)
+        <input type="text" name="evidence_rank"></label>
+      <button type="submit" class="gs-btn">Add source</button>
+    </form>
+  </details>
+
+  {% if not sources %}
+    <div class="gs-empty">No sources configured.</div>
+  {% else %}
+    {% for s in sources %}
+    <div class="gs-admin-item">
+      <div class="gs-admin-item-head"><strong>{{ s.name }}</strong>
+        <span class="gs-meta">(<code>{{ s.source_id }}</code>) · state: {{ s.state }}
+          · origin {{ s.origin }} · evidence rank {{ s.evidence_rank }}</span></div>
+      {% if s.g2 %}
+      <div class="gs-meta">G2
+        <span class="gs-badge">{{ 'DEMOTE?' if s.g2.demote_recommended else 'ok' }}</span>
+        {{ s.g2.note }}</div>
+      {% else %}
+      <div class="gs-meta">G2: no rated feedback for this source yet — rate its
+        cards useful / not-useful to build a signal.</div>
+      {% endif %}
+      <form class="gs-admin-row" hx-post="/admin/source/enabled" hx-target="#admin-sources"
+            hx-swap="outerHTML" hx-include="[name='reason']">
+        <input type="hidden" name="source_id" value="{{ s.source_id }}">
+        <label class="gs-admin-toggle">
+          <input type="checkbox" name="enabled" value="true"
+                 {% if s.enabled %}checked{% endif %}> Enabled</label>
+        <button type="submit" class="gs-btn">Save</button>
+      </form>
+      {% if s.is_operator %}
+        {% if s.removable %}
+        <p class="gs-muted-text">Operator-added source. Nothing references it, so
+          Remove will delete it.</p>
+        <form class="gs-admin-row" hx-post="/admin/source/remove" hx-target="#admin-sources"
+              hx-swap="outerHTML" hx-include="[name='reason']">
+          <input type="hidden" name="source_id" value="{{ s.source_id }}">
+          <label class="gs-admin-toggle">
+            <input type="checkbox" name="confirm" value="true"> Confirm remove</label>
+          <button type="submit" class="gs-btn gs-btn-danger">Remove source</button>
+        </form>
+        {% else %}
+        <p class="gs-muted-text">Operator-added source. Remove is blocked —
+          {{ s.ref_total }} row(s) reference it
+          ({% for t, n in s.ref_breakdown.items() %}{{ t }}: {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}).
+          Disable it instead.</p>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% endif %}
+</section>

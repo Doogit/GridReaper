@@ -1,0 +1,20 @@
+<section id="admin-audit" class="gs-admin-section">
+  <h2 class="gs-admin-h2">Recent config changes</h2>
+  <p class="gs-muted-text">Provenance trail (R3.3): every Admin edit, newest first.</p>
+  {% if not audit %}
+    <div class="gs-empty">No config edits yet.</div>
+  {% else %}
+  <div class="gs-admin-table-wrap">
+    <table class="gs-admin-table">
+      <thead><tr><th>when</th><th>table</th><th>row</th><th>field</th>
+        <th>old → new</th><th>reason</th></tr></thead>
+      <tbody>
+        {% for r in audit %}
+        <tr><td>{{ r.when }}</td><td>{{ r.table }}</td><td>{{ r.row }}</td>
+          <td>{{ r.field }}</td><td>{{ r.old_new }}</td><td>{{ r.reason }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
