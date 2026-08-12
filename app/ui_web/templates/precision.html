@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — Precision{% endblock %}
+{% block content %}
+{# Feedback / Precision (R8.6, R9.2-R9.5, R9.12). Every rate is rendered WITH its
+   n (formatted in render.precision_*); a None rate reads "n/a", never a bare %.
+   Below the G1 floor the headline shows low-n copy, not a fake gauge. All text
+   autoescaped (XSS guard). #}
+<div class="gs-feed-head">
+  <h1 class="gs-h1">Feedback / Precision</h1>
+  <p class="gs-muted-text">These are precision / QA metrics — judgment consistency (human useful-rate) and evidence accuracy (automated judge accuracy). They are NOT validated sales lift: at MVP, feedback verdicts are the operator's own self-ratings, so a high useful-rate means the operator kept finding cards worth acting on, never that they closed deals. Every rate is shown with its sample size; an empty denominator reads as "not enough evidence yet", never 0%.</p>
+</div>
+
+{# -- headline ------------------------------------------------------------- #}
+<h2 class="gs-h2">Precision headline</h2>
+<div class="gs-metric-row">
+  <div class="gs-metric">
+    <div class="gs-metric-label">Human useful-rate</div>
+    {% if headline.useful.gauge %}
+    <div class="gs-metric-value">{{ headline.useful.gauge }}</div>
+    <div class="gs-meta">n={{ headline.useful.n }} rated cards</div>
+    {% else %}
+    <div class="gs-metric-value gs-metric-na">n/a</div>
+    <div class="gs-empty">{{ headline.useful.low_n }}</div>
+    {% endif %}
+  </div>
+  <div class="gs-metric">
+    <div class="gs-metric-label">Auto-accuracy (judge)</div>
+    {% if headline.auto.gauge %}
+    <div class="gs-metric-value">{{ headline.auto.gauge }}</div>
+    <div class="gs-meta">n={{ headline.auto.n }} scored checks (entity_match + evidence_support)</div>
+    {% else %}
+    <div class="gs-metric-value gs-metric-na">n/a</div>
+    <div class="gs-empty">{{ headline.auto.empty }}</div>
+    {% endif %}
+  </div>
+</div>
+
+{# -- G1 (account gate) ---------------------------------------------------- #}
+<div class="gs-divider">gate G1 — account-level precision</div>
+<p class="gs-muted-text">Stage 1 → 2 gate (R9.4): on BOTH primary account triggers, human
+  useful-rate ≥ 60% AND auto-accuracy ≥ 80%, over ≥ 30 days AND ≥ 20 rated account-specific
+  cards. ONLY account-specific cards (entity present, account/parent scope) count here.</p>
+{% for t in g1.triggers %}
+<div class="gs-g1-trigger">
+  <div><strong>{{ t.trigger_id }}</strong> <span class="gs-badge">{{ t.badge }}</span></div>
+  <div class="gs-meta">useful-rate: {{ t.useful }} · auto-accuracy: {{ t.auto }} · span: {{ t.span }}</div>
+  {% if t.blocked %}
+  <div class="gs-gov-caution">blocked: {{ t.blocked }}</div>
+  {% endif %}
+</div>
+{% endfor %}
+{% if g1.eligible %}
+<div class="gs-meta">Overall: <strong>ELIGIBLE</strong> — both primary triggers meet the gate.</div>
+{% else %}
+<div class="gs-meta">Overall: <strong>not eligible</strong> — see blocked reasons above.</div>
+{% endif %}
+<div class="gs-divider">reported separately (not account precision)</div>
+<div class="gs-meta">Sector / regulatory-calendar / unconfirmed early-warning cards — kept out
+  of the account gate so they cannot inflate or hide it. useful-rate: {{ g1.reported_useful }}
+  · auto-accuracy: {{ g1.reported_auto }}</div>
+
+{# -- G2 (per-source, report-only) ----------------------------------------- #}
+<div class="gs-divider">gate G2 — per-source demotion recommendations</div>
+<p class="gs-muted-text">Report-only (R9.5): &lt; 40% precision over a source's rated cards is
+  a recommendation to REVIEW (consider store-only / disable), never an auto-action — sources
+  are never disabled automatically. A recommendation needs ≥ 20 rated cards; below that the
+  sample is too noisy to act on.</p>
+{% if g2 %}
+{% for s in g2 %}
+<div class="gs-g2-source">
+  <div><strong>{{ s.source_id }}</strong> <span class="gs-badge">{{ s.flag }}</span>
+    <span class="gs-meta">precision {{ s.precision }}</span></div>
+  <div class="gs-meta">{{ s.note }}</div>
+  {% if s.reason_codes %}
+  <div class="gs-meta">reason codes: {{ s.reason_codes | join(", ") }}</div>
+  {% endif %}
+</div>
+{% endfor %}
+{% else %}
+{% with message = "0 rated cards attributed to any source yet — nothing to evaluate for demotion." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+
+{# -- useful-rate by dimension --------------------------------------------- #}
+<div class="gs-divider">useful-rate by dimension</div>
+<p class="gs-muted-text">Human useful-rate sliced by trigger / source / signal-scope / incident
+  tier (R9.3). Each cell carries its sample size.</p>
+{% if useful_tables %}
+{% for tbl in useful_tables %}
+<h3 class="gs-h3">{{ tbl.label }}</h3>
+<table class="gs-table">
+  <thead><tr><th>{{ tbl.label }}</th><th>useful-rate</th></tr></thead>
+  <tbody>
+  {% for r in tbl.rows %}
+    <tr><td>{{ r.value }}</td><td>{{ r.rate }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endfor %}
+{% else %}
+{% with message = "0 rated cards yet — no per-dimension useful-rate to show. Rate cards useful / not-useful from the feed to populate this." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+
+{# -- auto-accuracy by dimension ------------------------------------------- #}
+<div class="gs-divider">auto-accuracy by dimension</div>
+<p class="gs-muted-text">Automated judge accuracy (entity_match + evidence_support, pass over
+  pass+fail) sliced the same way (R9.3). Each cell carries its sample size.</p>
+{% if auto_tables %}
+{% for tbl in auto_tables %}
+<h3 class="gs-h3">{{ tbl.label }}</h3>
+<table class="gs-table">
+  <thead><tr><th>{{ tbl.label }}</th><th>auto-accuracy</th></tr></thead>
+  <tbody>
+  {% for r in tbl.rows %}
+    <tr><td>{{ r.value }}</td><td>{{ r.rate }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endfor %}
+{% else %}
+{% with message = "0 audit verdicts yet — run `python -m app.audit.judge` to populate per-dimension auto-accuracy." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+
+{# -- reason-code distribution --------------------------------------------- #}
+<div class="gs-divider">reason-code distribution</div>
+<p class="gs-muted-text">Why cards were marked not-useful (R9.2), most common first.</p>
+{% if reason_codes %}
+<table class="gs-table">
+  <thead><tr><th>reason code</th><th>count</th></tr></thead>
+  <tbody>
+  {% for d in reason_codes %}
+    <tr><td>{{ d.reason_code }}</td><td>{{ d.count }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% with message = "0 not-useful ratings yet — no reason codes to distribute." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+
+{# -- judge vs human ------------------------------------------------------- #}
+<div class="gs-divider">judge vs human</div>
+<p class="gs-muted-text">A QA signal, not ground truth: the judge rates objective facts, the
+  human rates usefulness — some disagreement is expected. Only signals with BOTH sides are
+  comparable.</p>
+{% if disagreement.comparable %}
+<div class="gs-meta">comparable: {{ disagreement.comparable }} · agree: {{ disagreement.agree }}
+  · disagree: {{ disagreement.disagree }} · disagreement rate: {{ disagreement.rate }}</div>
+<table class="gs-table">
+  <thead><tr><th>signal</th><th>judge</th><th>human</th></tr></thead>
+  <tbody>
+  {% for it in disagreement.pairs %}
+    <tr><td>{{ it.signal_id }}</td><td>{{ it.judge }}</td><td>{{ it.human }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% with message = "nothing comparable yet — a signal needs both an entity_match/evidence_support verdict AND human feedback." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+
+{# -- half-life effectiveness ---------------------------------------------- #}
+<div class="gs-divider">half-life effectiveness</div>
+<p class="gs-muted-text">Descriptive aid (R9.3), not a recommendation: each trigger's configured
+  half-life next to its observed useful-rate and mean stored score-decay, so you can eyeball
+  whether the decay looks calibrated.</p>
+{% if halflife %}
+<table class="gs-table">
+  <thead><tr><th>trigger</th><th>half-life (d)</th><th>useful-rate</th><th>mean score-decay</th><th>cards</th></tr></thead>
+  <tbody>
+  {% for r in halflife %}
+    <tr><td>{{ r.trigger }}</td><td>{{ r.half_life }}</td><td>{{ r.useful }}</td><td>{{ r.mean_decay }}</td><td>{{ r.cards }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% with message = "no signals yet — nothing to relate half-life against." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+
+{# -- audit run history ---------------------------------------------------- #}
+<div class="gs-divider">audit run history</div>
+<p class="gs-muted-text">Every audit-judge invocation (R9.12) — so a skip (no API key / over
+  budget / nothing to sample) is recorded, not a silent gap.</p>
+{% if run_history %}
+<table class="gs-table">
+  <thead><tr><th>started</th><th>status</th><th>sampled</th><th>verdicts</th><th>budget $</th><th>note</th></tr></thead>
+  <tbody>
+  {% for r in run_history %}
+    <tr><td>{{ r.started }}</td><td>{{ r.status }}</td><td>{{ r.sampled }}</td><td>{{ r.verdicts }}</td><td>{{ r.budget }}</td><td>{{ r.note }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% with message = "0 audit runs yet — run `python -m app.audit.judge` to score cards and populate this history." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+{% endblock %}

@@ -1,20 +1,21 @@
-"""Feedback / Precision page + data-layer tests (R8.6, R9.3-R9.5, R9.12).
+"""Feedback / Precision page + data-layer tests (R8.6, R9.2-R9.5, R9.12).
 
 Two layers, both hermetic (real migrations, FK on, no network):
 
 1. Data layer — an in-memory DB seeded with signals across dimensions plus
    feedback + audit rows; asserts the four precision_* helpers return dicts
-   with every key precision.py consumes and correct joins (source_id resolved
-   via raw_events, trigger_name present, entity_id None for a sector signal,
-   half-life picks the latest feedback verdict per signal).
+   with every key the precision view consumes and correct joins (source_id
+   resolved via raw_events, trigger_name present, entity_id None for a sector
+   signal, half-life picks the latest feedback verdict per signal). These
+   data.py-direct reads are framework-agnostic and stay UNCHANGED from the
+   Streamlit era.
 
-2. AppTest — a temp-file DB (so the page's own connection sees the same data).
-   (a) EMPTY: 0 feedback / 0 audit — the page must not crash and must render
-   the honest low-n / empty copy, no fake gauge. (b) POPULATED: enough feedback
-   + audit to exercise the headline gauge, G1, tables, reason codes,
-   disagreement, half-life, and run history. Every case asserts
-   ``list(at.exception) == []`` (Streamlit 1.57: exception is an empty
-   ElementList, not None, on a clean run).
+2. Route layer — a temp-file DB (GRIDSIGNALS_DB) fetched through a FastAPI
+   TestClient (replacing the old Streamlit AppTest). (a) EMPTY: 0 feedback /
+   0 audit — GET /precision must be 200 and render the honest low-n / empty copy
+   with no fake gauge. (b) POPULATED: enough feedback + audit to exercise the
+   headline gauge, G1 account-only slicing, tables, reason codes, disagreement,
+   half-life, and run history.
 """
 import os
 import sqlite3
@@ -22,12 +23,12 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from streamlit.testing.v1 import AppTest
+from fastapi.testclient import TestClient
 
 from app.db.migrate import apply_migrations
 from app.ui import data
+from app.ui_web.app import app
 
-PAGE = "app/ui/pages/4_Precision.py"
 NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -128,21 +129,8 @@ def make_db(seed):
     return path
 
 
-def all_text(at):
-    parts = []
-    for kind in ("markdown", "caption", "subheader", "title", "header"):
-        for el in getattr(at, kind, []):
-            val = getattr(el, "value", None)
-            if val:
-                parts.append(str(val))
-    # tables render their data outside markdown; include their string form
-    for el in getattr(at, "table", []):
-        parts.append(str(getattr(el, "value", "")))
-    return "\n".join(parts)
-
-
 # ---------------------------------------------------------------------------
-# Data-layer tests
+# Data-layer tests (UNCHANGED — framework-agnostic data.py reads)
 # ---------------------------------------------------------------------------
 
 class TestPrecisionReads(unittest.TestCase):
@@ -214,7 +202,7 @@ class TestPrecisionReads(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# AppTest tests
+# Route tests (FastAPI TestClient — replaces the Streamlit AppTest)
 # ---------------------------------------------------------------------------
 
 def seed_empty(conn):
@@ -263,9 +251,10 @@ def seed_populated(conn):
         "26, 51, 0.12, '')", (iso(NOW), iso(NOW)))
 
 
-class PrecisionPageCase(unittest.TestCase):
+class PrecisionRouteCase(unittest.TestCase):
     def setUp(self):
         self.path = None
+        self.client = TestClient(app)
 
     def tearDown(self):
         os.environ.pop("GRIDSIGNALS_DB", None)
@@ -275,21 +264,17 @@ class PrecisionPageCase(unittest.TestCase):
             except PermissionError:
                 pass
 
-    def _run(self, seed):
+    def _get(self, seed):
         self.path = make_db(seed)
         os.environ["GRIDSIGNALS_DB"] = self.path
-        return AppTest.from_file(PAGE, default_timeout=30).run()
-
-    def assertNoException(self, at):
-        self.assertEqual(list(at.exception), [], msg=[
-            (e.type, e.message) for e in at.exception])
+        resp = self.client.get("/precision")
+        self.assertEqual(resp.status_code, 200)
+        return resp.text
 
 
-class TestEmptyState(PrecisionPageCase):
+class TestEmptyState(PrecisionRouteCase):
     def test_empty_renders_honest_lown_no_fake_gauge(self):
-        at = self._run(seed_empty)
-        self.assertNoException(at)
-        text = all_text(at)
+        text = self._get(seed_empty)
         # framing / trust line present
         self.assertIn("NOT validated sales lift", text)
         # low-n headline, not a fake percentage
@@ -298,17 +283,15 @@ class TestEmptyState(PrecisionPageCase):
         # empty section copy
         self.assertIn("0 not-useful ratings yet", text)
         self.assertIn("0 audit runs yet", text)
-        # no fabricated gauge percentage — the headline useful-rate/accuracy
-        # render as "n/a", never a made-up number, on zero data
+        # the headline useful-rate label is present but renders "n/a", never a
+        # fabricated gauge percentage, on zero data
         self.assertIn("Human useful-rate", text)
         self.assertNotIn("useful-rate: 0%", text)
 
 
-class TestPopulatedState(PrecisionPageCase):
+class TestPopulatedState(PrecisionRouteCase):
     def test_populated_gauge_and_tables_render(self):
-        at = self._run(seed_populated)
-        self.assertNoException(at)
-        text = all_text(at)
+        text = self._get(seed_populated)
         # headline gauge shows the overall useful-rate with its n (26 rated:
         # 25 account + 1 sector) — never a bare percentage
         self.assertIn("n=26 rated cards", text)
@@ -321,7 +304,7 @@ class TestPopulatedState(PrecisionPageCase):
         # reason code distribution populated
         self.assertIn("weak_evidence", text)
         # run history populated
-        self.assertIn("Audit run history", text)
+        self.assertIn("audit run history", text)
         # framing caption still present
         self.assertIn("NOT validated sales lift", text)
 
