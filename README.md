@@ -18,6 +18,34 @@ Design principles:
 - **Evidence over noise.** Confidence gating and an automated accuracy audit rather than a firehose; low-volume, high-signal triggers are classified first.
 - **Config as data.** Products, triggers, mappings, watchlist, and the license matrix live as CSV seeded into SQLite — editable without code changes.
 
+## Screenshots
+
+Dark-themed Streamlit UI over a stored 12-month backfill. Rendered against real data (US energy companies; no synthetic or placeholder content).
+
+**Signal Feed** — scored, sourced cards with the score decomposition, evidence/scope badges, license-play chips, and a customer-facing-gated outreach draft. Account-scoped cards sit above a labeled sector/regulatory divider.
+
+![Signal Feed](assets/screenshots/signal-feed.png)
+
+**Admin / Config** — operator tuning for scoring weights, decay half-lives, and source policies, with a provenance trail. Edits persist across a seed reload; a fresh rebuild restores the pristine defaults.
+
+![Admin / Config](assets/screenshots/admin.png)
+
+**Feedback / Precision** — human useful-rate and automated-judge accuracy by trigger/source/scope/tier, with every rate shown alongside its sample size.
+
+![Feedback / Precision](assets/screenshots/precision.png)
+
+<details><summary>More: Review Queue &amp; Account 360</summary>
+
+**Review Queue / Triage** — pending entity matches, per-source health, and stale license facts.
+
+![Review Queue](assets/screenshots/review-queue.png)
+
+**Account 360** — per-account identifiers, relationships, gov-cloud posture, and signal timeline.
+
+![Account 360](assets/screenshots/account-360.png)
+
+</details>
+
 ## Data sources
 
 The MVP target source set — all free and accessed read-only (GET / RSS / JSON / bulk download). Ingestion is in progress; see [Roadmap](#roadmap).
