@@ -4,6 +4,6 @@
 {% for c in cards %}{% include "_card.html" %}{% endfor %}
 {% if next %}
 <button class="gs-loadmore"
-        hx-get="/feed/more?scope={{ next.scope }}&status={{ next.status }}&after_date={{ next.after_date }}&after_id={{ next.after_id }}"
+        hx-get="/feed/more?scope={{ next.scope | urlencode }}&status={{ next.status | urlencode }}&after_date={{ next.after_date | urlencode }}&after_id={{ next.after_id | urlencode }}"
         hx-swap="outerHTML">Load more</button>
 {% endif %}

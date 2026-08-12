@@ -16,6 +16,10 @@ Templates apply Jinja autoescaping to every string here, so this module returns
 raw text (no manual html.escape) — the escaping lives in exactly one place.
 """
 
+from hashlib import sha256
+from urllib.parse import urlsplit
+
+
 # Score bands for the severity strip (R8.1); mirrors components.SEVERITY_BANDS.
 SEVERITY_BANDS = ("critical", "high", "moderate", "low")
 
@@ -49,6 +53,27 @@ def fmt_score(score):
 
 def scope_label(scope):
     return _SCOPE_LABELS.get(scope, scope or "")
+
+
+def feedback_dom_id(signal_id):
+    """Stable, CSS-selector-safe target id for HTMX feedback swaps.
+
+    Real signal ids include raw event ids, and those can be URLs. Keep the raw
+    signal_id in POST data, but never use it as a DOM id or selector fragment.
+    """
+    digest = sha256(str(signal_id or "").encode("utf-8")).hexdigest()[:16]
+    return f"gs-fb-{digest}"
+
+
+def safe_source_url(url):
+    """Return an HTTP(S) source URL, or None for non-clickable schemes."""
+    value = (url or "").strip()
+    if not value:
+        return None
+    parts = urlsplit(value)
+    if parts.scheme.lower() not in ("http", "https"):
+        return None
+    return value
 
 
 def decay_ceiling(signal):
@@ -186,6 +211,7 @@ def card_view(detail, legend):
 
     return {
         "signal_id": signal["signal_id"],
+        "feedback_dom_id": feedback_dom_id(signal["signal_id"]),
         "card_class": " ".join(classes),
         "headline": signal["headline"] or "",
         "meta_bits": meta_bits,
@@ -196,7 +222,7 @@ def card_view(detail, legend):
         "evidence": [{"text": ev["evidence_text"] or "",
                       "locator": ev["evidence_locator"] or ""}
                      for ev in evidence],
-        "source_url": signal["source_url"],
+        "source_url": safe_source_url(signal["source_url"]),
         # only the safe text, only when cleared — never the withheld text
         "outreach": outreach_text if show_outreach else None,
         "outreach_withheld": (not show_outreach) and bool(snapshots),

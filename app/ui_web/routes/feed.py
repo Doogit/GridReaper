@@ -109,7 +109,7 @@ def feedback_reason(request: Request, signal_id: str):
     return templates.TemplateResponse(
         request=request, name="_feedback_reason.html",
         context={"signal_id": signal_id, "reason_codes": data.REASON_CODES,
-                 "error": None})
+                 "target_id": render.feedback_dom_id(signal_id), "error": None})
 
 
 @router.post("/feedback", response_class=HTMLResponse)
@@ -125,6 +125,7 @@ def feedback(request: Request, signal_id: str = Form(...), verdict: str = Form(.
         return templates.TemplateResponse(
             request=request, name="_feedback_reason.html",
             context={"signal_id": signal_id, "reason_codes": data.REASON_CODES,
+                     "target_id": render.feedback_dom_id(signal_id),
                      "error": str(exc)})
     return templates.TemplateResponse(
         request=request, name="_feedback_done.html", context={})

@@ -38,7 +38,7 @@
   <div class="gs-muted-text">Outreach withheld — verification-first: not cleared for customer-facing use.</div>
   {% endif %}
 
-  <div class="gs-feedback" id="gs-fb-{{ c.signal_id }}">
-    {% with signal_id = c.signal_id %}{% include "_feedback.html" %}{% endwith %}
+  <div class="gs-feedback" id="{{ c.feedback_dom_id }}">
+    {% with signal_id = c.signal_id, target_id = c.feedback_dom_id %}{% include "_feedback.html" %}{% endwith %}
   </div>
 </article>

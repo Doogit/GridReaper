@@ -41,6 +41,23 @@ class TestFmtAndScope(unittest.TestCase):
         self.assertEqual(render.scope_label("mystery"), "mystery")
 
 
+class TestSafeAttributes(unittest.TestCase):
+    def test_feedback_dom_id_is_stable_and_selector_safe(self):
+        raw = "t:presswire:https://example.com/a?x=1&y=2:E"
+        dom_id = render.feedback_dom_id(raw)
+        self.assertRegex(dom_id, r"^gs-fb-[0-9a-f]{16}$")
+        self.assertEqual(dom_id, render.feedback_dom_id(raw))
+
+    def test_safe_source_url_allows_only_http_s(self):
+        self.assertEqual(render.safe_source_url("https://example.com/doc"),
+                         "https://example.com/doc")
+        self.assertEqual(render.safe_source_url(" http://example.com/doc "),
+                         "http://example.com/doc")
+        self.assertIsNone(render.safe_source_url("javascript:alert(1)"))
+        self.assertIsNone(render.safe_source_url("data:text/html,hi"))
+        self.assertIsNone(render.safe_source_url(""))
+
+
 class TestDecayAndBreakdown(unittest.TestCase):
     def test_decay_ceiling_uses_fits_when_present(self):
         s = signal(base_strength=5, score_account_fit=0.8, score_scope_fit=0.5)

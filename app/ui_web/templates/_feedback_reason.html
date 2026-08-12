@@ -2,7 +2,7 @@
    reason-required rule; on error this comes back with the message. #}
 {% if error %}<div class="gs-fb-error">{{ error }}</div>{% endif %}
 <form class="gs-fb-form" hx-post="/feedback"
-      hx-target="#gs-fb-{{ signal_id }}" hx-swap="innerHTML">
+      hx-target="#{{ target_id }}" hx-swap="innerHTML">
   <input type="hidden" name="signal_id" value="{{ signal_id }}">
   <input type="hidden" name="verdict" value="not_useful">
   <label class="gs-fb-field">Reason

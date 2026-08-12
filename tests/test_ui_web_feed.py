@@ -34,8 +34,11 @@ def days_ago(n):
     return (NOW.date() - timedelta(days=n)).isoformat()
 
 
+URLISH_SIGNAL_ID = "t_lead:presswire_prnewswire:https://example.com/a?x=1&y=2:E_ACME"
+
+
 def _add_signal(conn, sid, entity_id, scope, trigger_id, event_date, headline,
-                cfa=0, status="active", score=None):
+                cfa=0, status="active", score=None, source_url="http://src/doc"):
     raw = "re_acc" if scope in ("account", "parent") else None
     conn.execute(
         "INSERT INTO signals (signal_id, raw_event_id, entity_id, signal_scope, "
@@ -43,7 +46,7 @@ def _add_signal(conn, sid, entity_id, scope, trigger_id, event_date, headline,
         "confidence, evidence_quality, customer_facing_allowed, score, status) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, raw, entity_id, scope, trigger_id, event_date, headline, headline,
-         "http://src/doc", 0.9, "IR", cfa, score, status))
+         source_url, 0.9, "IR", cfa, score, status))
 
 
 def seed(conn):
@@ -84,6 +87,9 @@ def seed(conn):
                 "Acme names new CISO", cfa=1, score=4.2)
     _add_signal(conn, "S_ACC2", "E_ACME", "account", "t_lead", days_ago(9),
                 "Acme restricted outreach event", cfa=0, score=3.0)
+    _add_signal(conn, URLISH_SIGNAL_ID, "E_ACME", "account", "t_lead", days_ago(7),
+                "URL-shaped raw event id stays HTMX-safe", cfa=1, score=3.2,
+                source_url="javascript:alert(1)")
     _add_signal(conn, "S_SEC", None, "sector", "t_reg", days_ago(2),
                 "FERC final rule CIP revision", cfa=1, score=2.75)
     _add_signal(conn, "S_REG", None, "regulatory_calendar", "t_reg", days_ago(1),
@@ -97,6 +103,11 @@ def seed(conn):
         "INSERT INTO signal_evidence (signal_id, raw_event_id, evidence_text, "
         "evidence_locator, evidence_rank) VALUES ('S_ACC1','re_acc',"
         "'Acme appointed a new CISO.','para 2', 1)")
+    conn.execute(
+        "INSERT INTO signal_evidence (signal_id, raw_event_id, evidence_text, "
+        "evidence_locator, evidence_rank) VALUES (?, 're_acc', "
+        "'URL-ish id evidence.','para 4', 1)",
+        (URLISH_SIGNAL_ID,))
     conn.execute(
         "INSERT INTO license_play_snapshots (signal_id, play_id, fact_ids, "
         "generated_at, generation_version, display_text, outreach_safe_text) "
@@ -185,6 +196,18 @@ class TestCardsRender(FeedTestBase):
         self.assertNotIn("$9", dom)
         self.assertNotIn("$2/GB", dom)
 
+    def test_urlish_signal_id_does_not_break_htmx_selectors(self):
+        dom = self.home()
+        self.assertIn("URL-shaped raw event id stays HTMX-safe", dom)
+        self.assertNotIn(f'id="gs-fb-{URLISH_SIGNAL_ID}"', dom)
+        self.assertIn('hx-target="#gs-fb-', dom)
+        self.assertIn("signal_id=t_lead%3Apresswire_prnewswire%3Ahttps", dom)
+        self.assertIn("%26y%3D2%3AE_ACME", dom)
+
+    def test_non_http_source_url_is_not_rendered_as_link(self):
+        dom = self.home()
+        self.assertNotIn("javascript:alert(1)", dom)
+
 
 class TestStatusFilter(FeedTestBase):
     def test_decayed_and_superseded_hidden_by_default(self):
@@ -228,6 +251,12 @@ class TestFeedback(FeedTestBase):
         self.assertIn('name="reason_code"', resp.text)
         self.assertIn("wrong_entity", resp.text)
         self.assertIn('hx-post="/feedback"', resp.text)
+
+    def test_reason_form_target_uses_safe_dom_id(self):
+        resp = self.client.get("/feedback/reason", params={"signal_id": URLISH_SIGNAL_ID})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('hx-target="#gs-fb-', resp.text)
+        self.assertNotIn(f'hx-target="#gs-fb-{URLISH_SIGNAL_ID}"', resp.text)
 
     def test_not_useful_without_reason_is_rejected_server_side(self):
         resp = self.client.post(
