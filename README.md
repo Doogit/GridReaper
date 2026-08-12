@@ -26,7 +26,7 @@ Dark-themed Streamlit UI over a stored 12-month backfill. Rendered against real 
 
 ![Signal Feed](assets/screenshots/signal-feed.png)
 
-**Admin / Config** — operator tuning for scoring weights, decay half-lives, and source policies, plus a watchlist entity manager (add / edit / soft-disable, alias & collision-term editing, reset-to-seed / guarded remove), with a provenance trail. Edits persist across a seed reload; a fresh rebuild restores the pristine defaults.
+**Admin / Config** — operator tuning for scoring weights and decay half-lives; a source registry (enable / disable, add an operator source, guarded remove of an operator-added one); a watchlist entity manager (add / edit / soft-disable, alias & collision-term editing, reset-to-seed / guarded remove); and an in-place license-fact editor (edit the editable columns, add a fact — no delete, since cards read frozen snapshots) alongside the staleness list. Every edit lands in a provenance trail. Edits persist across a seed reload; a fresh rebuild restores the pristine defaults.
 
 ![Admin / Config](assets/screenshots/admin.png)
 
@@ -162,7 +162,7 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Streamlit UI (multi-page dark theme; signal feed, review queue, account 360) | Implemented |
 | Regulatory Monitor page (read-only view of non-graduated regulatory chatter) | Implemented |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | Implemented |
-| Admin / Config (weight + half-life tuning, source enable/disable, staleness, config audit trail, watchlist entity manager + alias/collision editor + reset/remove) | Implemented (license-fact / incident-tier editors next) |
+| Admin / Config (weight + half-life tuning, source registry with add/enable/disable/guarded-remove, license-fact editor + add, staleness, config audit trail, watchlist entity manager + alias/collision editor + reset/remove) | Implemented (incident-tier editor next) |
 
 Later stages add incident/combo classification, GDELT-based classification, and a hiring/macro-trend layer.
 

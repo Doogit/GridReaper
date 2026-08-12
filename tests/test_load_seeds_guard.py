@@ -17,6 +17,8 @@ import tempfile
 import unittest
 
 from app.db.load_seeds import load
+from app.db.connection import get_connection
+from app.ui import data
 
 
 class TestReloadGuard(unittest.TestCase):
@@ -137,6 +139,58 @@ class TestWatchlistReloadGuard(unittest.TestCase):
         # Operator alias/collision rows escaped the loader's seed-scoped DELETE.
         self.assertIsNotNone(alias)
         self.assertIsNotNone(term)
+
+
+class TestSourceRegistryReloadGuard(unittest.TestCase):
+    """R9.5 source registry: an operator-added source survives a seed reload,
+    and a junked seeded-source column (name, which IS in update_cols) reverts to
+    the CSV. There is no seed-scoped DELETE on source_policies, so the operator
+    row is never wiped; origin (absent from the CSV) stays 'operator'."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.db = os.path.join(self.tmpdir, "src_guard.db")
+        load(db_path=self.db)
+
+    def _conn(self):
+        conn = sqlite3.connect(self.db)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def test_operator_source_survives_and_junked_seed_name_reverts(self):
+        wconn = get_connection(self.db)
+        data.add_source(wconn, "op_feed", "Operator Feed", access_method="rss")
+        wconn.close()
+
+        conn = self._conn()
+        seeded = conn.execute("SELECT source_id, name FROM source_policies "
+                              "WHERE origin = 'seed' LIMIT 1").fetchone()
+        sid, seed_name = seeded["source_id"], seeded["name"]
+        # Junk a seeded source's name (a column that IS in update_cols).
+        conn.execute("UPDATE source_policies SET name = 'JUNK_TYPO' "
+                     "WHERE source_id = ?", (sid,))
+        conn.commit()
+        conn.close()
+
+        load(db_path=self.db)          # reload
+
+        conn = self._conn()
+        op = conn.execute(
+            "SELECT name, origin FROM source_policies WHERE source_id = 'op_feed'"
+            ).fetchone()
+        reverted = conn.execute(
+            "SELECT name FROM source_policies WHERE source_id = ?",
+            (sid,)).fetchone()["name"]
+        conn.close()
+
+        # Operator source survived reload with origin intact.
+        self.assertIsNotNone(op)
+        self.assertEqual(op["name"], "Operator Feed")
+        self.assertEqual(op["origin"], "operator")
+        # Junked seed-source name reverted to the CSV value.
+        self.assertEqual(reverted, seed_name)
+        self.assertNotEqual(reverted, "JUNK_TYPO")
 
 
 if __name__ == "__main__":

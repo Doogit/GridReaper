@@ -9,12 +9,16 @@ tables. Sections:
 2. Decay half-lives (R7.4) — one box + Save per trigger. Half-lives are
    prioritization heuristics, not measurements (caption states this); a save
    rescopes active cards the same way.
-3. Source policies (R8.7 review) — enable/disable a source, with its Gate G2
-   demotion *recommendation* (report-only, R9.5) shown alongside so the operator
-   sees WHY before acting. Sources are never disabled automatically.
-4. License-fact staleness (R10.7, read-only) — verified_date older than 180 days
-   flagged; labels state only what the field says ("verified 210 days ago" /
-   "verification date unknown"), never an interpretive "unverified".
+3. Source registry (R8.7 review; R9.5) — enable/disable a source, with its Gate
+   G2 demotion *recommendation* (report-only) shown alongside so the operator
+   sees WHY before acting. Add an operator source; remove an operator-added
+   zero-reference one behind a real confirm gate (seeded sources are disabled,
+   not removed). Sources are never disabled automatically.
+4. License facts (R10.7; R7.6) — staleness list (verified_date older than 180
+   days flagged; labels state only what the field says, never an interpretive
+   "unverified"), plus an in-place editor for the editable fact columns and an
+   "add a license fact" form. Editing a fact never moves an existing card (cards
+   read frozen snapshots, R7.6); there is no fact-delete.
 
 5. Watchlist entities (R8.7 entity manager) — add / edit / soft-disable an
    account, edit its aliases and collision terms, and reset a seeded entity to
@@ -126,6 +130,12 @@ def _result_msg(fn_name, result):
         return f"Added collision term “{result['term']}”."
     if fn_name == "remove_collision_term":
         return f"Removed collision term “{result['term']}”."
+    if fn_name == "add_license_fact":
+        return f"Added license fact {result['fact_id']}."
+    if fn_name == "add_source":
+        return f"Added source {result['source_id']}."
+    if fn_name == "remove_source":
+        return f"Removed source {result['source_id']}."
     if fn_name == "set_source_enabled":
         return (f"Saved: {_enabled_label(result['old'])} → "
                 f"{_enabled_label(result['new'])}.")
@@ -204,12 +214,32 @@ def _render_half_lives(conn, reason):
 # -- source policies ---------------------------------------------------------
 
 def _render_sources(conn, reason):
-    st.subheader("Source policies")
+    st.subheader("Source registry")
     st.caption(
-        "Enable or disable a source (R8.7). Gate G2 (R9.5) recommends demotion "
-        "when a source's precision falls below 40% over enough rated cards — a "
-        "recommendation to REVIEW, never an auto-action. Full per-dimension "
-        "rates and judge-vs-human disagreement are on the Precision page.")
+        "Enable or disable a source (R8.7), or add / remove an operator source "
+        "(R9.5). Gate G2 recommends demotion when a source's precision falls "
+        "below 40% over enough rated cards — a recommendation to REVIEW, never "
+        "an auto-action. Full per-dimension rates and judge-vs-human "
+        "disagreement are on the Precision page. Seeded sources are disabled, "
+        "never removed; only an operator-added, zero-reference source can be "
+        "removed.")
+
+    with st.expander("Add a source"):
+        s_id = st.text_input(
+            "Source ID", key="src_new_id",
+            help="A unique id the seed set lacks, e.g. a new RSS/JSON feed.")
+        s_name = st.text_input("Name", key="src_new_name")
+        s_access = st.text_input("Access method (optional)", key="src_new_access",
+                                 help="e.g. rss / json / html")
+        s_rank = st.text_input(
+            "Evidence rank (optional)", key="src_new_rank",
+            help="1 = primary disclosure … 3 = tracker/news. Left blank = unset.")
+        if st.button("Add source", key="src_add_btn"):
+            _save(data.add_source, s_id, s_name,
+                  access_method=s_access.strip(),
+                  evidence_rank=s_rank.strip(),
+                  reason=reason)
+
     rows = data.source_policy_rows(conn)
     if not rows:
         st.markdown("<div class='gs-empty'>No sources configured.</div>",
@@ -220,7 +250,8 @@ def _render_sources(conn, reason):
         st.markdown(
             f"**{_esc(r['name'])}** "
             f"<span class='gs-meta'>(`{_esc(sid)}`) · state: "
-            f"{_esc(r['state'])} · evidence rank {_esc(r['evidence_rank'])}"
+            f"{_esc(r['state'])} · origin {_esc(r.get('origin'))} · "
+            f"evidence rank {_esc(r['evidence_rank'])}"
             "</span>", unsafe_allow_html=True)
         g2 = r.get("g2")
         if g2:
@@ -246,6 +277,34 @@ def _render_sources(conn, reason):
             "Enabled", value=bool(r["enabled"]), key=f"src_{sid}")
         if btn_col.button("Save", key=f"srcsave_{sid}"):
             _save(data.set_source_enabled, sid, enabled, reason=reason)
+        _render_source_remove(conn, r, reason)
+
+
+def _render_source_remove(conn, row, reason):
+    """Remove affordance for an operator-added source (R9.5). Seeded sources are
+    disabled, not removed. The confirm checkbox is a REAL server-side gate — the
+    action fires only when it is checked. Remove is additionally FK-guarded in
+    the helper: a referencing raw_event / run / signal turns the click into a
+    legible error, never a crash or orphan."""
+    sid = row["source_id"]
+    if row.get("origin") != "operator":
+        return
+    refs = data.source_reference_breakdown(conn, sid)
+    if refs:
+        detail = ", ".join(f"{t}: {n}" for t, n in refs.items())
+        st.caption(
+            f"Operator-added source. Remove is blocked — {sum(refs.values())} "
+            f"row(s) reference it ({detail}). Disable it instead.")
+        return
+    st.caption("Operator-added source. Nothing references it, so Remove will "
+               "delete it.")
+    confirm = st.checkbox("Confirm remove", key=f"srcrmok_{sid}")
+    if st.button("Remove source", key=f"srcrmbtn_{sid}"):
+        if not confirm:
+            st.warning("Check the box to confirm — Remove permanently deletes "
+                       "this operator-added source.")
+        else:
+            _save(data.remove_source, sid, reason=reason)
 
 
 # -- watchlist entities (R8.7 entity manager) --------------------------------
@@ -404,15 +463,16 @@ def _render_entities(conn, reason):
 
 def _render_staleness(conn):
     stale = data.stale_facts(conn, days=STALE_FACT_WINDOW_DAYS)
-    st.subheader(f"License-fact staleness ({len(stale)})")
+    st.subheader(f"License facts ({len(stale)} stale)")
     st.caption(
         f"License facts whose verified_date is older than {STALE_FACT_WINDOW_DAYS} "
-        "days (R10.7). Read-only here — editing license facts is a later chunk.")
+        "days (R10.7). Editing a fact below never moves an existing card — cards "
+        "read frozen play snapshots (R7.6); the edit is picked up by the next "
+        "snapshot. There is no fact-delete (edit / add / supersede only).")
     if not stale:
         st.markdown(
             "<div class='gs-empty'>0 stale facts — every license fact was "
             "verified within the window.</div>", unsafe_allow_html=True)
-        return
     for fact in stale:
         age = fact.get("age_days")
         # Literal, field-stating labels only (never an interpretive "unverified").
@@ -425,7 +485,84 @@ def _render_staleness(conn):
             f"{_esc(age_txt)}</span>", unsafe_allow_html=True)
 
 
+def _render_fact_editor(conn, reason):
+    """In-place editor for a selected license fact's editable columns, plus an
+    add form (R8.7). No delete — cited facts are edited in place (R7.6)."""
+    rows = data.license_fact_rows(conn)
+
+    with st.expander("Add a license fact"):
+        f_id = st.text_input(
+            "Fact ID", key="fact_new_id",
+            help="A unique id the transform lacks, e.g. a manually-sourced fact.")
+        f_pid = st.text_input(
+            "Product ID (optional)", key="fact_new_pid",
+            help="Must match a products.product_id (family id), or leave blank.")
+        f_segment = st.selectbox("Segment (optional)",
+                                 ("",) + data.FACT_SEGMENTS, key="fact_new_seg")
+        f_price = st.text_input("Price note (optional)", key="fact_new_price")
+        f_quality = st.selectbox("Source quality (optional)",
+                                 ("",) + data.FACT_SOURCE_QUALITY,
+                                 key="fact_new_quality")
+        f_url = st.text_input("Source URL (optional)", key="fact_new_url")
+        f_verified = st.text_input(
+            "Verified date (optional)", key="fact_new_verified",
+            help="ISO-8601 date, e.g. 2026-08-01, or leave blank.")
+        if st.button("Add fact", key="fact_add_btn"):
+            fields = {}
+            if f_price.strip():
+                fields["price_note"] = f_price.strip()
+            if f_quality:
+                fields["source_quality"] = f_quality
+            if f_url.strip():
+                fields["source_url"] = f_url.strip()
+            if f_verified.strip():
+                fields["verified_date"] = f_verified.strip()
+            if f_segment:
+                fields["segment"] = f_segment
+            _save(data.add_license_fact, f_id, f_pid, fields=fields, reason=reason)
+
+    if not rows:
+        return
+    labels = {}
+    for r in rows:
+        product = r.get("product_name") or r.get("product_id") or "—"
+        labels[f"{r['fact_id']} · {product} · {r['origin']}"] = r
+    choice = st.selectbox("Select a fact to edit", list(labels), key="fact_select")
+    row = labels[choice]
+    fid = row["fact_id"]
+    cited = data.fact_snapshot_citations(conn, fid)
+    st.caption(f"cited by {cited} card(s) — edit in place (cards keep their "
+               "frozen snapshot; the next snapshot picks up the edit).")
+
+    for field in data.EDITABLE_FACT_COLS:
+        box_col, btn_col = st.columns([4, 1])
+        if field == "source_quality":
+            opts = ("",) + data.FACT_SOURCE_QUALITY
+            cur = row.get(field) or ""
+            val = box_col.selectbox(
+                field, opts, index=opts.index(cur) if cur in opts else 0,
+                key=f"factfield_{field}_{fid}")
+        else:
+            val = box_col.text_input(field, value=row.get(field) or "",
+                                     key=f"factfield_{field}_{fid}")
+        if btn_col.button("Save", key=f"factsave_{field}_{fid}"):
+            _save(data.update_license_fact, fid, field, val, reason=reason)
+
+
 # -- recent config changes (provenance) --------------------------------------
+
+# Internal config_audit "field" sentinels for row-level lifecycle edits ->
+# operator-facing labels (render only; config_audit still stores the sentinel).
+_FIELD_LABELS = {
+    "__add__": "added",
+    "__remove__": "removed",
+    "__reset__": "reset to seed",
+}
+
+
+def _humanize_field(field):
+    return _FIELD_LABELS.get(field, field)
+
 
 def _humanize_pk(table_name, pk):
     """scoring_weights stores a JSON composite pk; render it as 'kind · key'
@@ -453,7 +590,7 @@ def _render_audit(conn):
         "when": r["ts"],
         "table": r["table_name"],
         "row": _humanize_pk(r["table_name"], r["pk"]),
-        "field": r["field"],
+        "field": _humanize_field(r["field"]),
         "old → new": f"{r['old_value']} → {r['new_value']}",
         "reason": r["reason"] or "",
     } for r in tail])
@@ -489,6 +626,7 @@ def main():
         _render_entities(conn, reason)
         st.divider()
         _render_staleness(conn)
+        _render_fact_editor(conn, reason)
         st.divider()
         _render_audit(conn)
     finally:

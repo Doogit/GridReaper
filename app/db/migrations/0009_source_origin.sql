@@ -1,0 +1,15 @@
+-- 0009_source_origin: operator-added source provenance (R9.5 source registry).
+--
+-- Mirrors watchlist_entities.origin (migration 0008): 'seed' for the seeded
+-- source_policies rows, 'operator' for sources the operator adds at runtime.
+-- Drives the disable-vs-remove affordance in the Admin source registry — a
+-- seeded source is disabled (soft), an operator-added zero-reference source can
+-- be removed. source_policies.enabled remains the existing soft-disable flag;
+-- there is no separate 'active' column.
+--
+-- Pattern B runtime/provenance column: NOT present in source_policies.csv, so
+-- the loader's ON CONFLICT DO UPDATE (which only sets CSV columns) never
+-- clobbers it on reload. Additive, append-only — 0001-0008 unchanged. SQLite
+-- ALTER TABLE ADD COLUMN takes a literal default and backfills existing rows,
+-- so every current source becomes origin='seed'.
+ALTER TABLE source_policies ADD COLUMN origin TEXT DEFAULT 'seed';

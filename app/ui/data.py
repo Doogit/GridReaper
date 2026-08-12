@@ -19,6 +19,7 @@ from datetime import date, datetime, timezone
 
 from app.classify import regulatory as regulatory_classifier
 from app.db.connection import get_connection
+from app.licensing import EDITABLE_FACT_COLS
 from app.scoring import rescore
 
 # Signal-scope groupings for the scope-separated feed (R7.2): account cards are
@@ -224,7 +225,7 @@ def source_health(conn):
     label them error / never-run / stale / disabled / ok."""
     return conn.execute(
         "SELECT sp.source_id, sp.name, sp.enabled, sp.ttl, sp.access_method, "
-        " sp.evidence_rank, "
+        " sp.evidence_rank, sp.origin, "
         " (SELECT r.status FROM source_runs r WHERE r.source_id = sp.source_id "
         "   ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS last_status, "
         " (SELECT r.error_state FROM source_runs r WHERE r.source_id = sp.source_id "
@@ -512,6 +513,30 @@ _ENTITY_REFERENCING = (
     ("facility_assets", "owner_operator_entity_id"),
 )
 
+# R8.7 license-fact editor. EDITABLE_FACT_COLS is imported from app.licensing
+# (canonical there, no import cycle - licensing has no UI deps); segment /
+# sku_or_plan / fact_id / product_id encode a fact's matrix identity and are NOT
+# editable. FACT_SEGMENTS validates an optional segment at add-time only.
+FACT_SEGMENTS = ("commercial", "gcc", "gcc_high", "dod", "azure_gov", "unknown")
+FACT_SOURCE_QUALITY = ("primary", "non-primary")
+
+# Fact date columns validated as ISO-8601 date (or '') on edit.
+_FACT_DATE_COLS = ("effective_date", "verified_date")
+
+# R9.5 source registry. Tables that FK-reference source_policies.source_id; a
+# hard-delete with any referencing row raises IntegrityError (bare FK, NO
+# ACTION). remove_source counts these first and blocks legibly. signals has no
+# direct source_id - it references transitively via signals.raw_event_id ->
+# raw_events.source_id (surfaced by source_reference_breakdown's join). Mirror
+# the exhaustive-FK pattern of _ENTITY_REFERENCING: every bare FK to source_id
+# must be listed or an operator source that owns rows in the missing table would
+# get past the breakdown and leak a raw IntegrityError.
+_SOURCE_REFERENCING = (
+    ("raw_events", "source_id"),
+    ("source_runs", "source_id"),
+    ("facility_assets", "source_id"),
+)
+
 
 @contextlib.contextmanager
 def config_write_conn(db_path=None, lock_path=None):
@@ -660,9 +685,11 @@ def config_audit_tail(conn, limit=50):
 
 def source_policy_rows(conn, now=None):
     """Source policies for the Admin review table (R8.7): each source_health row
-    as a plain dict, plus its computed state and its Gate G2 demotion
-    recommendation (report-only, R9.5) keyed off the same source_id. ``g2`` is
-    None for a source with no rated feedback yet."""
+    as a plain dict, plus its computed state, its Gate G2 demotion recommendation
+    (report-only, R9.5) keyed off the same source_id, its ``origin`` (seed vs
+    operator, from source_health), and a ``reference_count`` so the UI renders
+    disable-vs-remove (only operator-origin zero-reference sources are
+    removable). ``g2`` is None for a source with no rated feedback yet."""
     from app.audit.precision import g2_status
     g2 = g2_status(precision_feedback_rows(conn), now=now)
     out = []
@@ -670,6 +697,8 @@ def source_policy_rows(conn, now=None):
         d = dict(r)
         d["state"] = source_state(r, now=now)
         d["g2"] = g2.get(r["source_id"])
+        d["reference_count"] = sum(
+            source_reference_breakdown(conn, r["source_id"]).values())
         out.append(d)
     return out
 
@@ -1142,3 +1171,288 @@ def regulatory_monitor(conn, limit=100):
             _REGULATORY_CLASSIFIER_ID, _REGULATORY_PARSER_VERSION, limit,
         ]).fetchall()
     return [_regulatory_chatter_row(r) for r in rows]
+
+
+# -- license-fact editors (R8.7; R3.3, R7.6) ---------------------------------
+#
+# license_facts is owned by the app.licensing transform, not load_seeds. These
+# helpers mirror the config-write path: validate (ValueError -> the page
+# surfaces it, no write), write + one config_audit row, commit. NONE rescore -
+# cards read frozen license_play_snapshots (R7.6), never live facts, so a fact
+# edit never moves an existing card; it is picked up by the NEXT play snapshot.
+# There is no fact-delete path (edit + add + supersede only): fact_snapshot_
+# citations is the JSON-scan gate the FK-COUNT pattern cannot see, surfaced as a
+# caption ("cited by N cards - edit in place"), not a delete guard.
+
+
+def _valid_fact_date(value):
+    """A fact date column accepts '' (unset) or an ISO-8601 date; else False."""
+    v = (value or "").strip()
+    if not v:
+        return True
+    try:
+        date.fromisoformat(v)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_future_date(value, now=None):
+    """True when value parses to a date after today (UTC). '' and unparseable
+    are not future (parseability is checked separately)."""
+    try:
+        d = date.fromisoformat((value or "").strip())
+    except ValueError:
+        return False
+    today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+    return d > today
+
+
+def _fact_id_list(raw):
+    """Return fact_ids only when the snapshot column holds a JSON array."""
+    try:
+        ids = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return ids if isinstance(ids, list) else []
+
+
+def _normalize_evidence_rank(value):
+    """Evidence rank is optional, but when present it must be documented 1..3."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        v = value.strip()
+        if not v:
+            return None
+        if not v.isdigit():
+            raise ValueError("evidence_rank must be 1, 2, or 3")
+        rank = int(v)
+    else:
+        try:
+            rank = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("evidence_rank must be 1, 2, or 3")
+    if rank not in (1, 2, 3):
+        raise ValueError("evidence_rank must be 1, 2, or 3")
+    return rank
+
+
+def update_license_fact(conn, fact_id, field, new_value, reason="",
+                        editor=CONFIG_EDITOR, now=None):
+    """Edit one editable column of a license fact (R8.7). ``field`` must be in
+    EDITABLE_FACT_COLS (segment / sku_or_plan / identity are not editable).
+    source_quality is validated against FACT_SOURCE_QUALITY; date columns must be
+    an ISO-8601 date or ''. A no-op edit writes nothing and does not rescore.
+    Raises ValueError. Returns {old, new, changed}."""
+    if field not in EDITABLE_FACT_COLS:
+        raise ValueError(
+            f"{field!r} is not an editable column "
+            f"(editable: {', '.join(EDITABLE_FACT_COLS)})")
+    new = "" if new_value is None else str(new_value)
+    if field == "source_quality" and new and new not in FACT_SOURCE_QUALITY:
+        raise ValueError(
+            f"source_quality must be one of {FACT_SOURCE_QUALITY}, got {new!r}")
+    if field in _FACT_DATE_COLS and not _valid_fact_date(new):
+        raise ValueError(f"{field} must be an ISO-8601 date or empty, got {new!r}")
+    # verified_date only: a future date would compute a negative age and hide the
+    # fact from the R10.7 staleness list (a fact can't be "verified" tomorrow).
+    # effective_date may legitimately be future (a rule effective 2026-10-01).
+    if field == "verified_date" and _is_future_date(new, now):
+        raise ValueError("verified_date cannot be in the future")
+    row = conn.execute(
+        f"SELECT {field} AS v FROM license_facts WHERE fact_id = ?",
+        (fact_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown fact {fact_id!r}")
+    old = row["v"]
+    if new == ("" if old is None else str(old)):
+        return {"old": old, "new": new, "changed": False}
+    conn.execute(
+        f"UPDATE license_facts SET {field} = ? WHERE fact_id = ?",
+        (new, fact_id))
+    _record_config_edit(conn, "license_facts", fact_id, field,
+                        old, new, editor, reason, now)
+    conn.commit()
+    return {"old": old, "new": new, "changed": True}
+
+
+def add_license_fact(conn, fact_id, product_id, fields=None, reason="",
+                     editor=CONFIG_EDITOR, now=None):
+    """Add an operator license fact the transform lacks (R8.7). ``fact_id`` must
+    be unique; ``product_id`` must exist in products or be None/''. ``fields``
+    may set EDITABLE_FACT_COLS and an optional ``segment`` (validated against
+    FACT_SEGMENTS). sku_or_plan is left NULL - that is the marker the licensing
+    rebuild uses to leave operator facts untouched. Raises ValueError. Returns
+    {'fact_id', 'created': True}."""
+    fid = (fact_id or "").strip()
+    if not fid:
+        raise ValueError("fact_id is required")
+    if conn.execute("SELECT 1 FROM license_facts WHERE fact_id = ?",
+                    (fid,)).fetchone():
+        raise ValueError(f"fact_id {fid!r} already exists")
+    pid = (product_id or "").strip() or None
+    if pid is not None and not conn.execute(
+            "SELECT 1 FROM products WHERE product_id = ?", (pid,)).fetchone():
+        raise ValueError(f"unknown product_id {pid!r}")
+    fields = dict(fields or {})
+    segment = fields.pop("segment", None)
+    bad = set(fields) - set(EDITABLE_FACT_COLS)
+    if bad:
+        raise ValueError(f"not editable column(s): {sorted(bad)}")
+    if segment is not None and segment not in FACT_SEGMENTS:
+        raise ValueError(f"segment must be one of {FACT_SEGMENTS}, got {segment!r}")
+    sq = fields.get("source_quality")
+    if sq and sq not in FACT_SOURCE_QUALITY:
+        raise ValueError(
+            f"source_quality must be one of {FACT_SOURCE_QUALITY}, got {sq!r}")
+    for dc in _FACT_DATE_COLS:
+        if dc in fields and not _valid_fact_date(fields[dc]):
+            raise ValueError(
+                f"{dc} must be an ISO-8601 date or empty, got {fields[dc]!r}")
+    # verified_date only: future dates would hide the fact from staleness (see
+    # update_license_fact); effective_date may legitimately be future.
+    if "verified_date" in fields and _is_future_date(fields["verified_date"], now):
+        raise ValueError("verified_date cannot be in the future")
+    cols = ["fact_id", "product_id", "segment"] + list(fields)
+    vals = [fid, pid, segment] + [fields[c] for c in fields]
+    conn.execute(
+        f"INSERT INTO license_facts ({','.join(cols)}) "
+        f"VALUES ({_placeholders(len(cols))})", vals)
+    # Record the created fact_id as new_value so the audit trail says WHAT was
+    # created (product_id may be None for a product-less operator fact).
+    _record_config_edit(conn, "license_facts", fid, "__add__",
+                        None, fid, editor, reason, now)
+    conn.commit()
+    return {"fact_id": fid, "created": True}
+
+
+def fact_snapshot_citations(conn, fact_id):
+    """Count of license_play_snapshots that cite this fact_id (R7.6). fact_ids is
+    a JSON array TEXT (not a real FK: 0001_initial.sql), so this hand-scans and
+    json.loads each, guarding malformed JSON like signal_detail. This is the
+    citation gate the FK-COUNT breakdown pattern cannot see."""
+    n = 0
+    for r in conn.execute("SELECT fact_ids FROM license_play_snapshots"):
+        if fact_id in _fact_id_list(r["fact_ids"]):
+            n += 1
+    return n
+
+
+def license_fact_rows(conn):
+    """License facts for the Admin editor selectbox (R8.7): every EDITABLE_FACT_COL
+    plus identity columns and the operator/transform origin (sku_or_plan IS NULL
+    => operator-added). Plain dicts, ordered by fact_id."""
+    rows = conn.execute(
+        "SELECT lf.fact_id, lf.product_id, lf.sku_or_plan, lf.segment, "
+        " lf.price_note, lf.included_or_addon, lf.prerequisite, "
+        " lf.effective_date, lf.verified_date, lf.source_quality, lf.source_url, "
+        " p.name AS product_name "
+        "FROM license_facts lf "
+        "LEFT JOIN products p ON p.product_id = lf.product_id "
+        "ORDER BY lf.fact_id").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["origin"] = "operator" if r["sku_or_plan"] is None else "transform"
+        out.append(d)
+    return out
+
+
+# -- source registry (R9.5 add / remove) -------------------------------------
+#
+# add_source writes origin='operator' (migration 0009) so a reload never
+# clobbers it and remove can tell it apart from a seeded row. remove_source is
+# the only source hard-delete: refused for seeded sources (disable instead) and
+# FK-gated for operator ones (a referencing raw_event / run / signal turns the
+# click into a legible error, never a leaked IntegrityError). Editing a seeded
+# source's policy fields is out of scope for this chunk (follow-up).
+
+
+def source_reference_breakdown(conn, source_id):
+    """{table: count} for each source that references this source_id (only
+    non-zero entries): raw_events + source_runs directly, and signals
+    transitively via signals.raw_event_id -> raw_events.source_id (there is no
+    signals.source_id FK). An empty dict means a hard-delete is FK-safe."""
+    out = {}
+    for table, col in _SOURCE_REFERENCING:
+        n = conn.execute(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE {col} = ?",
+            (source_id,)).fetchone()["n"]
+        if n:
+            out[table] = n
+    signals = conn.execute(
+        "SELECT COUNT(*) AS n FROM signals s "
+        "JOIN raw_events re ON re.raw_event_id = s.raw_event_id "
+        "WHERE re.source_id = ?", (source_id,)).fetchone()["n"]
+    if signals:
+        out["signals"] = signals
+    return out
+
+
+def add_source(conn, source_id, name, access_method="", ttl=None,
+               evidence_rank=None, tos_status="", rate_limit="",
+               last_policy_review="", enabled=True, reason="",
+               editor=CONFIG_EDITOR, now=None):
+    """Add an operator source policy the seed set lacks (origin='operator',
+    R9.5). ``source_id`` must be unique and ``name`` non-empty. New rows are not
+    deleted by load_seeds, so they survive reload. Raises ValueError. Returns
+    {'source_id', 'created': True}."""
+    sid = (source_id or "").strip()
+    nm = (name or "").strip()
+    if not sid:
+        raise ValueError("source_id is required")
+    if not nm:
+        raise ValueError("name is required")
+    if conn.execute("SELECT 1 FROM source_policies WHERE source_id = ?",
+                    (sid,)).fetchone():
+        raise ValueError(f"source_id {sid!r} already exists")
+    rank = _normalize_evidence_rank(evidence_rank)
+    conn.execute(
+        "INSERT INTO source_policies (source_id, name, access_method, ttl, "
+        " enabled, tos_status, evidence_rank, rate_limit, last_policy_review, "
+        " origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'operator')",
+        (sid, nm, access_method or "", ttl, 1 if enabled else 0,
+         tos_status or "", rank, rate_limit or "",
+         last_policy_review or ""))
+    _record_config_edit(conn, "source_policies", sid, "__add__",
+                        None, nm, editor, reason, now)
+    conn.commit()
+    return {"source_id": sid, "created": True}
+
+
+def remove_source(conn, source_id, reason="", editor=CONFIG_EDITOR, now=None):
+    """Hard-delete an OPERATOR-added source (R9.5), guarded by an FK-referencing-
+    row check. Refuses a seeded source (disable it instead). Blocks with a
+    legible ValueError when any raw_event / source_run / signal references it,
+    never leaking an IntegrityError. Raises ValueError. Returns
+    {'source_id', 'removed': True}."""
+    row = conn.execute(
+        "SELECT origin FROM source_policies WHERE source_id = ?",
+        (source_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown source_id {source_id!r}")
+    if row["origin"] != "operator":
+        raise ValueError(
+            f"source {source_id!r} is seeded - disable it instead of removing")
+    breakdown = source_reference_breakdown(conn, source_id)
+    if breakdown:
+        detail = ", ".join(f"{table}: {n}" for table, n in breakdown.items())
+        total = sum(breakdown.values())
+        raise ValueError(
+            f"{total} row(s) reference this source ({detail}) - disable it "
+            "instead of removing")
+    # Belt-and-suspenders: even if a future bare FK to source_id is not yet in
+    # _SOURCE_REFERENCING, the DELETE must never leak a raw IntegrityError to the
+    # UI - turn it into the same legible ValueError.
+    try:
+        conn.execute("DELETE FROM source_policies WHERE source_id = ?",
+                     (source_id,))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise ValueError(
+            "other rows reference this source - disable it instead of removing")
+    _record_config_edit(conn, "source_policies", source_id, "__remove__",
+                        source_id, None, editor, reason, now)
+    conn.commit()
+    return {"source_id": source_id, "removed": True}
