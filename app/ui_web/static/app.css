@@ -202,3 +202,30 @@
 .gs-state-badge.state-never    { background: #12233b; border-color: #274b7a; color: #9cc6ff; }
 .gs-state-badge.state-error    { background: #331616; border-color: #7a2c2c; color: var(--gs-crit); }
 .gs-state-badge.state-disabled { background: var(--gs-chip-bg); border-color: var(--gs-card-border); color: var(--gs-muted); }
+/* ---- Precision (Chunk 4) ----
+ * NEW hand-authored component styles (R8.9), flagged in the chunk PR. The page
+ * is metric/table-heavy where the card pages are card-heavy, so it needs a
+ * section-heading scale, a two-up headline gauge row, and a table style — none
+ * of which existed. Trust invariant lives in render.py (rate always with n); the
+ * CSS only lays it out. gs-metric-na keeps an "n/a" gauge visually muted so a
+ * low-n state never reads like a confident zero. */
+.gs-h2 { margin: 6px 0 4px; font-size: 1.1rem; font-weight: 600; color: var(--gs-text); }
+.gs-h3 { margin: 12px 0 4px; font-size: 0.92rem; font-weight: 600; color: var(--gs-text); }
+
+.gs-metric-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 4px; }
+.gs-metric { flex: 1 1 240px; min-width: 220px; background: var(--gs-card);
+  border: 1px solid var(--gs-card-border); border-radius: 10px; padding: 14px 16px; }
+.gs-metric-label { color: var(--gs-muted); font-size: 0.8rem; margin-bottom: 4px; }
+.gs-metric-value { font-size: 1.8rem; font-weight: 600; color: var(--gs-text); line-height: 1.2; }
+.gs-metric-value.gs-metric-na { color: var(--gs-muted); font-weight: 500; }
+.gs-metric .gs-empty { margin-top: 8px; text-align: left; padding: 10px 12px; }
+
+.gs-g1-trigger, .gs-g2-source { margin: 8px 0; }
+
+.gs-table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 0.82rem;
+  display: block; overflow-x: auto; }
+.gs-table thead th { text-align: left; color: var(--gs-muted); font-weight: 600;
+  border-bottom: 1px solid var(--gs-card-border); padding: 6px 12px 6px 0; white-space: nowrap; }
+.gs-table tbody td { color: var(--gs-text); border-bottom: 1px solid var(--gs-card-border);
+  padding: 6px 12px 6px 0; vertical-align: top; }
+.gs-table tbody tr:last-child td { border-bottom: none; }
