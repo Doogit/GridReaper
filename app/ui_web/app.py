@@ -21,13 +21,14 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.ui_web.routes import account, feed
+from app.ui_web.routes import account, feed, review
 from app.ui_web.templating import STATIC_DIR
 
 app = FastAPI(title="GridSignals", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(feed.router)
 app.include_router(account.router)
+app.include_router(review.router)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)

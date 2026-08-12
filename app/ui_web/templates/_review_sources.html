@@ -1,0 +1,17 @@
+{# Source health (R10.3/G2), driven by render.source_health_view() rows. Every
+   source policy classified into one of five states, each visually distinct so
+   error vs never-run vs stale are never confused. Error text is shown verbatim
+   for the errored source (autoescaped). Empty = no sources configured yet. #}
+<p class="gs-muted-text">Ingestion status per source (R10.3): error / never-run / stale vs ttl / disabled / ok.</p>
+
+{% if sources %}
+{% for s in sources %}
+<div class="gs-source-row">
+  <div><span class="gs-state-badge {{ s.state_cls }}">{{ s.state_label }}</span> {{ s.name }} <span class="gs-meta">(<code>{{ s.source_id }}</code>)</span></div>
+  {% if s.error_state %}<div class="gs-gov-caution">{{ s.error_state }}</div>{% endif %}
+  <div class="gs-meta">last success: {{ s.last_success }} · ttl: {{ s.ttl }}s</div>
+</div>
+{% endfor %}
+{% else %}
+<div class="gs-empty">No sources configured yet.</div>
+{% endif %}
