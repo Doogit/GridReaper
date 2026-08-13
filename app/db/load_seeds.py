@@ -29,6 +29,11 @@ TRIGGER_SCOPES = {
     "nerc_enforcement": ["account", "sector"],
     "nerc_cip_revision": ["sector", "regulatory_calendar"],
     "tsa_security_directive": ["sector", "regulatory_calendar"],
+    # Stage-2 incidents (R9.6): own_incident is the filer's own disclosure
+    # (account); peer_incident is the same disclosure read as a sector-wide
+    # class signal (sector, class-phrased, name-free).
+    "own_incident": ["account"],
+    "peer_incident": ["sector"],
 }
 
 # Loaded in FK order: products + triggers precede indicator_map.
