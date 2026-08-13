@@ -247,6 +247,16 @@ class TestDigestRoute(DigestTestBase):
         self.assertIn("Generated at", dom)
         self.assertIn(NOW.isoformat(), dom)
 
+    def test_present_file_never_renders_empty_state(self):
+        # Coupling guard: when a digest file exists on disk, the in-app view must
+        # render its extracted body — never the "No digest generated yet" empty
+        # copy. If a template reshape breaks the route's body/timestamp regex, the
+        # route would silently fall back to the empty state though a file exists;
+        # this pins "absence means absence, not a regex mismatch" (persona-pass D2).
+        digest_mod.generate(now=NOW)
+        dom = self.client.get("/digest").text
+        self.assertNotIn("No digest generated yet", dom)
+
     def test_nav_link_present_and_active(self):
         digest_mod.generate(now=NOW)
         dom = self.client.get("/digest").text
@@ -258,6 +268,23 @@ class TestDigestRoute(DigestTestBase):
         resp = self.client.get("/digest")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("No digest generated yet", resp.text)
+
+
+class TestDigestRetention(unittest.TestCase):
+    def test_prune_keeps_newest_and_spares_latest_alias(self):
+        # Dated files sort chronologically by name; keep the newest `keep`, prune
+        # the rest, and never touch the digest-latest.html alias (R8.8 retention).
+        d = tempfile.mkdtemp()
+        try:
+            for day in range(1, 6):  # digest-2026-01-01 .. digest-2026-01-05
+                open(os.path.join(d, f"digest-2026-01-{day:02d}.html"), "w").close()
+            open(os.path.join(d, "digest-latest.html"), "w").close()
+            digest_mod._prune_old_digests(d, keep=3)
+            self.assertEqual(sorted(os.listdir(d)), [
+                "digest-2026-01-03.html", "digest-2026-01-04.html",
+                "digest-2026-01-05.html", "digest-latest.html"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
