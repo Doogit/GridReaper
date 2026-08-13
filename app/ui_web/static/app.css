@@ -165,6 +165,8 @@
   color: var(--gs-scope-text); }
 .gs-badge.coverage-dark { background: var(--gs-cov-bg); border-color: var(--gs-cov-border);
   color: var(--gs-cov-text); }
+.gs-badge.cleared { background: var(--gs-ok-bg); border-color: var(--gs-ok-border);
+  color: var(--gs-ok-text); }    /* R7.12 gate cleared — matches .gs-cleared-note */
 
 .gs-chip { display: inline-block; font-size: 0.74rem; padding: 2px 8px;
   border-radius: 6px; background: var(--gs-chip-bg); color: var(--gs-text); margin: 0 4px 4px 0; }

@@ -219,6 +219,9 @@ class TestRetiersRoute(RetiersRouteBase):
         self.assertIn("Acme named on leak site", dom)
         self.assertIn("confirmed via SEC 8-K Item 1.05", dom)
         self.assertIn("cleared for outreach", dom)
+        # the gate-clearing flag carries the accent class so it is legible at a
+        # glance (matches the card's green .gs-cleared-note marker)
+        self.assertIn('class="gs-badge cleared"', dom)
         self.assertIn("unconfirmed_early_warning → confirmed", dom)
 
 
