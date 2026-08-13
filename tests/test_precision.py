@@ -364,5 +364,117 @@ class G2StatusTests(unittest.TestCase):
         self.assertIn("n", cell)  # trust invariant: rate never bare
 
 
+class DisagreementBySourceTests(unittest.TestCase):
+    def test_buckets_by_audit_source(self):
+        # s1 (src_a): judge positive, human negative -> disagree.
+        # s2 (src_b): judge negative, human negative -> agree.
+        audit = [
+            au("s1", "entity_match", "pass", source_id="src_a"),
+            au("s2", "entity_match", "fail", source_id="src_b"),
+        ]
+        feedback = [
+            fb("s1", "not_useful", reason_code="other", source_id="src_a"),
+            fb("s2", "not_useful", reason_code="other", source_id="src_b"),
+        ]
+        out = p.judge_human_disagreement_by_source(audit, feedback)
+        self.assertEqual(out["src_a"]["disagreement_rate"], 1.0)
+        self.assertEqual(out["src_a"]["comparable"], 1)
+        self.assertEqual(out["src_b"]["disagreement_rate"], 0.0)
+
+    def test_global_signature_unchanged(self):
+        # The old global function still returns its original shape.
+        out = p.judge_human_disagreement([au("s1", "entity_match", "fail")],
+                                         [fb("s1", "not_useful",
+                                             reason_code="other")])
+        self.assertEqual(out["comparable"], 1)
+        self.assertIn("items", out)
+
+
+class G2GatedTests(unittest.TestCase):
+    def _g2(self, source, useful, not_useful):
+        rows = [fb(f"{source}:u{i}", "useful", source_id=source)
+                for i in range(useful)]
+        rows += [fb(f"{source}:n{i}", "not_useful", source_id=source,
+                    reason_code="weak_evidence") for i in range(not_useful)]
+        return p.g2_status(rows), rows
+
+    def test_high_disagreement_over_floor_withholds_demote(self):
+        # A source that WOULD be demoted (low precision, big n)...
+        g2, _ = self._g2("bad", 4, 26)          # ~13% precision, n=30
+        self.assertTrue(g2["bad"]["demote_recommended"])
+        # ...with 30% disagreement over >= floor comparable is gated off.
+        dis = {"bad": {"comparable": p.G2_MIN_N, "agree": 14, "disagree": 6,
+                       "disagreement_rate": 0.30}}
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "withheld")
+        self.assertFalse(gated["bad"]["demote_recommended"])
+        self.assertIn("judge verdicts withheld from demotion",
+                      gated["bad"]["note"])
+        # Base result untouched (overlay is non-mutating).
+        self.assertTrue(g2["bad"]["demote_recommended"])
+
+    def test_low_disagreement_leaves_g2_unchanged(self):
+        g2, _ = self._g2("bad", 4, 26)
+        dis = {"bad": {"comparable": p.G2_MIN_N, "agree": 18, "disagree": 2,
+                       "disagreement_rate": 0.10}}
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "ok")
+        self.assertTrue(gated["bad"]["demote_recommended"])
+
+    def test_high_disagreement_below_floor_never_blocks(self):
+        g2, _ = self._g2("bad", 4, 26)
+        dis = {"bad": {"comparable": 3, "agree": 2, "disagree": 1,
+                       "disagreement_rate": 0.30}}
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "below_floor")
+        # No false block: the recommendation stands.
+        self.assertTrue(gated["bad"]["demote_recommended"])
+
+    def test_no_comparable_reads_na(self):
+        g2, _ = self._g2("bad", 4, 26)
+        gated = p.g2_gated(g2, {})   # no disagreement data for any source
+        self.assertEqual(gated["bad"]["gate"], "na")
+        self.assertEqual(gated["bad"]["comparable"], 0)
+        self.assertIsNone(gated["bad"]["disagreement_rate"])
+        self.assertTrue(gated["bad"]["demote_recommended"])  # unchanged
+
+
+class SpotcheckCoverageTests(unittest.TestCase):
+    NOW = "2026-08-15T00:00:00Z"
+
+    def test_met_when_reviewed_at_or_above_target(self):
+        # 5 signals audited this month, all human-reviewed -> reviewed=5.
+        audit, feedback = [], []
+        for i in range(5):
+            audit.append(au(f"s{i}", "entity_match", "pass",
+                            ts="2026-08-10T00:00:00Z"))
+            feedback.append(fb(f"s{i}", "useful"))
+        sc = p.spotcheck_coverage(audit, feedback, now=self.NOW)
+        self.assertEqual(sc["reviewed"], 5)
+        self.assertEqual(sc["audited"], 5)
+        self.assertEqual(sc["target"], 5)   # floor
+        self.assertTrue(sc["met"])
+        self.assertEqual(sc["window"], "2026-08")
+
+    def test_below_floor_when_too_few_reviewed(self):
+        # 5 audited, only 2 reviewed -> below the floor of 5.
+        audit, feedback = [], []
+        for i in range(5):
+            audit.append(au(f"s{i}", "entity_match", "pass",
+                            ts="2026-08-10T00:00:00Z"))
+        feedback = [fb("s0", "useful"), fb("s1", "not_useful",
+                                           reason_code="other")]
+        sc = p.spotcheck_coverage(audit, feedback, now=self.NOW)
+        self.assertEqual(sc["reviewed"], 2)
+        self.assertFalse(sc["met"])
+
+    def test_prior_month_audit_excluded(self):
+        audit = [au("s1", "entity_match", "pass", ts="2026-07-31T00:00:00Z")]
+        feedback = [fb("s1", "useful")]
+        sc = p.spotcheck_coverage(audit, feedback, now=self.NOW)
+        self.assertEqual(sc["audited"], 0)
+        self.assertEqual(sc["reviewed"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

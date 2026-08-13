@@ -442,10 +442,23 @@ def precision_g1_view(feedback_rows, audit_rows):
     }
 
 
-def precision_g2_view(feedback_rows):
-    """Gate G2 per-source demotion *recommendations* — report-only (R9.5). Empty
-    list when no rated cards are attributed to any source yet."""
+def precision_g2_view(feedback_rows, audit_rows=None):
+    """Gate G2 per-source demotion *recommendations* — report-only (R9.5), with
+    the R9.11 disagreement gate overlaid (KTD3).
+
+    When ``audit_rows`` is supplied, per-source judge-human disagreement is
+    computed and ``g2_gated`` overlays it: a source with >20% disagreement over
+    enough comparable evidence has its demote recommendation WITHHELD ("judge
+    verdicts withheld from demotion — revise rubric"); below the comparable floor
+    the gate reads "below floor" and NEVER blocks; no comparable signals reads
+    "n/a". Every gate ships with its disagreement rate AND comparable ``n`` so an
+    operator can see dormant-vs-active. Empty list when no rated cards are
+    attributed to any source yet.
+    """
     g2 = _precision.g2_status(feedback_rows)
+    dis = _precision.judge_human_disagreement_by_source(
+        audit_rows or [], feedback_rows)
+    g2 = _precision.g2_gated(g2, dis)
     out = []
     for sid, m in g2.items():
         out.append({
@@ -455,8 +468,31 @@ def precision_g2_view(feedback_rows):
             "note": m["note"],
             "reason_codes": [f"{code}={n}"
                              for code, n in m["reason_codes"].items()],
+            "gate": m["gate"],
+            "gate_note": m["gate_note"],
+            "disagreement": rate_with_n(m["disagreement_rate"],
+                                        m["comparable"]),
         })
     return out
+
+
+def precision_spotcheck_view(audit_rows, feedback_rows, now=None):
+    """Monthly audit spot-check tracker (R9.11) — report-only. Shows how many
+    audited signals a human reviewed this month against the R9.11 target, with
+    honest "below floor" copy below the target and its window. Reuses existing
+    feedback-on-audited-signal rows (no new storage)."""
+    sc = _precision.spotcheck_coverage(audit_rows, feedback_rows, now=now)
+    return {
+        "reviewed": sc["reviewed"],
+        "audited": sc["audited"],
+        "target": sc["target"],
+        "met": sc["met"],
+        "window": sc["window"],
+        "status": "met" if sc["met"] else "below floor",
+        "summary": (
+            f"{sc['reviewed']} of {sc['target']} target this month "
+            f"({sc['window']}, over {sc['audited']} audited)"),
+    }
 
 
 def _dimension_tables(rows, computed_fn, value_key, empty_key):

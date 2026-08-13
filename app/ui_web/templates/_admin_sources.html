@@ -34,7 +34,11 @@
       {% if s.g2 %}
       <div class="gs-meta">G2
         <span class="gs-badge">{{ 'DEMOTE?' if s.g2.demote_recommended else 'ok' }}</span>
+        <span class="gs-badge">gate: {{ s.g2.gate }}</span>
         {{ s.g2.note }}</div>
+      {% if s.g2.gate_note %}
+      <div class="gs-meta">R9.11 gate: {{ s.g2.gate_note }}</div>
+      {% endif %}
       {% else %}
       <div class="gs-meta">G2: no rated feedback for this source yet — rate its
         cards useful / not-useful to build a signal.</div>
