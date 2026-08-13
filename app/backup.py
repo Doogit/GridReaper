@@ -27,8 +27,9 @@ Checkpoint policy (the "documented policy" R3.6 calls for):
     safe to copy elsewhere.
 
 Default destination: ``data/backups/gridsignals-YYYY-MM-DD.db`` (UTC date,
-R10.2). Override with ``--out``. The parent directory is created if missing.
-Prints the written path; exits 0 on success, non-zero on failure.
+R10.2), with a numeric suffix if that file already exists. Override with
+``--out``. The parent directory is created if missing. Prints the written path;
+exits 0 on success, non-zero on failure.
 """
 import argparse
 import os
@@ -40,10 +41,24 @@ from app.db.connection import get_connection
 DEFAULT_BACKUP_DIR = os.path.join("data", "backups")
 
 
-def default_backup_path(now=None):
+def default_backup_path(now=None, backup_dir=None):
     """data/backups/gridsignals-YYYY-MM-DD.db using the UTC date (R10.2)."""
     now = now or datetime.now(timezone.utc)
-    return os.path.join(DEFAULT_BACKUP_DIR, f"gridsignals-{now:%Y-%m-%d}.db")
+    backup_dir = backup_dir or DEFAULT_BACKUP_DIR
+    return os.path.join(backup_dir, f"gridsignals-{now:%Y-%m-%d}.db")
+
+
+def available_backup_path(path):
+    """Return path, or a numbered sibling, without overwriting an export."""
+    if not os.path.exists(path):
+        return path
+    root, ext = os.path.splitext(path)
+    counter = 2
+    while True:
+        candidate = f"{root}-{counter}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        counter += 1
 
 
 def export(out_path, db_path=None):
@@ -72,7 +87,10 @@ def main(argv=None):
     )
     parser.add_argument(
         "--out",
-        help="destination path (default: data/backups/gridsignals-YYYY-MM-DD.db, UTC)",
+        help=(
+            "destination path (default: data/backups/gridsignals-YYYY-MM-DD.db, UTC; "
+            "adds a numeric suffix if needed)"
+        ),
     )
     parser.add_argument(
         "--db",
@@ -80,7 +98,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    out_path = args.out or default_backup_path()
+    out_path = args.out or available_backup_path(default_backup_path())
     try:
         written = export(out_path, db_path=args.db)
     except Exception as exc:

@@ -7,9 +7,9 @@ the source DB intact.
 """
 import os
 import sqlite3
-import tempfile
 import unittest
 from datetime import datetime, timezone
+from tempfile import TemporaryDirectory
 
 from app import backup
 from app.db.migrate import apply_migrations
@@ -35,9 +35,13 @@ def _seed_source(db_path):
 
 class TestBackupExport(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="gs_backup_test_")
+        self.tmpdir = TemporaryDirectory(prefix="gs_backup_test_")
+        self.tmp = self.tmpdir.name
         self.src = os.path.join(self.tmp, "source.db")
         _seed_source(self.src)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
 
     def _names(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -85,6 +89,21 @@ class TestBackupExport(unittest.TestCase):
         self.assertEqual(
             path,
             os.path.join("data", "backups", "gridsignals-2026-08-13.db"),
+        )
+
+    def test_available_default_path_uses_numeric_suffix_on_collision(self):
+        fixed = datetime(2026, 8, 13, tzinfo=timezone.utc)
+        backup_dir = os.path.join(self.tmp, "backups")
+        os.makedirs(backup_dir)
+        base = backup.default_backup_path(now=fixed, backup_dir=backup_dir)
+        second = os.path.join(backup_dir, "gridsignals-2026-08-13-2.db")
+        with open(base, "w", encoding="utf-8"):
+            pass
+        with open(second, "w", encoding="utf-8"):
+            pass
+        self.assertEqual(
+            backup.available_backup_path(base),
+            os.path.join(backup_dir, "gridsignals-2026-08-13-3.db"),
         )
 
     def test_out_override_respected(self):
