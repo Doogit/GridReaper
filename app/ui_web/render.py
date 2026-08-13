@@ -673,6 +673,37 @@ def audit_view(rows):
     } for r in rows]
 
 
+def recent_retiers_view(rows):
+    """Rows for the central Recent re-tiers audit table (R8.7 oversight), newest
+    first. One data.recent_retiers row -> the card it re-tiered (headline +
+    account, an em-dash account for a sector-scoped peer incident with no
+    account), the tier change stated ``old -> new`` (R10.5), and the outreach
+    consequence spelled out (R7.12) the same way result_message does it: a
+    re-tier that clears the card for customer-facing outreach reads "cleared for
+    outreach" (and is flagged), one that suppresses it reads "suppressed", a
+    lateral confirmed/corroborated move an em-dash. Pure; the template
+    autoescapes every string."""
+    out = []
+    for r in rows:
+        if r["gate_raised"]:
+            outreach = "cleared for outreach"
+        elif r["old_cfa"] == 1 and r["new_cfa"] == 0:
+            outreach = "suppressed"
+        else:
+            outreach = "—"
+        out.append({
+            "when": r["ts"],
+            "headline": r["headline"] or "",
+            "account": r["entity_name"] or "—",
+            "change": f"{r['old_level']} → {r['new_level']}",
+            "outreach": outreach,
+            "gate_raised": r["gate_raised"],
+            "editor": r["editor"] or "",
+            "reason": r["reason"] or "",
+        })
+    return out
+
+
 def staleness_view(stale):
     """Stale license-fact rows for the R10.7 list, with literal field-stating age
     labels ('verified N days ago' / 'verification date unknown' — never an
