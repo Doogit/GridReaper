@@ -5,7 +5,7 @@
 # build runs the pipeline and bakes the resulting signals into the image.
 #
 # Tradeoff (accepted): the build is network-dependent and non-deterministic — it
-# fetches from ~5 external feeds. Network ingests are non-fatal so one flaky
+# fetches from several external feeds. Network ingests are non-fatal so one flaky
 # feed can't fail the build, but we assert signals and license plays at the end
 # so an incomplete demo fails loudly instead of shipping a blank feed/card set.
 FROM python:3.12-slim
@@ -34,9 +34,12 @@ RUN python -m app.db.load_seeds \
  && (python -m app.ingest.presswire --source globenewswire || echo "WARN: globenewswire ingest failed, continuing") \
  && (python -m app.ingest.nerc_pages        || echo "WARN: nerc_pages ingest failed, continuing") \
  && (python -m app.ingest.cisa_kev          || echo "WARN: cisa_kev ingest failed, continuing") \
+ && (python -m app.ingest.security_rss --source therecord        || echo "WARN: the_record ingest failed, continuing") \
+ && (python -m app.ingest.security_rss --source bleepingcomputer || echo "WARN: bleepingcomputer ingest failed, continuing") \
  && python -m app.classify.regulatory \
  && python -m app.classify.leadership \
  && python -m app.classify.company_statement \
+ && python -m app.classify.security_rss \
  && python -m app.scoring \
  && python -m app.plays \
  && python -c "import sqlite3, os; conn = sqlite3.connect(os.environ['GRIDSIGNALS_DB']); signals = conn.execute('select count(*) from signals').fetchone()[0]; plays = conn.execute('select count(*) from license_play_snapshots').fetchone()[0]; assert signals > 0, 'build pipeline produced no signals'; assert plays > 0, 'build pipeline produced no license play snapshots'; print(f'baked {signals} signals and {plays} license play snapshots')"

@@ -42,6 +42,8 @@ class PackagingContractTest(unittest.TestCase):
             "app/classify/regulatory.py",
             "app/classify/leadership.py",
             "app/classify/company_statement.py",
+            "app/classify/security_rss.py",
+            "app/ingest/security_rss.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
 
@@ -54,6 +56,23 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             df.index("app.classify.company_statement"), df.index("app.scoring"),
             "company-statement classification must run before scoring",
+        )
+
+    def test_build_runs_security_rss_pipeline_before_scoring(self):
+        # Security-press cards come from their own RSS ingestion module. The
+        # baked demo DB must run both feeds and the classifier before scoring.
+        df = self._dockerfile()
+        self.assertIn("app.ingest.security_rss --source therecord", df)
+        self.assertIn("app.ingest.security_rss --source bleepingcomputer", df)
+        self.assertIn("app.classify.security_rss", df)
+        self.assertLess(
+            df.index("app.ingest.security_rss --source therecord"),
+            df.index("app.classify.security_rss"),
+            "security RSS ingestion must run before classification",
+        )
+        self.assertLess(
+            df.index("app.classify.security_rss"), df.index("app.scoring"),
+            "security RSS classification must run before scoring",
         )
 
     def test_cmd_launches_fastapi_ui(self):
