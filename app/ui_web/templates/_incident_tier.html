@@ -1,0 +1,27 @@
+{# Incident evidence-tier editor panel (R8.7). Revealed by GET /incident/tier
+   and re-included by _card.html after a POST. Saving swaps the WHOLE card
+   (closest article) so the verification-first warning / outreach / accent
+   follow the new tier. All text is autoescaped. #}
+<form class="gs-retier" hx-post="/incident/tier" hx-target="closest article" hx-swap="outerHTML">
+  <input type="hidden" name="signal_id" value="{{ signal_id }}">
+  <label class="gs-retier-label">Evidence tier
+    <select name="new_level">
+      {% for t in tiers %}
+      <option value="{{ t }}"{% if t == incident_level %} selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <input type="text" name="reason" class="gs-retier-reason" placeholder="reason (optional)">
+  <button type="submit" class="gs-btn">Save re-tier</button>
+</form>
+{% if flash %}
+<div class="gs-flash gs-flash-{{ flash.level }}" role="status">{{ flash.text }}</div>
+{% endif %}
+{% if history %}
+<details class="gs-retier-history">
+  <summary>Re-tier history ({{ history | length }})</summary>
+  {% for h in history %}
+  <div class="gs-retier-hist-row">{{ h.ts }} · {{ h.old_level }} → {{ h.new_level }}{% if h.reason %} · {{ h.reason }}{% endif %}</div>
+  {% endfor %}
+</details>
+{% endif %}
