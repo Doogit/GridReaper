@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.ui_web.routes import (account, admin, feed, incident, precision,
+from app.ui_web.routes import (account, admin, card, feed, incident, precision,
                                regulatory, retiers, review)
 from app.ui_web.templating import STATIC_DIR
 
@@ -35,6 +35,7 @@ app.include_router(regulatory.router)
 app.include_router(admin.router)
 app.include_router(incident.router)
 app.include_router(retiers.router)
+app.include_router(card.router)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)

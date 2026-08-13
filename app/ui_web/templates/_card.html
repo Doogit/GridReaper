@@ -2,7 +2,8 @@
    All text is autoescaped (XSS guard). Price never appears — the data layer
    omits price_note and card_view never reintroduces it (R4.3/R7.11). Outreach
    renders only from the cleared safe text (card_view gates it). #}
-<article class="{{ c.card_class }}">
+<article class="{{ c.card_class }}" id="card-{{ c.card_key }}">
+  <a class="gs-permalink" href="/card/{{ c.card_key }}" title="Permalink to this card">Permalink</a>
   <div class="gs-headline">{{ c.headline }}</div>
   <div class="gs-meta">{{ c.meta_bits | join(" · ") }}</div>
 
