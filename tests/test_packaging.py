@@ -41,8 +41,20 @@ class PackagingContractTest(unittest.TestCase):
             "app/plays.py",
             "app/classify/regulatory.py",
             "app/classify/leadership.py",
+            "app/classify/company_statement.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
+
+    def test_build_runs_company_statement_classifier_before_scoring(self):
+        # Company-statement incident cards are minted from the same press-wire
+        # backfill as leadership; the baked demo DB must run the classifier
+        # before scoring and plays snapshot the feed.
+        df = self._dockerfile()
+        self.assertIn("app.classify.company_statement", df)
+        self.assertLess(
+            df.index("app.classify.company_statement"), df.index("app.scoring"),
+            "company-statement classification must run before scoring",
+        )
 
     def test_cmd_launches_fastapi_ui(self):
         # Post-cutover (Chunk 7): the image serves the FastAPI + HTMX UI via

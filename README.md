@@ -10,7 +10,7 @@ Stack: Python · SQLite · a FastAPI + HTMX + Tailwind web UI. All data sources 
 
 GridSignals ingests a broad set of free, public signals about US energy companies and turns the highest-signal events into scored, sourced cards. Each card maps an event to relevant Microsoft security products, resolves a licensing path, and drafts an outreach opener. Every claim carries a source link and an evidence-quality tag; nothing surfaces unsourced.
 
-At MVP, two trigger types are **classified into cards** — regulatory actions (NERC/FERC/TSA) and leadership changes (new CISO/CIO/CTO). A wider set of sources — cyber incidents, ransomware activity, known-exploited vulnerabilities, and global news — is **ingested and stored** to build historical backfill, so later stages classify against history instead of starting cold.
+At MVP, the highest-signal trigger families are **classified into cards**: regulatory actions (NERC/FERC/TSA), leadership changes (new CISO/CIO/CTO), and precision-first cyber-incident slices from SEC Item 1.05, ransomware.live, and company-owned press-wire statements. Wider sources such as known-exploited vulnerabilities, global news, and facility data are **ingested and stored** to build historical backfill, so later stages classify against history instead of starting cold.
 
 Design principles:
 
