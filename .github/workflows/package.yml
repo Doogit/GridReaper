@@ -2,8 +2,9 @@ name: package
 
 # Builds the actual container and boots it. NOTE: for GridSignals the build runs
 # the live ingest pipeline, so this job is network-dependent and slower than a
-# typical build — that is the accepted tradeoff of baking a real feed. Individual
-# feeds are non-fatal in the build; the build (and this job) assert signals>0.
+# typical build — that is the accepted tradeoff of baking a real feed.
+# Individual feeds are non-fatal in the build; the build and this job assert
+# signals>0.
 on:
   pull_request:
     paths:
