@@ -112,6 +112,10 @@ class TestReveal(IncidentTierBase):
         # all three tiers are offered
         self.assertIn('value="confirmed"', resp.text)
         self.assertIn('value="corroborated"', resp.text)
+        # the field must not imply "optional": up-tiering from an unconfirmed
+        # card requires a reason because it clears customer-facing outreach.
+        self.assertIn('placeholder="reason / source"', resp.text)
+        self.assertNotIn("reason (optional)", resp.text)
 
     def test_reveal_button_uses_css_safe_target(self):
         dom = self.client.get("/").text
