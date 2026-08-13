@@ -257,6 +257,18 @@ class TestDigestRoute(DigestTestBase):
         dom = self.client.get("/digest").text
         self.assertNotIn("No digest generated yet", dom)
 
+    def test_present_unparseable_file_never_renders_empty_state(self):
+        os.makedirs(self.digest_dir, exist_ok=True)
+        with open(os.path.join(self.digest_dir, "digest-2026-08-13.html"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("<!doctype html><main>saved digest without body tag</main>")
+
+        resp = self.client.get("/digest")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Saved digest file digest-2026-08-13.html could not be displayed",
+                      resp.text)
+        self.assertNotIn("No digest generated yet", resp.text)
+
     def test_nav_link_present_and_active(self):
         digest_mod.generate(now=NOW)
         dom = self.client.get("/digest").text

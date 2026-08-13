@@ -23,7 +23,7 @@ top account-scoped signals by score (the most likely outreach targets), then a
 labeled divider, then Sector and Regulatory sections. Path/retention default:
 ``<db-dir>/digests/digest-YYYY-MM-DD.html`` (UTC date), plus a stable
 ``digest-latest.html`` copy so a server / link can always resolve "the latest".
-Retention (rolling vs dated+prune) is left open — today nothing prunes.
+Retention prunes dated files to the newest ``KEEP_DIGESTS`` writes.
 """
 import glob
 import os
