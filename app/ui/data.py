@@ -1,9 +1,13 @@
 """Read-only data-access layer for the GridSignals UI (R8.1-R8.3).
 
 Plain stdlib functions the Streamlit pages share, so the pages stay thin and
-every query is covered by a hermetic test. The app is a reader: the only
-writers here are ``record_feedback`` (R9.1), ``triage_decision`` (R8.2 human
-match decisions + review-queue disposition), and nothing else. Cards read
+every query is covered by a hermetic test. The app is a reader; its writes are
+each an explicitly sanctioned, transactional seam: ``record_feedback`` (R9.1),
+``triage_decision`` (R8.2 human match decisions + review-queue disposition),
+the config-write helpers over seeded config tables (R8.7, single-writer lock +
+``config_audit``), and ``retier_incident`` — the R8.7 operator re-tier, the one
+write that mutates a ``signals`` row's state (single-writer lock +
+``incident_tier_edits``). The read seam never calls the write seam. Cards read
 ``license_play_snapshots``, never live ``license_facts`` (R7.6); fact rows are
 surfaced only as provenance chips and this layer never returns a fact's
 ``price_note`` so a non-primary price can never reach the DOM (R4.3/R7.11).
@@ -18,6 +22,7 @@ import sqlite3
 from datetime import date, datetime, timezone
 
 from app.classify import regulatory as regulatory_classifier
+from app.classify.runner import INCIDENT_TIERS, customer_facing_for_tier
 from app.db.connection import get_connection
 from app.licensing import EDITABLE_FACT_COLS
 from app.scoring import rescore
@@ -680,6 +685,81 @@ def config_audit_tail(conn, limit=50):
     rows = conn.execute(
         "SELECT table_name, pk, field, old_value, new_value, editor, reason, ts "
         "FROM config_audit ORDER BY audit_id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# -- incident evidence-tier editor (R8.7; R10.5, R7.12, R3.3) -----------------
+#
+# The one UI write that mutates a signals row's state. It mirrors the config-write
+# path: the route's config_write_conn() owns the single-writer lock + fresh
+# connection (R3.2); this helper takes that open conn, validates (ValueError ->
+# the route surfaces it, no write), UPDATEs the signal IN PLACE (never delete +
+# reinsert - snapshots/evidence FK-reference it), appends one immutable
+# incident_tier_edits row in the SAME transaction, and commits. It does NOT
+# rescore: a tier change gates outreach (R7.12), it does not move the frozen score.
+
+def retier_incident(conn, signal_id, new_level, reason="",
+                    editor=CONFIG_EDITOR, now=None):
+    """Operator confirm/re-tier of an incident signal (R8.7, R10.5, R7.12).
+
+    Sets signals.incident_evidence_level = new_level and recomputes
+    customer_facing_allowed from it (R7.12: only unconfirmed_early_warning -> 0,
+    via the classifier's own customer_facing_for_tier so the two never diverge),
+    then appends ONE incident_tier_edits provenance row in the same transaction.
+    A no-op (new_level == current) writes nothing (idempotent - the trail records
+    real changes, not button presses). Refuses a non-incident signal
+    (incident_evidence_level NULL): the editor confirms an EXISTING incident's
+    tier, it does not turn an ordinary signal into an incident. Raises ValueError
+    (the route surfaces it, never writes). Returns
+    {old_level, new_level, old_cfa, new_cfa, changed}."""
+    if new_level not in INCIDENT_TIERS:
+        raise ValueError(f"unknown incident tier {new_level!r}")
+    row = conn.execute(
+        "SELECT incident_evidence_level, customer_facing_allowed "
+        "FROM signals WHERE signal_id = ?", (signal_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown signal {signal_id!r}")
+    old_level = row["incident_evidence_level"]
+    if old_level is None:
+        raise ValueError(
+            f"signal {signal_id!r} is not an incident — the tier editor "
+            "re-tiers an existing incident, it does not create one")
+    old_cfa = row["customer_facing_allowed"]
+    if new_level == old_level:
+        return {"old_level": old_level, "new_level": new_level,
+                "old_cfa": old_cfa, "new_cfa": old_cfa, "changed": False}
+    new_cfa = customer_facing_for_tier(new_level)
+    # Trust gate (R4.1/R7.12): a re-tier that RAISES customer_facing_allowed
+    # (unconfirmed -> confirmed/corroborated) clears the card for customer-facing
+    # outreach — the one transition that can promote an early warning to a basis
+    # for contacting the account. "Nothing surfaces unsourced" applies to that
+    # promotion itself, so it requires the operator to record why (which source
+    # confirmed it). Suppressing (1 -> 0) and lateral moves stay reason-optional.
+    if new_cfa == 1 and old_cfa == 0 and not (reason or "").strip():
+        raise ValueError(
+            f"Re-tiering to {new_level} clears this card for customer-facing "
+            "outreach — record which source confirmed it (a reason is required).")
+    conn.execute(
+        "UPDATE signals SET incident_evidence_level = ?, "
+        "customer_facing_allowed = ? WHERE signal_id = ?",
+        (new_level, new_cfa, signal_id))
+    conn.execute(
+        "INSERT INTO incident_tier_edits (signal_id, old_level, new_level, "
+        " old_cfa, new_cfa, editor, reason, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (signal_id, old_level, new_level, old_cfa, new_cfa, editor,
+         reason or "", _utcnow_iso(now)))
+    conn.commit()
+    return {"old_level": old_level, "new_level": new_level,
+            "old_cfa": old_cfa, "new_cfa": new_cfa, "changed": True}
+
+
+def incident_tier_history(conn, signal_id):
+    """The append-only re-tier trail for one signal, newest first (R8.7
+    provenance). Plain dicts so the template/tests read row['field']."""
+    rows = conn.execute(
+        "SELECT old_level, new_level, old_cfa, new_cfa, editor, reason, ts "
+        "FROM incident_tier_edits WHERE signal_id = ? "
+        "ORDER BY edit_id DESC", (signal_id,)).fetchall()
     return [dict(r) for r in rows]
 
 

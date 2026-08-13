@@ -36,10 +36,24 @@
   </details>
   {% endif %}
 
+  {% if c.incident_cleared_note %}
+  <div class="gs-cleared-note" role="note">{{ c.incident_cleared_note }}</div>
+  {% endif %}
+
   {% if c.outreach %}
   <div class="gs-evidence"><b>Outreach draft</b><br>{{ c.outreach }}</div>
   {% elif c.outreach_withheld %}
   <div class="gs-muted-text">Outreach withheld — verification-first: not cleared for customer-facing use.</div>
+  {% endif %}
+
+  {% if c.is_incident %}
+  <div class="gs-retier-wrap" id="{{ c.tier_dom_id }}">
+    {% if c.tier_open %}
+    {% with signal_id = c.signal_id, incident_level = c.incident_level, tiers = c.tiers, history = c.tier_history, flash = c.tier_flash %}{% include "_incident_tier.html" %}{% endwith %}
+    {% else %}
+    <button class="gs-btn gs-retier-open" hx-get="/incident/tier?signal_id={{ c.signal_id | urlencode }}" hx-target="#{{ c.tier_dom_id }}" hx-swap="innerHTML">Re-tier incident ({{ c.incident_level }})</button>
+    {% endif %}
+  </div>
   {% endif %}
 
   <div class="gs-feedback" id="{{ c.feedback_dom_id }}">

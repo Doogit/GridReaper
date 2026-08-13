@@ -56,6 +56,14 @@ ACCOUNT_SCOPES = {"account", "parent"}
 INCIDENT_TIERS = ("confirmed", "corroborated", "unconfirmed_early_warning")
 
 
+def customer_facing_for_tier(incident_level):
+    """R7.12: only an unconfirmed early warning suppresses customer-facing
+    outreach (0); every confirmed/corroborated tier (and a non-incident signal,
+    incident_level None) allows it (1). Single source of this rule so the
+    classifier and the R8.7 operator re-tier editor can never diverge."""
+    return 0 if incident_level == "unconfirmed_early_warning" else 1
+
+
 def _utcnow():
     return datetime.now(timezone.utc).isoformat()
 
@@ -160,7 +168,7 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
         raise ValueError(
             f"unknown incident_evidence_level {incident_level!r}")
     # R7.12: only unconfirmed early warning suppresses outreach.
-    customer_facing = 0 if incident_level == "unconfirmed_early_warning" else 1
+    customer_facing = customer_facing_for_tier(incident_level)
 
     signal_id = (f"{cand['trigger_id']}:{raw['raw_event_id']}:"
                  f"{entity_id or cand['signal_scope']}")

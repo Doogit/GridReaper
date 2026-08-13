@@ -19,6 +19,8 @@ raw text (no manual html.escape) — the escaping lives in exactly one place.
 from hashlib import sha256
 from urllib.parse import urlsplit
 
+from app.classify.runner import INCIDENT_TIERS
+
 
 # Score bands for the severity strip (R8.1); mirrors components.SEVERITY_BANDS.
 SEVERITY_BANDS = ("critical", "high", "moderate", "low")
@@ -73,6 +75,14 @@ def feedback_dom_id(signal_id):
     """
     digest = sha256(str(signal_id or "").encode("utf-8")).hexdigest()[:16]
     return f"gs-fb-{digest}"
+
+
+def tier_dom_id(signal_id):
+    """Stable, CSS-selector-safe target id for the HTMX incident re-tier panel.
+    Same sha256 discipline as feedback_dom_id() — a signal_id can be a URL, so
+    never use it raw as a DOM id."""
+    digest = sha256(str(signal_id or "").encode("utf-8")).hexdigest()[:16]
+    return f"gs-tier-{digest}"
 
 
 def safe_source_url(url):
@@ -581,7 +591,16 @@ def result_message(fn_name, result):
             return f"No change — source already {_enabled_label(result['new'])}."
         if fn_name == "set_entity_active":
             return f"No change — entity already {_active_label(result['new'])}."
+        if fn_name == "retier_incident":
+            return f"No change — tier already {result['new_level']}."
         return f"No change — value already {result['new']}."
+    if fn_name == "retier_incident":
+        # State the outreach consequence explicitly (R7.12): re-tiering up
+        # unblocks customer-facing outreach; re-tiering to unconfirmed suppresses it.
+        verb = ("outreach now suppressed" if result["new_cfa"] == 0
+                else "outreach now allowed")
+        return (f"Re-tiered: {result['old_level']} → {result['new_level']} "
+                f"({verb}).")
     if fn_name == "add_watchlist_entity":
         return f"Added entity {result['entity_id']}."
     if fn_name == "remove_operator_entity":
@@ -694,8 +713,16 @@ def card_view(detail, legend):
     status = signal["status"]
     band = severity_band(signal["score"])
 
-    unconfirmed = (
-        signal["incident_evidence_level"] == "unconfirmed_early_warning")
+    incident_level = signal["incident_evidence_level"]
+    unconfirmed = (incident_level == "unconfirmed_early_warning")
+    is_incident = incident_level is not None
+    # A confirmed/corroborated incident is cleared for customer-facing outreach.
+    # Surfaced as a persistent positive marker so the up-tiered state is legible
+    # on the resting card, mirroring the persistent "Outreach withheld" line on
+    # the unconfirmed side (the two tiers were otherwise asymmetric: only the
+    # restrictive state left a durable trace).
+    incident_cleared = (is_incident and not unconfirmed
+                        and bool(signal["customer_facing_allowed"]))
 
     classes = ["gs-card", f"sev-{band}"]
     if status == "superseded":
@@ -729,6 +756,16 @@ def card_view(detail, legend):
     return {
         "signal_id": signal["signal_id"],
         "feedback_dom_id": feedback_dom_id(signal["signal_id"]),
+        # R8.7 incident evidence-tier editor: an incident card (any tier) shows a
+        # re-tier affordance targeting this CSS-safe id; non-incident cards don't.
+        "is_incident": is_incident,
+        "incident_level": incident_level,
+        "tier_dom_id": tier_dom_id(signal["signal_id"]),
+        # persistent marker that a confirmed/corroborated incident is cleared for
+        # customer-facing outreach (mirrors the unconfirmed "withheld" line).
+        "incident_cleared_note": (
+            f"{incident_level.capitalize()} incident — cleared for "
+            "customer-facing outreach." if incident_cleared else None),
         "card_class": " ".join(classes),
         "headline": signal["headline"] or "",
         "meta_bits": meta_bits,
