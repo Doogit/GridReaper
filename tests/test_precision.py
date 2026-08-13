@@ -413,6 +413,18 @@ class G2GatedTests(unittest.TestCase):
         # Base result untouched (overlay is non-mutating).
         self.assertTrue(g2["bad"]["demote_recommended"])
 
+    def test_high_disagreement_without_demote_recommendation_stays_ok(self):
+        # The disagreement gate withholds demotion guidance; it must not invent
+        # a withheld demotion state for a source whose base G2 is healthy.
+        g2, _ = self._g2("good", 26, 4)
+        self.assertFalse(g2["good"]["demote_recommended"])
+        dis = {"good": {"comparable": p.G2_MIN_N, "agree": 14, "disagree": 6,
+                        "disagreement_rate": 0.30}}
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["good"]["gate"], "ok")
+        self.assertFalse(gated["good"]["demote_recommended"])
+        self.assertNotIn("<40%", gated["good"]["note"])
+
     def test_low_disagreement_leaves_g2_unchanged(self):
         g2, _ = self._g2("bad", 4, 26)
         dis = {"bad": {"comparable": p.G2_MIN_N, "agree": 18, "disagree": 2,
@@ -448,7 +460,8 @@ class SpotcheckCoverageTests(unittest.TestCase):
         for i in range(5):
             audit.append(au(f"s{i}", "entity_match", "pass",
                             ts="2026-08-10T00:00:00Z"))
-            feedback.append(fb(f"s{i}", "useful"))
+            feedback.append(fb(f"s{i}", "useful",
+                               ts="2026-08-11T00:00:00Z"))
         sc = p.spotcheck_coverage(audit, feedback, now=self.NOW)
         self.assertEqual(sc["reviewed"], 5)
         self.assertEqual(sc["audited"], 5)
@@ -462,8 +475,11 @@ class SpotcheckCoverageTests(unittest.TestCase):
         for i in range(5):
             audit.append(au(f"s{i}", "entity_match", "pass",
                             ts="2026-08-10T00:00:00Z"))
-        feedback = [fb("s0", "useful"), fb("s1", "not_useful",
-                                           reason_code="other")]
+        feedback = [
+            fb("s0", "useful", ts="2026-08-11T00:00:00Z"),
+            fb("s1", "not_useful", reason_code="other",
+               ts="2026-08-11T00:00:00Z"),
+        ]
         sc = p.spotcheck_coverage(audit, feedback, now=self.NOW)
         self.assertEqual(sc["reviewed"], 2)
         self.assertFalse(sc["met"])
@@ -474,6 +490,14 @@ class SpotcheckCoverageTests(unittest.TestCase):
         sc = p.spotcheck_coverage(audit, feedback, now=self.NOW)
         self.assertEqual(sc["audited"], 0)
         self.assertEqual(sc["reviewed"], 0)
+
+    def test_prior_month_feedback_does_not_count_current_month_review(self):
+        audit = [au("s1", "entity_match", "pass", ts="2026-08-10T00:00:00Z")]
+        feedback = [fb("s1", "useful", ts="2026-07-31T00:00:00Z")]
+        sc = p.spotcheck_coverage(audit, feedback, now=self.NOW)
+        self.assertEqual(sc["audited"], 1)
+        self.assertEqual(sc["reviewed"], 0)
+        self.assertFalse(sc["met"])
 
 
 if __name__ == "__main__":

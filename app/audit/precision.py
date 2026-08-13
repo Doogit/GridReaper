@@ -34,6 +34,7 @@ mirror ``app.audit.schema`` (CHECKS / RESULTS); only entity_match +
 evidence_support feed auto-accuracy, and only "pass"/"fail" are scored
 ("unclear"/"not_applicable" are excluded from the denominator).
 """
+import math
 from datetime import datetime, timezone
 
 # Verdicts counted as a human positive vs negative (R9.1).
@@ -472,7 +473,7 @@ def g2_gated(g2_result, disagreement_by_source,
             new_cell["gate_note"] = (
                 f"disagreement {rate:.0%} over only {comparable} comparable "
                 f"(<{min_comparable}) — too few to gate; not blocking")
-        elif rate > threshold:
+        elif rate > threshold and cell["demote_recommended"]:
             new_cell["gate"] = "withheld"
             new_cell["gate_note"] = (
                 f"{GATE_WITHHELD_NOTE} (disagreement {rate:.0%}>"
@@ -505,8 +506,8 @@ def spotcheck_coverage(audit_rows, feedback_rows, now=None,
     was audited; that act is already a ``feedback`` row on an audited signal.
       * ``reviewed`` (numerator) = distinct signals AUDITED this month
         (entity_match/evidence_support verdict, ``audit.ts`` in the month) that
-        also have a human ``feedback`` verdict — i.e. a human reviewed the
-        audited signal.
+        also have a human ``feedback`` verdict in the same month — i.e. a human
+        reviewed the audited signal inside the reported window.
       * ``audited`` (denominator for the 20% branch) = distinct signals audited
         this month (distinct audited signal_id — named source table: the ``audit``
         rows / ``precision_audit_rows``).
@@ -529,16 +530,18 @@ def spotcheck_coverage(audit_rows, feedback_rows, now=None,
             continue
         audited.add(row.get("signal_id"))
 
-    human_signals = {
-        row.get("signal_id")
-        for row in feedback_rows
-        if row.get("verdict") in POSITIVE_VERDICTS
-        or row.get("verdict") in NEGATIVE_VERDICTS}
+    human_signals = set()
+    for row in feedback_rows:
+        verdict = row.get("verdict")
+        if verdict not in POSITIVE_VERDICTS and verdict not in NEGATIVE_VERDICTS:
+            continue
+        if _month_key(row.get("ts")) != month:
+            continue
+        human_signals.add(row.get("signal_id"))
 
     reviewed = len(audited & human_signals)
     audited_n = len(audited)
-    # ceil(fraction * audited_n) without importing math.
-    frac_target = int(-(-fraction * audited_n // 1)) if audited_n else 0
+    frac_target = math.ceil(fraction * audited_n) if audited_n else 0
     target = max(floor, min(abs_target, frac_target)) if audited_n else floor
     return {
         "reviewed": reviewed,
