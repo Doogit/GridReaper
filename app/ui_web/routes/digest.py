@@ -43,7 +43,7 @@ def _latest_digest_path():
 @router.get("/digest", response_class=HTMLResponse)
 def digest(request: Request):
     path = _latest_digest_path()
-    ctx = {"nav_active": "digest"}
+    ctx = {"nav_active": "digest", "digest_error": None}
     if path is None:
         ctx["body"] = None
         ctx["as_of"] = None
@@ -56,7 +56,14 @@ def digest(request: Request):
     # The saved file's inner body is trusted markup we produced (autoescaped at
     # generation); wrap it in base.html unchanged so the in-app view is the exact
     # distributed artifact.
-    ctx["body"] = Markup(body_match.group("body")) if body_match else None
+    if body_match:
+        ctx["body"] = Markup(body_match.group("body"))
+    else:
+        ctx["body"] = None
+        ctx["digest_error"] = (
+            f"Saved digest file {os.path.basename(path)} could not be displayed. "
+            "Regenerate it with python -m app.digest."
+        )
     ctx["as_of"] = asof_match.group("asof").strip() if asof_match else None
     return templates.TemplateResponse(
         request=request, name="digest_page.html", context=ctx)

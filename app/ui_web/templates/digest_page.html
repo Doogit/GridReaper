@@ -18,6 +18,10 @@
   </p>
 </div>
 {{ body }}
+{% elif digest_error %}
+<div class="gs-empty">
+  {{ digest_error }}
+</div>
 {% else %}
 <div class="gs-empty">
   No digest generated yet. Run <code>python -m app.digest</code> (it also runs as

@@ -23,8 +23,9 @@ top account-scoped signals by score (the most likely outreach targets), then a
 labeled divider, then Sector and Regulatory sections. Path/retention default:
 ``<db-dir>/digests/digest-YYYY-MM-DD.html`` (UTC date), plus a stable
 ``digest-latest.html`` copy so a server / link can always resolve "the latest".
-Retention (rolling vs dated+prune) is left open — today nothing prunes.
+Retention prunes dated files to the newest ``KEEP_DIGESTS`` writes.
 """
+import glob
 import os
 import shutil
 import sys
@@ -39,6 +40,12 @@ from app.ui_web.templating import templates
 # not the whole feed; the rest stays in the app. (Open Question #1: lead count is
 # a UX call for Kevin — this is a sensible default, easy to change.)
 TOP_ACCOUNT_CARDS = 8
+
+# Retention: keep the newest KEEP_DIGESTS dated files; older ones are pruned on
+# each write so data/digests/ does not grow unbounded (Open Question #1 — the
+# digest is a point-in-time artifact, not an archive). digest-latest.html is
+# never pruned (it does not match the digest-2* glob).
+KEEP_DIGESTS = 30
 
 # Regulatory-calendar is its own section; the remaining sector-group scopes
 # (sector, subsector) form the Sector section.
@@ -126,7 +133,17 @@ def write_digest(html, digest_dir, generated_date):
     # A predictable "latest" filename so a link / route can always find the newest
     # without globbing (the route reads the newest dated file; this is a fallback).
     shutil.copyfile(dated, os.path.join(digest_dir, "digest-latest.html"))
+    _prune_old_digests(digest_dir)
     return dated
+
+
+def _prune_old_digests(digest_dir, keep=KEEP_DIGESTS):
+    """Delete all but the newest ``keep`` dated digests (R8.8 retention). Dated
+    files (``digest-YYYY-MM-DD.html``) sort chronologically by name; the stable
+    ``digest-latest.html`` alias is left untouched (it does not match the glob)."""
+    dated = sorted(glob.glob(os.path.join(digest_dir, "digest-2*.html")))
+    for stale in dated[:-keep] if keep > 0 else []:
+        os.remove(stale)
 
 
 def generate(db_path=None, digest_dir=None, now=None):
