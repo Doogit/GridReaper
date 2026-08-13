@@ -33,12 +33,18 @@ FORBIDDEN_TIER_ASSERTIONS = [
 ]
 
 
-def add_signal(conn, signal_id, entity_id, scope, trigger_id):
+def add_signal(conn, signal_id, entity_id, scope, trigger_id,
+               customer_facing_allowed=1):
+    # customer_facing_allowed defaults to 1 here to mirror production signals
+    # (the framework sets it 1 for non-incident and confirmed-incident cards);
+    # pass 0 to exercise the R7.12 opener-suppression gate.
     conn.execute(
         "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
-        " signal_scope, trigger_id, event_date, headline) "
-        "VALUES (?, ?, ?, ?, ?, '2026-08-01', 'headline')",
-        (signal_id, f"{SOURCE}:1", entity_id, scope, trigger_id))
+        " signal_scope, trigger_id, event_date, headline, "
+        " customer_facing_allowed) "
+        "VALUES (?, ?, ?, ?, ?, '2026-08-01', 'headline', ?)",
+        (signal_id, f"{SOURCE}:1", entity_id, scope, trigger_id,
+         customer_facing_allowed))
 
 
 def fixture_conn():
@@ -218,6 +224,24 @@ class TestGenerateSnapshots(unittest.TestCase):
                 self.assertNotIn(pattern, low, r["play_id"])
             # conditional discovery phrasing present (R7.7/R7.9)
             self.assertIn("If E3", text, r["play_id"])
+
+    def test_customer_facing_zero_suppresses_opener_keeps_snapshot(self):
+        """R7.12: an incident not cleared for customer-facing use still
+        generates the play/snapshot, but the outreach OPENER is withheld
+        (verification-first) - suppress the opener, not the whole play."""
+        add_signal(self.conn, "sig_unconf", "E_COM", "account",
+                   "own_incident", customer_facing_allowed=0)
+        self.conn.commit()
+        generate_snapshots(self.conn)
+        rows = [r for r in self.rows() if r["signal_id"] == "sig_unconf"]
+        self.assertTrue(rows)                       # snapshot still written
+        for r in rows:
+            self.assertTrue(r["outreach_safe_text"].startswith(
+                "Verification-first"), r["play_id"])
+            self.assertNotIn("licensing check may be timely",
+                             r["outreach_safe_text"], r["play_id"])
+            # the operator-facing recommendation is untouched
+            self.assertIn("Recommended path", r["display_text"], r["play_id"])
 
     def test_gov_possible_gets_caution_line_in_display(self):
         self.conn.execute(

@@ -109,6 +109,15 @@ def _display_text(cand, product, entity, not_available_fact):
 
 
 def _outreach_safe_text(cand, product, sig):
+    # R7.12: an incident not cleared for customer-facing use
+    # (customer_facing_allowed=0, e.g. an unconfirmed early warning) suppresses
+    # the OUTREACH OPENER only - the play/snapshot is still generated so the
+    # operator keeps the internal recommendation. The verification-first
+    # replacement asserts nothing unsourced (R4.1 governs drafts too).
+    if not sig["customer_facing_allowed"]:
+        return ("Verification-first: this is an unverified early warning - no "
+                "customer-facing opener until the incident is confirmed by the "
+                "company, a regulator, or an SEC filing.")
     if sig["signal_scope"] == "account":
         return ACCOUNT_OUTREACH.format(question=cand["discovery_question"])
     event = sig["headline"] or "A recent regulatory development"
@@ -149,7 +158,8 @@ def generate_snapshots(conn, generation_version=GENERATION_VERSION):
     now = _utcnow()
     for sig in conn.execute(
             "SELECT signal_id, entity_id, signal_scope, trigger_id, "
-            " headline, event_date FROM signals ORDER BY signal_id").fetchall():
+            " headline, event_date, customer_facing_allowed "
+            "FROM signals ORDER BY signal_id").fetchall():
         counts["signals_seen"] += 1
         entity = entities.get(sig["entity_id"]) if sig["entity_id"] else None
         for cand in candidates_by_trigger.get(sig["trigger_id"], []):

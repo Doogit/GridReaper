@@ -172,6 +172,15 @@
 .gs-gov-caution { background: var(--gs-warn-bg); border: 1px solid var(--gs-warn-border);
   color: var(--gs-warn-text); font-size: 0.8rem; padding: 6px 10px; border-radius: 6px; margin: 8px 0; }
 
+/* R10.5 unverified early warning: verification-first banner + badge, and a
+   card accent so operator-only unconfirmed cards read as distinct. */
+.gs-unconfirmed-warning { background: var(--gs-warn-bg); border: 1px solid var(--gs-warn-border);
+  color: var(--gs-warn-text); font-size: 0.8rem; font-weight: 600; padding: 6px 10px;
+  border-radius: 6px; margin: 8px 0; }
+.gs-badge.unconfirmed { background: var(--gs-warn-bg); border-color: var(--gs-warn-border);
+  color: var(--gs-warn-text); }
+.gs-card.tier-unconfirmed { border-left: 3px solid var(--gs-warn-border); }
+
 .gs-evidence { font-size: 0.82rem; color: var(--gs-text); border-left: 2px solid var(--gs-card-border);
   padding-left: 10px; margin: 6px 0; }
 .gs-locator { color: var(--gs-muted); font-size: 0.74rem; }

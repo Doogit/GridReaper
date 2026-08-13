@@ -38,15 +38,17 @@ URLISH_SIGNAL_ID = "t_lead:presswire_prnewswire:https://example.com/a?x=1&y=2:E_
 
 
 def _add_signal(conn, sid, entity_id, scope, trigger_id, event_date, headline,
-                cfa=0, status="active", score=None, source_url="http://src/doc"):
+                cfa=0, status="active", score=None, source_url="http://src/doc",
+                incident_level=None):
     raw = "re_acc" if scope in ("account", "parent") else None
     conn.execute(
         "INSERT INTO signals (signal_id, raw_event_id, entity_id, signal_scope, "
         "trigger_id, event_date, headline, evidence_snippet, source_url, "
-        "confidence, evidence_quality, customer_facing_allowed, score, status) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "confidence, evidence_quality, incident_evidence_level, "
+        "customer_facing_allowed, score, status) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, raw, entity_id, scope, trigger_id, event_date, headline, headline,
-         source_url, 0.9, "IR", cfa, score, status))
+         source_url, 0.9, "IR", incident_level, cfa, score, status))
 
 
 def seed(conn):
@@ -318,6 +320,48 @@ class TestKeysetPagination(FeedTestBase):
         self.assertIn("Paginated account signal 26", resp.text)
         self.assertEqual(resp.text.count('<article class="gs-card'), 1)
         self.assertNotIn("gs-loadmore", resp.text)   # end of the list
+
+
+def seed_unconfirmed(conn):
+    """A single unconfirmed early-warning own-incident card (R10.5/R7.12)."""
+    conn.execute("INSERT INTO triggers (trigger_id, name, base_strength, "
+                 "decay_half_life_days) VALUES ('own_incident','Own incident',5,270)")
+    conn.execute(
+        "INSERT INTO watchlist_entities (entity_id, name, subsector, richness, "
+        "coverage_flag) VALUES ('E_ACME','Acme Energy','iou_electric','high',"
+        "'edgar-visible')")
+    conn.execute(
+        "INSERT INTO source_policies (source_id, name, enabled, ttl, "
+        "access_method, evidence_rank) VALUES ('ransomware_live','RW',1,86400,'api',3)")
+    conn.execute(
+        "INSERT INTO raw_events (raw_event_id, source_id, event_date, payload, url) "
+        "VALUES ('re_acc','ransomware_live', ?, '{}', 'http://leak/x')",
+        (days_ago(3),))
+    _add_signal(conn, "S_UNCONF", "E_ACME", "account", "own_incident", days_ago(3),
+                "Listed on the AcmeLocker ransomware leak site - unverified early warning",
+                cfa=0, score=3.0, incident_level="unconfirmed_early_warning")
+    conn.execute(
+        "INSERT INTO signal_evidence (signal_id, raw_event_id, evidence_text, "
+        "evidence_locator, evidence_rank) VALUES ('S_UNCONF','re_acc',"
+        "'ransomware.live lists Acme Energy as a victim.','victim', 3)")
+    conn.executemany(
+        "INSERT INTO badge_legend (badge_kind, code, label, description) "
+        "VALUES (?,?,?,?)",
+        [("evidence_quality", "IR", "Investor Report", "x")])
+
+
+class UnconfirmedCardTests(FeedTestBase):
+    seed_fn = staticmethod(seed_unconfirmed)
+
+    def test_verification_first_treatment(self):
+        dom = self.home(status="all")
+        # the R10.5 verification-first warning + badge + card accent
+        self.assertIn("No company, regulator, or SEC confirmation yet", dom)
+        self.assertIn("gs-badge unconfirmed", dom)
+        self.assertIn("tier-unconfirmed", dom)
+        # outreach opener suppressed, verification-first note shown instead
+        self.assertIn("Outreach withheld", dom)
+        self.assertNotIn("licensing review may be timely", dom)
 
 
 if __name__ == "__main__":

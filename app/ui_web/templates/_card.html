@@ -6,6 +6,10 @@
   <div class="gs-headline">{{ c.headline }}</div>
   <div class="gs-meta">{{ c.meta_bits | join(" · ") }}</div>
 
+  {% if c.unconfirmed_warning %}
+  <div class="gs-unconfirmed-warning" role="note">{{ c.unconfirmed_warning }}</div>
+  {% endif %}
+
   {% if c.decay %}
   <div class="gs-decay-wrap"><div class="gs-decay-fill" style="width:{{ c.decay.fill_pct }}%"></div></div>
   <div class="gs-meta">strength {{ c.decay.strength }} of {{ c.decay.ceiling }} fresh ceiling</div>
