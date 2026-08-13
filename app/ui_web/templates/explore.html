@@ -49,7 +49,7 @@
       <span class="gs-map-swatch {{ cls }}">{{ label }}</span>
       {% endfor %}
     </div>
-    <p class="gs-muted-text gs-map-caption">Shading is signal <em>volume</em> on a fixed scale — deliberately a different palette from the evidence-tier and scope badges, so density is never read as confidence. Continental US + DC only; Alaska, Hawaii, and territories are not on this geometry. Hover a state or facility for its identity.</p>
+    <p class="gs-muted-text gs-map-caption">Shading is signal <em>volume</em> on a fixed scale, attributed to states via gated facility locations — a state can read light even when entities based there have active signals, if none of their facilities clear the confidence gate. Deliberately a different palette from the evidence-tier and scope badges, so density is never read as confidence. Continental US + DC only; Alaska, Hawaii, and territories are not on this geometry. Hover a state or facility for its identity.</p>
     <div class="gs-map-wrap">
       {{ map.svg | safe }}
     </div>
