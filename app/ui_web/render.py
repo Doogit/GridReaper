@@ -968,12 +968,15 @@ def _state_density(state_rows):
     """Sum per-state signal density from data.explore_state_density rows by
     projecting each gated facility to its state. Returns {usps: total_count}.
     A facility that projects outside the continental bounds is skipped (its
-    density is not attributed to any state — AK/HI limitation, documented)."""
+    density is not attributed to any state — AK/HI limitation, documented).
+    The same owner is counted at most once per state, so multiple facilities for
+    one entity in Texas do not multiply that entity's signal volume."""
     # Precompute state path bounding boxes once so we can attribute a projected
     # point to the state whose bbox contains it (point-in-bbox, matching the
     # spike's regression method — the paths are simple enough that bbox is a
     # sufficient, cheap containment test at this scale).
     density = {}
+    seen_owner_states = set()
     for r in state_rows:
         xy = us_geometry.project_or_none(r["longitude"], r["latitude"])
         if xy is None:
@@ -981,6 +984,10 @@ def _state_density(state_rows):
         usps = _state_for_point(*xy)
         if usps is None:
             continue
+        owner_state = (usps, r.get("entity_id"))
+        if owner_state in seen_owner_states:
+            continue
+        seen_owner_states.add(owner_state)
         density[usps] = density.get(usps, 0) + (r["signal_count"] or 0)
     return density
 

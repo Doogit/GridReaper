@@ -500,6 +500,16 @@ class TestExploreData(unittest.TestCase):
         ids = {p["facility_id"] for p in data.explore_facility_points(self.conn)}
         self.assertNotIn("F_NULL", ids)
 
+    def test_facility_without_owner_excluded(self):
+        self.conn.execute(
+            "INSERT INTO facility_assets (facility_id, latitude, longitude, "
+            " facility_owner_confidence) VALUES ('F_NO_OWNER', 30.0, -96.0, 0.95)")
+        self.conn.commit()
+        point_ids = {p["facility_id"] for p in data.explore_facility_points(self.conn)}
+        density_ids = {r["facility_id"] for r in data.explore_state_density(self.conn)}
+        self.assertNotIn("F_NO_OWNER", point_ids)
+        self.assertNotIn("F_NO_OWNER", density_ids)
+
     def test_state_density_carries_owner_signal_count(self):
         rows = data.explore_state_density(self.conn)
         # Only the gated facility appears; its owner E_ACME has 3 active signals

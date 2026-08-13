@@ -250,6 +250,16 @@ class TestExploreMapSvg(unittest.TestCase):
         self.assertIsNotNone(tx)
         self.assertEqual(tx.group(1), "gs-map-d2")
 
+    def test_density_counts_owner_once_per_state(self):
+        # Two TX facilities for the same owner still represent 4 owner signals,
+        # not 8 facility-multiplied signals.
+        view = render.explore_map_svg(
+            [self._facility(), self._facility(facility_id="F2")],
+            [self._state_row(facility_id="F1", signal_count=4),
+             self._state_row(facility_id="F2", signal_count=4)])
+        self.assertIn("Texas: 4 signals", view["svg"])
+        self.assertNotIn("Texas: 8 signals", view["svg"])
+
     def test_tx_projection_lands_inside_texas_bbox(self):
         # Projection regression (KTD5): the exact formula must place Austin, TX
         # inside the TX path's bounding box in the baked geometry.
