@@ -256,6 +256,36 @@ class TestRunClassifier(unittest.TestCase):
             run_classifier(self.conn, "clf_test", "nope",
                            make_classifier({}), "clf/1.0")
 
+    def test_confirmed_incident_sets_tier_and_allows_outreach(self):
+        """R10.5/R7.12: a confirmed incident stores its tier and leaves
+        customer_facing_allowed=1 so careful outreach may be drafted."""
+        s = self.run_one({f"{SOURCE}:1": [account_candidate(
+            incident_evidence_level="confirmed")]})
+        self.assertEqual(s["signals_new"], 1)
+        sig = self.conn.execute("SELECT * FROM signals").fetchone()
+        self.assertEqual(sig["incident_evidence_level"], "confirmed")
+        self.assertEqual(sig["customer_facing_allowed"], 1)
+
+    def test_unconfirmed_early_warning_suppresses_outreach(self):
+        """R7.12: unconfirmed early-warning cards are operator-only."""
+        s = self.run_one({f"{SOURCE}:1": [account_candidate(
+            incident_evidence_level="unconfirmed_early_warning")]})
+        self.assertEqual(s["signals_new"], 1)
+        sig = self.conn.execute("SELECT * FROM signals").fetchone()
+        self.assertEqual(sig["incident_evidence_level"],
+                         "unconfirmed_early_warning")
+        self.assertEqual(sig["customer_facing_allowed"], 0)
+
+    def test_unknown_incident_tier_is_contained_error(self):
+        """A bogus tier is a classifier contract error: the event rolls back
+        and is left unprocessed, never a mis-tiered signal."""
+        s = self.run_one({f"{SOURCE}:1": [account_candidate(
+            incident_evidence_level="totally_confirmed")]})
+        self.assertEqual((s["status"], s["events_errored"],
+                          s["signals_new"]), ("error", 1, 0))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM signals").fetchone()[0], 0)
+
 
 class TestTopLevelEntity(unittest.TestCase):
     def test_rollup_paths(self):
@@ -276,11 +306,12 @@ class TestTopLevelEntity(unittest.TestCase):
 
 class TestTriggerScopes(unittest.TestCase):
     def test_loader_sets_mvp_scopes(self):
-        """apply_trigger_scopes covers exactly the 4 MVP triggers (R7.2)."""
+        """apply_trigger_scopes covers the Stage-1 MVP triggers plus the
+        Stage-2 incident triggers (R7.2, R9.6)."""
         self.assertEqual(
             set(TRIGGER_SCOPES),
             {"leadership_change", "nerc_enforcement", "nerc_cip_revision",
-             "tsa_security_directive"})
+             "tsa_security_directive", "own_incident", "peer_incident"})
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         apply_migrations(conn)
@@ -289,7 +320,7 @@ class TestTriggerScopes(unittest.TestCase):
                 "INSERT INTO triggers (trigger_id, name, base_strength, "
                 " decay_half_life_days) VALUES (?, ?, 4, 90)",
                 (trigger_id, trigger_id))
-        self.assertEqual(apply_trigger_scopes(conn), 4)
+        self.assertEqual(apply_trigger_scopes(conn), len(TRIGGER_SCOPES))
         for trigger_id, scopes in TRIGGER_SCOPES.items():
             row = conn.execute(
                 "SELECT allowed_scopes FROM triggers WHERE trigger_id = ?",

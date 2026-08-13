@@ -25,8 +25,19 @@ scope}"`` with insert-or-skip so re-runs emit nothing new (R3.7),
 signal_evidence rows ranked from source_policies, and per-event bookkeeping
 in classified_events. A classifier exception on one event rolls back that
 event's writes and leaves it unprocessed for the next run; it never aborts
-the run. These are non-incident signals: customer_facing_allowed=1 and
-incident_evidence_level NULL (R7.12 gates incidents only, a later chunk).
+the run.
+
+  incident_evidence_level  optional (R10.5): confirmed / corroborated /
+                    unconfirmed_early_warning. When set, the candidate is an
+                    incident: the framework stores the tier and derives
+                    customer_facing_allowed per R7.12 -
+                    unconfirmed_early_warning suppresses outreach (0), the
+                    higher tiers allow it (1). A confirmed/corroborated card
+                    sourced from a leak site must still suppress outreach - the
+                    emitting classifier owns that by tiering it
+                    unconfirmed_early_warning (R10.5), not the framework. When
+                    omitted the candidate is a non-incident signal:
+                    incident_evidence_level NULL, customer_facing_allowed 1.
 """
 import argparse
 import json
@@ -39,6 +50,10 @@ from app.resolve import EntityResolver, enqueue_review, record_decision
 COMMIT_EVERY = 200          # short transactions per R3.2
 
 ACCOUNT_SCOPES = {"account", "parent"}
+
+# R10.5 incident evidence tiers. Only unconfirmed_early_warning suppresses
+# customer-facing outreach (R7.12); confirmed/corroborated allow it.
+INCIDENT_TIERS = ("confirmed", "corroborated", "unconfirmed_early_warning")
 
 
 def _utcnow():
@@ -140,6 +155,13 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
             return 0
         entity_id = top_level_entity(conn, entity_id)
 
+    incident_level = cand.get("incident_evidence_level")
+    if incident_level is not None and incident_level not in INCIDENT_TIERS:
+        raise ValueError(
+            f"unknown incident_evidence_level {incident_level!r}")
+    # R7.12: only unconfirmed early warning suppresses outreach.
+    customer_facing = 0 if incident_level == "unconfirmed_early_warning" else 1
+
     signal_id = (f"{cand['trigger_id']}:{raw['raw_event_id']}:"
                  f"{entity_id or cand['signal_scope']}")
     if conn.execute("SELECT 1 FROM signals WHERE signal_id = ?",
@@ -152,11 +174,12 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
         " signal_scope, trigger_id, event_date, headline, evidence_snippet, "
         " source_url, confidence, evidence_quality, incident_evidence_level, "
         " customer_facing_allowed, score, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, NULL, 'active')",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active')",
         (signal_id, raw["raw_event_id"], entity_id, cand["signal_scope"],
          cand["trigger_id"], cand.get("event_date") or "",
          cand.get("headline") or "", evidence[0]["text"],
-         raw["url"] or "", round(confidence, 4), trig["evidence_quality"]))
+         raw["url"] or "", round(confidence, 4), trig["evidence_quality"],
+         incident_level, customer_facing))
     for e in evidence:
         conn.execute(
             "INSERT INTO signal_evidence (signal_id, raw_event_id, "
