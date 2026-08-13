@@ -142,7 +142,8 @@ class TestPositive(IncidentTestCase):
         self.assertEqual(ev[0]["evidence_locator"], "items")
         self.assertEqual(ev[0]["evidence_rank"], 1)   # from source_policies
         self.assertIn("Item 1.05", ev[0]["evidence_text"])
-        self.assertIn("Material Cybersecurity Incident", ev[0]["evidence_text"])
+        self.assertIn("Material Cybersecurity Incidents",
+                      ev[0]["evidence_text"])
         self.assertIn("accession 0000753308-26-000061",
                       ev[0]["evidence_text"])
         self.assertEqual(ev[0]["extraction_version"], incident.PARSER_VERSION)
@@ -150,7 +151,7 @@ class TestPositive(IncidentTestCase):
     def test_meaningful_doc_description_added_as_evidence(self):
         add_edgar_event(
             self.conn, 1,
-            primaryDocDescription="Material Cybersecurity Incident")
+            primaryDocDescription="Material Cybersecurity Incidents")
         self.run_edgar()
         locators = sorted(r["evidence_locator"] for r in self.conn.execute(
             "SELECT evidence_locator FROM signal_evidence WHERE signal_id = ?",

@@ -2,7 +2,7 @@
 R10.5, R7.12, R4.1, R7.2).
 
 Stage-2's first incident source and the highest-signal, most-structured one:
-Item 1.05 of an 8-K is the SEC's dedicated "Material Cybersecurity Incident"
+Item 1.05 of an 8-K is the SEC's dedicated "Material Cybersecurity Incidents"
 item, so its mere presence in a filing's item list IS the signal - no body
 text is needed (submissions payloads carry none). This mirrors the leadership
 8-K 5.02 path, minus 5.02's title-token requirement: 5.02 is generic officer
@@ -49,7 +49,7 @@ SOURCE_ID = "sec_edgar_submissions"
 
 EDGAR_FORMS = ("8-K", "8-K/A")
 INCIDENT_ITEM = "1.05"
-ITEM_LABEL = "Material Cybersecurity Incident"   # SEC's own name for Item 1.05
+ITEM_LABEL = "Material Cybersecurity Incidents"  # SEC's own name for Item 1.05
 
 OWN_CONFIDENCE = 0.9    # pre-attributed primary filing; item is cyber-specific
 PEER_CONFIDENCE = 0.8   # equally confirmed, but a class-level inference
