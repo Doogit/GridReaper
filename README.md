@@ -86,6 +86,7 @@ Requires Python 3.11+. The pipeline and data layer are standard-library only; UI
 ```bash
 pip install -r requirements.txt   # UI packages only; pipeline/data code stays stdlib
 python -m app.db.load_seeds       # create data/gridsignals.db + config tables
+python -m app.backup              # export a portable single-file DB copy -> data/backups/gridsignals-YYYY-MM-DD.db
 python -m app.licensing           # normalize license facts + play candidates
 python -m unittest discover -s tests   # hermetic tests, no network
 uvicorn app.ui_web.app:app --reload    # launch the web UI: Signal Feed / Review Queue / Account 360 / Precision / Re-tiers / Regulatory / Admin

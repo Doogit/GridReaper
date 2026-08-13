@@ -2,6 +2,7 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/digests/
+data/backups/
 __pycache__/
 *.pyc
 .env
