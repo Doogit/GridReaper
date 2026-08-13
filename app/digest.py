@@ -52,11 +52,17 @@ def _digest_dir(db_path):
     return os.path.join(parent, "digests")
 
 
-def _score_key(row):
-    """Sort key: highest score first; NULL (unscored) sorts last, then newest."""
-    score = row["score"]
-    return (score is None, -(score if score is not None else 0.0),
-            str(row["event_date"] or ""))
+def _account_rows_by_score(conn, limit):
+    """Top active account-scoped rows by score, with newest as the tie-breaker."""
+    scopes = data.SCOPE_GROUPS["account"]
+    placeholders = ",".join("?" * len(scopes))
+    sql = (
+        f"SELECT {data._SIGNAL_COLUMNS} {data._SIGNAL_FROM} "
+        f"WHERE s.signal_scope IN ({placeholders}) AND s.status = 'active' "
+        "ORDER BY s.score IS NULL, s.score DESC, s.event_date DESC, "
+        "s.signal_id DESC LIMIT ?"
+    )
+    return conn.execute(sql, [*scopes, limit]).fetchall()
 
 
 def _cards(conn, rows, legend):
@@ -83,10 +89,8 @@ def build_context(conn, now=None):
     legend = data.badge_legend(conn)
 
     # Account-scoped, active, highest score first. feed_page orders by date; a
-    # digest leads with the best leads, so re-sort by score here.
-    account_rows = sorted(
-        data.feed_page(conn, scope_group="account", limit=1000),
-        key=_score_key)[:TOP_ACCOUNT_CARDS]
+    # digest leads with the best leads, so query score-first directly.
+    account_rows = _account_rows_by_score(conn, TOP_ACCOUNT_CARDS)
 
     sector_rows = data.feed_page(conn, scope_group="sector", limit=1000)
     reg_rows = [r for r in sector_rows if r["signal_scope"] in _REGULATORY_SCOPES]

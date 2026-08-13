@@ -171,6 +171,23 @@ class TestGenerate(DigestTestBase):
         # R10.2 generation timestamp in the header
         self.assertIn(NOW.isoformat(), html)
 
+    def test_top_accounts_are_score_first_not_newest_slice(self):
+        conn = sqlite3.connect(self.path)
+        try:
+            for i in range(digest_mod.TOP_ACCOUNT_CARDS):
+                _add_signal(conn, f"S_LOW{i}", "E_ACME", "account", "t_lead",
+                            days_ago(i), f"newer low score {i}",
+                            cfa=1, score=0.1)
+            _add_signal(conn, "S_OLDER_HIGH", "E_ACME", "account", "t_lead",
+                        days_ago(90), "older high score", cfa=1, score=9.9)
+            conn.commit()
+        finally:
+            conn.close()
+
+        html = _read(digest_mod.generate(now=NOW))
+        self.assertIn("older high score", html)
+        self.assertNotIn("newer low score 7", html)
+
     def test_outreach_gated_by_customer_facing_allowed(self):
         html = _read(digest_mod.generate(now=NOW))
         # R7.12: cleared card shows its opener; restricted card does not
