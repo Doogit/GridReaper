@@ -1,0 +1,29 @@
+{# In-app /digest view (R8.8, R6.6). Wraps the last SAVED digest body inside the
+   app chrome (base.html). A prominent "generated at" banner marks it as a
+   point-in-time snapshot, not a live feed (D2). The digest body's cards style
+   from app.css (the same gs-* classes the live feed uses), so the inlined-style
+   saved file and this in-app view read identically. No saved digest → honest
+   copy (R6.6), not a 500. #}
+{% extends "base.html" %}
+{% block title %}Digest · GridSignals{% endblock %}
+{% block content %}
+{% if body %}
+<div class="gs-panel" style="margin-bottom:16px">
+  <h1 class="gs-h1">Daily digest — snapshot</h1>
+  <p class="gs-muted-text">
+    This is the last generated digest, exactly as it was saved and sent.
+    {% if as_of %}<strong>Generated at {{ as_of }} (UTC).</strong>{% endif %}
+    It is a point-in-time snapshot, not a live feed — regenerate with
+    <code>python -m app.digest</code>.
+  </p>
+</div>
+{{ body }}
+{% else %}
+<div class="gs-empty">
+  No digest generated yet. Run <code>python -m app.digest</code> (it also runs as
+  the last step of the packaged build) to produce one. GridSignals is low-volume
+  by design (R6.6) — an absent digest means none has been generated, not that
+  anything is broken.
+</div>
+{% endif %}
+{% endblock %}

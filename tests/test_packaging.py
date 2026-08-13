@@ -39,6 +39,7 @@ class PackagingContractTest(unittest.TestCase):
             "app/licensing.py",
             "app/scoring.py",
             "app/plays.py",
+            "app/digest.py",
             "app/classify/regulatory.py",
             "app/classify/leadership.py",
             "app/classify/company_statement.py",
@@ -73,6 +74,20 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             df.index("app.classify.security_rss"), df.index("app.scoring"),
             "security RSS classification must run before scoring",
+        )
+
+    def test_build_runs_digest_after_scoring_and_plays(self):
+        # The digest (R8.8) is the pipeline's LAST step: it reads the freshest
+        # scored cards + play snapshots, so it must run after scoring and plays.
+        df = self._dockerfile()
+        self.assertIn("app.digest", df, "Dockerfile dropped the digest step (R8.8)")
+        self.assertGreater(
+            df.index("app.digest"), df.index("app.scoring"),
+            "digest must run after scoring",
+        )
+        self.assertGreater(
+            df.index("app.digest"), df.index("app.plays"),
+            "digest must run after plays",
         )
 
     def test_cmd_launches_fastapi_ui(self):

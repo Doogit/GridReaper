@@ -42,6 +42,7 @@ RUN python -m app.db.load_seeds \
  && python -m app.classify.security_rss \
  && python -m app.scoring \
  && python -m app.plays \
+ && (python -m app.digest || echo "WARN: digest generation failed, continuing") \
  && python -c "import sqlite3, os; conn = sqlite3.connect(os.environ['GRIDSIGNALS_DB']); signals = conn.execute('select count(*) from signals').fetchone()[0]; plays = conn.execute('select count(*) from license_play_snapshots').fetchone()[0]; assert signals > 0, 'build pipeline produced no signals'; assert plays > 0, 'build pipeline produced no license play snapshots'; print(f'baked {signals} signals and {plays} license play snapshots')"
 
 # App Service routes to the port named by the WEBSITES_PORT app setting; keep it
