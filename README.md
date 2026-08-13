@@ -48,7 +48,7 @@ The current light-themed FastAPI + HTMX interface, shown on a small seeded sampl
 
 ## Data sources
 
-The MVP target source set — all free and accessed read-only (GET / RSS / JSON / bulk download). Ingestion is in progress; see [Roadmap](#roadmap).
+The MVP target source set — all free and accessed read-only (GET / RSS / JSON / bulk download). The classified sources and the store-only backfill tier are ingested today; see [Roadmap](#roadmap).
 
 | Source | Role |
 |---|---|
@@ -58,8 +58,8 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 | NERC / FERC public pages | Classified — regulatory |
 | GDELT global news | Stored for backfill (later-stage classification) |
 | CISA KEV + NVD | Stored — known-exploited vulnerabilities |
-| Ransomware trackers (ransomware.live / RansomLook) | Stored — incident early-warning |
-| EIA API | Enrichment — facility geo/capacity for the map |
+| Ransomware tracker (ransomware.live) | Stored — incident early-warning (RansomLook seeded, deferred) |
+| EIA API | Stored — plant geo/capacity for backfill (typed facility projection later) |
 | GLEIF + Wikidata | Entity resolution — LEI / QID anchoring |
 
 ## What works today
@@ -70,7 +70,7 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 - **Source policy registry** — the MVP source inventory seeded with per-source access method, poll interval, ToS status, evidence rank, and rate-limit notes.
 - **Entity resolution core** — deterministic CIK/ticker/LEI/alias matching with a fuzzy-name fallback. Known-collision names (e.g. bare "Dominion") never auto-match without corroborating context; ambiguous or low-confidence results go to a review queue instead of firing, and every match decision is logged with its terms and parser version. Covered by an adversarial test fixture set (collisions, subsidiaries, abbreviations, near-twins).
 - **Entity enrichment** — an annual-refresh job that anchors the watchlist to external identifiers: Wikidata queried by SEC CIK (deterministic, one batch) for QIDs and LEIs, GLEIF fulltext as fallback accepted only on exact normalized-name match, plus GLEIF parent/child relationship import. Results are generated into reviewable seed CSVs; hand-verified values always win over generated ones.
-- **Ingestion layer** — a shared runner (per-source policy checks, TTL skips, run bookkeeping, idempotent native-id/content-hash dedupe, per-source error containment, single-writer lock) plus five live fetchers: SEC EDGAR submissions (8-K/10-K per watchlist CIK), Federal Register (FERC + TSA documents), press-wire RSS (PR Newswire, GlobeNewswire), NERC standards-page snapshots, and the CISA KEV catalog. A 12-month backfill (~5,200 raw events, local — the database is gitignored and rebuildable) is stored and re-runs dedupe to zero.
+- **Ingestion layer** — a shared runner (per-source policy checks, TTL skips, run bookkeeping, idempotent native-id/content-hash dedupe, per-source error containment, single-writer lock) plus nine live fetchers. Five feed classification: SEC EDGAR submissions (8-K/10-K per watchlist CIK), Federal Register (FERC + TSA documents), press-wire RSS (PR Newswire, GlobeNewswire), NERC standards-page snapshots, and the CISA KEV catalog. Four are **store-only backfill** — no classification yet, so later stages classify against history instead of cold: GDELT energy-sector news (rolling ~90-day DOC API window), the NVD CVE API (120-day-windowed, paged), the ransomware.live victims feed (content-hash dedupe — no native id), and EIA plant capacity records (paged v2, keyed). A 12-month backfill (local — the database is gitignored and rebuildable) is stored and re-runs dedupe to zero.
 - **License facts + play candidates** — the hand-verified license matrix normalized into per-segment `license_facts` (commercial + GCC High, with a conservative, lossless mapping of the freeform gov-cloud notes) and one conditional license-play candidate per trigger→product mapping. Rebuild is deterministic from seeded config.
 - **Classification & scoring (rule-based MVP)** — a classifier framework (entity resolution with review-queue gating, parent rollup, deterministic signal ids, per-version bookkeeping so re-runs are incremental and rule changes reprocess history) plus two precision-first classifiers: leadership changes (8-K Item 5.02 + press-wire appointment grammar, security-relevant titles only) and regulatory actions (Federal Register FERC/TSA rules with a required compliance-clock anchor; NERC standards-page diffs). Scores follow `base_strength × 0.5^(age/half-life) × account_fit × scope_fit` with operator-tunable weights seeded from CSV; stale signals decay automatically. Every signal carries ranked evidence rows — nothing surfaces unsourced.
 - **License-play snapshots + gov-cloud gating (rule-based MVP)** — each signal gets immutable play snapshots pinning the licensing evidence basis (fact ids, display text, outreach-safe text) at generation time, so old cards stay explainable after licensing data changes. Outreach text never states non-primary prices, never asserts the account's current tier, and stays sector-phrased for sector-wide events. Security Copilot plays are suppressed for known/likely US government cloud tenants.
@@ -101,6 +101,11 @@ python -m app.ingest.presswire --source prnewswire  # press-wire RSS
 python -m app.ingest.presswire --source globenewswire
 python -m app.ingest.nerc_pages                     # NERC page snapshots
 python -m app.ingest.cisa_kev                       # CISA KEV (store-only)
+
+python -m app.ingest.gdelt                          # GDELT energy news (store-only, ~90d window)
+python -m app.ingest.nvd                            # NVD CVE API (store-only; NVD_API_KEY optional)
+python -m app.ingest.ransomware                     # ransomware.live victims (store-only)
+python -m app.ingest.eia                            # EIA plant capacity (store-only; needs EIA_API_KEY)
 
 python -m app.classify.leadership                   # offline from here on
 python -m app.classify.regulatory
@@ -155,7 +160,7 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Entity enrichment (GLEIF LEI / Wikidata QID population, parent/child relationships) | Implemented |
 | Ingestion runner (dedupe, run bookkeeping, error containment, single-writer lock) | Implemented |
 | Ingestion: EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV | Implemented |
-| Store-only ingestion for backfill (GDELT news, NVD, ransomware trackers) + enrichment (EIA) | In progress |
+| Store-only ingestion for backfill (GDELT news, NVD, ransomware.live) + EIA plant records | Implemented |
 | License facts + play candidates (normalized from the license matrix) | Implemented |
 | Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
 | License-play snapshots + gov-cloud gating | Implemented |
