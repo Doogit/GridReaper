@@ -1,13 +1,12 @@
 # GridSignals (FastAPI + HTMX) as a self-contained image for Azure App Service.
 #
-# Demo mode = LIVE INGEST AT BUILD. GridSignals ships only config seeds; the
-# signal feed is empty until the pipeline runs against live public feeds. So the
-# build runs the pipeline and bakes the resulting signals into the image.
-#
-# Tradeoff (accepted): the build is network-dependent and non-deterministic — it
-# fetches from several external feeds. Network ingests are non-fatal so one flaky
-# feed can't fail the build, but we assert signals and license plays at the end
-# so an incomplete demo fails loudly instead of shipping a blank feed/card set.
+# Demo mode = RUNTIME FIRST-LOAD INGEST. The image ships ONLY code + config seeds
+# — no dataset is baked in, so builds are fast and network-free. On first load the
+# entrypoint (deploy/entrypoint.sh) seeds the schema, then runs the ingest
+# pipeline (deploy/ingest_pipeline.sh) in the BACKGROUND against live public feeds
+# while the web app serves immediately; the feed fills in and the 120s auto-
+# refresh (R8.1) surfaces it. A durable volume with existing signals skips ingest,
+# so a restart does not re-fetch.
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -21,35 +20,13 @@ COPY . .
 
 ENV GRIDSIGNALS_DB=/app/data/gridsignals.db
 
-# load_seeds (schema + config) -> licensing (license facts; REQUIRED before
-# plays, or play cards silently generate zero) -> ingest -> classify -> score ->
-# plays. Ingests are wrapped so a single flaky feed degrades instead of failing
-# the build; the final assertion guarantees the feed and play cards are not
-# empty.
-RUN python -m app.db.load_seeds \
- && python -m app.licensing \
- && (python -m app.ingest.edgar             || echo "WARN: edgar ingest failed, continuing") \
- && (python -m app.ingest.federal_register  || echo "WARN: federal_register ingest failed, continuing") \
- && (python -m app.ingest.presswire --source prnewswire    || echo "WARN: prnewswire ingest failed, continuing") \
- && (python -m app.ingest.presswire --source globenewswire || echo "WARN: globenewswire ingest failed, continuing") \
- && (python -m app.ingest.nerc_pages        || echo "WARN: nerc_pages ingest failed, continuing") \
- && (python -m app.ingest.cisa_kev          || echo "WARN: cisa_kev ingest failed, continuing") \
- && (python -m app.ingest.security_rss --source therecord        || echo "WARN: the_record ingest failed, continuing") \
- && (python -m app.ingest.security_rss --source bleepingcomputer || echo "WARN: bleepingcomputer ingest failed, continuing") \
- && python -m app.classify.regulatory \
- && python -m app.classify.leadership \
- && python -m app.classify.company_statement \
- && python -m app.classify.security_rss \
- && python -m app.scoring \
- && python -m app.plays \
- && (python -m app.digest || echo "WARN: digest generation failed, continuing") \
- && python -c "import sqlite3, os; conn = sqlite3.connect(os.environ['GRIDSIGNALS_DB']); signals = conn.execute('select count(*) from signals').fetchone()[0]; plays = conn.execute('select count(*) from license_play_snapshots').fetchone()[0]; assert signals > 0, 'build pipeline produced no signals'; assert plays > 0, 'build pipeline produced no license play snapshots'; print(f'baked {signals} signals and {plays} license play snapshots')"
-
 # App Service routes to the port named by the WEBSITES_PORT app setting; keep it
 # in sync with the port uvicorn binds (see deploy/azure-deploy.ps1).
 ENV PORT=8000
 EXPOSE 8000
 
-# Bind 0.0.0.0 so App Service can reach it. Easy Auth, when enabled, fronts the
-# app, so this is not exposed to the open net.
-CMD ["sh", "-c", "uvicorn app.ui_web.app:app --host 0.0.0.0 --port ${PORT}"]
+# Runtime bootstrap: seed schema + config (blocking), background-ingest on first
+# load, then exec uvicorn (bind 0.0.0.0 so App Service can reach it; Easy Auth,
+# when enabled, fronts the app). Ingestion stays a backend process, never the UI
+# (R3.1). See deploy/entrypoint.sh + deploy/ingest_pipeline.sh.
+CMD ["sh", "deploy/entrypoint.sh"]

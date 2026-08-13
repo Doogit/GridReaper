@@ -19,21 +19,28 @@ up managed-identity pull, WebSockets, and the container port, and prints the URL
 ## How the demo gets its data (important)
 
 Unlike a typical seed-and-go app, GridSignals ships only **config seeds** — the
-signal feed is empty until the ingest pipeline runs. So the `Dockerfile` runs the
-pipeline **at build time** against live public feeds (SEC EDGAR, Federal
-Register, press-wire RSS, NERC pages, CISA KEV), classifies, scores, and bakes
-the resulting signals into the image.
+signal feed is empty until the ingest pipeline runs. The image is **fetch-free at
+build**; instead the container populates the dataset **on first load** at
+runtime. `deploy/entrypoint.sh` seeds the schema (fast, offline), then — if the
+feed is empty — runs `deploy/ingest_pipeline.sh` in the **background** against
+live public feeds (SEC EDGAR, Federal Register, press-wire RSS, NERC pages, CISA
+KEV) while the web app serves immediately. The feed fills in over ~1–2 minutes
+and the 120s feed auto-refresh surfaces it.
 
 Consequences:
 
-- **`az acr build` is slower and network-dependent for this repo** — it performs
-  live fetches. Individual feeds are non-fatal (a flaky one is skipped), but the
-  build asserts at least one signal was produced, so it fails loudly rather than
-  shipping an empty feed.
-- **The baked feed is a point-in-time snapshot** of whatever was live at build.
-  Rebuild the image to refresh it. There is no scheduled ingestion in this demo
-  packaging; production would run the ingest CLIs on a schedule against a durable
-  database.
+- **`az acr build` is fast and deterministic** — the build no longer fetches. The
+  live network dependency moves to the first container start.
+- **First load does the fetch.** The app is reachable right away with an empty
+  feed that populates in the background; a flaky feed just yields fewer cards (the
+  UI shows honest empty states rather than failing). Watch `docker logs` — the
+  background ingest writes to `/tmp/gridsignals-ingest.log` inside the container.
+- **Skips re-fetch when data already exists.** The first-load check
+  (`app.first_load`) runs ingest only when the signals table is empty. Point
+  `GRIDSIGNALS_DB` at a durable volume (Azure Files) and a restart reuses the
+  existing dataset instead of re-fetching. Without a durable volume, each fresh
+  container is a first load and re-ingests. Scheduled refresh (an in-container
+  cron over the same `deploy/ingest_pipeline.sh`) is the planned follow-up.
 - `ANTHROPIC_API_KEY` is **not** required — the app runs without it; only the
   optional accuracy-audit judge uses it.
 

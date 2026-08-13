@@ -1,10 +1,12 @@
 name: package
 
-# Builds the actual container and boots it. NOTE: for GridSignals the build runs
-# the live ingest pipeline, so this job is network-dependent and slower than a
-# typical build — that is the accepted tradeoff of baking a real feed.
-# Individual feeds are non-fatal in the build; the build and this job assert
-# signals>0.
+# Builds the actual container and boots it. Runtime first-load model: the build
+# is fetch-free (no dataset is baked), so this job is fast and deterministic — it
+# does NOT depend on live feeds. The dataset is populated at runtime by the
+# entrypoint's background ingest, which is network-dependent and therefore not
+# asserted here; the pipeline's ordering invariants are covered hermetically by
+# tests/test_packaging.py. This job asserts the container boots healthy and
+# serves the feed page (an empty feed is valid on first load).
 on:
   pull_request:
     paths:
@@ -22,13 +24,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image (runs the live ingest pipeline)
+      - name: Build image (fetch-free — no ingest at build)
         run: docker build -t gridsignals:ci .
 
       - name: Boot container
         run: docker run -d --name gs -p 8000:8000 gridsignals:ci
 
-      - name: Wait for health
+      - name: Wait for health (app serves immediately; feed fills in later)
         run: |
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8000/healthz; then echo " healthy"; exit 0; fi
@@ -36,20 +38,8 @@ jobs:
           done
           echo "container did not become healthy in time"; exit 1
 
-      - name: Assert baked signals in the running container
-        run: >
-          docker exec gs python -c "import sqlite3, os;
-          n=sqlite3.connect(os.environ['GRIDSIGNALS_DB']).execute('select count(*) from signals').fetchone()[0];
-          assert n>0, ('signals', n);
-          print('OK:', n, 'signals')"
-
-      - name: Assert the digest was baked (runs last in the pipeline, R8.8)
-        run: >
-          docker exec gs python -c "import glob, os;
-          d=os.path.join(os.path.dirname(os.environ['GRIDSIGNALS_DB']), 'digests');
-          f=glob.glob(os.path.join(d, 'digest-2*.html'));
-          assert f, ('no digest baked', d);
-          print('OK: digest', f[-1])"
+      - name: Assert the feed page serves (empty feed is valid on first load)
+        run: curl -sf http://127.0.0.1:8000/ > /dev/null && echo "OK: feed page served"
 
       - name: Container logs on failure
         if: failure()
