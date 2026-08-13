@@ -154,6 +154,12 @@ def _badges(signal, snapshots, legend):
                        "text": eq_label})
     badges.append({"cls": "gs-badge scope", "title": None,
                    "text": scope_label(signal["signal_scope"])})
+    if signal["incident_evidence_level"] == "unconfirmed_early_warning":
+        badges.append({
+            "cls": "gs-badge unconfirmed",
+            "title": ("Unverified early warning — not confirmed by the "
+                      "company, a regulator, or an SEC filing (R10.5)"),
+            "text": "unconfirmed"})
     if (signal["signal_scope"] in ("account", "parent")
             and signal["coverage_flag"] == "dark"):
         badges.append({"cls": "gs-badge coverage-dark", "title": None,
@@ -688,11 +694,16 @@ def card_view(detail, legend):
     status = signal["status"]
     band = severity_band(signal["score"])
 
+    unconfirmed = (
+        signal["incident_evidence_level"] == "unconfirmed_early_warning")
+
     classes = ["gs-card", f"sev-{band}"]
     if status == "superseded":
         classes.append("status-superseded")
     elif status == "decayed":
         classes.append("status-decayed")
+    if unconfirmed:
+        classes.append("tier-unconfirmed")
 
     who = signal["entity_name"] or scope_label(signal["signal_scope"])
     meta_bits = [b for b in (
@@ -729,9 +740,17 @@ def card_view(detail, legend):
                       "locator": ev["evidence_locator"] or ""}
                      for ev in evidence],
         "source_url": safe_source_url(signal["source_url"]),
+        # R10.5: an unverified early warning leads with a verification-first
+        # warning; no confirmation exists yet from any authoritative source.
+        "unconfirmed_warning": (
+            "No company, regulator, or SEC confirmation yet — unverified "
+            "early warning." if unconfirmed else None),
         # only the safe text, only when cleared — never the withheld text
         "outreach": outreach_text if show_outreach else None,
-        "outreach_withheld": (not show_outreach) and bool(snapshots),
+        # verification-first: an unconfirmed card withholds the opener even
+        # before any play/snapshot exists (R7.12).
+        "outreach_withheld": (
+            (not show_outreach) and (bool(snapshots) or unconfirmed)),
     }
 
 

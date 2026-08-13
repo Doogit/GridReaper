@@ -125,7 +125,15 @@ def _now(now):
 
 
 def _is_account_scope(row):
-    """True when a row is an account-specific card (entity present + scope)."""
+    """True when a row is an account-specific card (entity present + scope).
+
+    Unconfirmed early-warning incidents never count toward account precision
+    even when account-scoped with an entity (R8.6/R9.4): they are unverified,
+    so they are reported separately and can neither inflate nor hide the
+    account trigger's real precision. Confirmed/corroborated own incidents,
+    like any other account card, still count."""
+    if row.get("incident_evidence_level") == "unconfirmed_early_warning":
+        return False
     scope = row.get("signal_scope")
     if scope not in ACCOUNT_SCOPES:
         return False

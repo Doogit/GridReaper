@@ -295,6 +295,26 @@ class G1StatusTests(unittest.TestCase):
         # The sector rows appear under reported_separately.
         self.assertEqual(out["reported_separately"]["feedback"]["total"], 50)
 
+    def test_unconfirmed_account_incidents_reported_separately(self):
+        # R8.6/R9.4: unconfirmed early-warning cards are account-scoped WITH an
+        # entity, but being unverified they must not feed account precision -
+        # they belong under reported_separately, like sector rows.
+        feedback = self._passing_feedback("leadership_change")
+        for i in range(30):
+            feedback.append(fb(f"unconf{i}", "not_useful",
+                               trigger_id="leadership_change",
+                               signal_scope="account", entity_id="e1",
+                               incident_evidence_level="unconfirmed_early_warning",
+                               reason_code="other"))
+        audit = self._passing_audit("leadership_change")
+        out = p.g1_status(feedback, audit,
+                          primary_triggers=("leadership_change",), now=self.NOW)
+        cell = out["triggers"]["leadership_change"]
+        # Account trigger still 25 rated, unaffected by the 30 unconfirmed rows.
+        self.assertEqual(cell["useful_n"], 25)
+        self.assertTrue(cell["meets"])
+        self.assertEqual(out["reported_separately"]["feedback"]["total"], 30)
+
     def test_none_rate_reason_when_no_account_cards(self):
         out = p.g1_status([], [], primary_triggers=("leadership_change",),
                           now=self.NOW)
