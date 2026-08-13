@@ -13,12 +13,26 @@ with >=2 distinct triggers - combos readiness, R7.3); (d) GDELT window age;
 Timestamps UTC ISO-8601 (R10.2).
 """
 import argparse
+import os
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
-from app.db.connection import get_connection
+from app.db.connection import DEFAULT_DB_PATH
 
 GDELT_SOURCE_ID = "gdelt"
+
+
+def _readonly_connection():
+    """Open the configured store in SQLite read-only mode."""
+    db_path = os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH
+    uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    return conn
 
 
 def _now_iso():
@@ -163,14 +177,15 @@ def main():
     )
     args = parser.parse_args()
 
-    conn = get_connection()
+    conn = None
     try:
-        conn.execute("PRAGMA query_only=ON;")
+        conn = _readonly_connection()
         run_probe(conn, source_filter=args.source)
     except sqlite3.Error as exc:
         print(f"probe error (non-fatal): {exc}")
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     return 0
 
 

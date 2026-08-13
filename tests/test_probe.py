@@ -168,6 +168,34 @@ class TestProbeSeeded(unittest.TestCase):
             os.remove(tmp_path)
         self.assertEqual(code, 0)
 
+    def test_main_missing_db_is_nonfatal_and_not_created(self):
+        import os
+        import sys
+        import tempfile
+
+        from app import probe as probe_mod
+
+        argv = sys.argv
+        env_db = os.environ.get("GRIDSIGNALS_DB")
+        tmpdir = tempfile.mkdtemp()
+        missing_path = os.path.join(tmpdir, "missing.db")
+        try:
+            sys.argv = ["probe"]
+            os.environ["GRIDSIGNALS_DB"] = missing_path
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = probe_mod.main()
+        finally:
+            sys.argv = argv
+            if env_db is None:
+                os.environ.pop("GRIDSIGNALS_DB", None)
+            else:
+                os.environ["GRIDSIGNALS_DB"] = env_db
+            os.rmdir(tmpdir)
+        self.assertEqual(code, 0)
+        self.assertIn("probe error (non-fatal)", buf.getvalue())
+        self.assertFalse(os.path.exists(missing_path))
+
 
 class TestProbeEmpty(unittest.TestCase):
     def setUp(self):
