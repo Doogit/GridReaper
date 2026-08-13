@@ -174,7 +174,7 @@ class TestCollisionReview(RansomwareTestCase):
         review and mints no card at all (Kevin's queue-only decision)."""
         add_victim(self.conn, 1, "Dominion")
         s = self.run_it()
-        self.assertEqual(s["signals_new"], 0)
+        self.assertEqual((s["signals_new"], s["review_enqueued"]), (0, 1))
         self.assertEqual(self.signals(), [])
         q = self.conn.execute(
             "SELECT candidate_entity_id FROM review_queue "

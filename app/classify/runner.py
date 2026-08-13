@@ -228,11 +228,23 @@ def run_classifier(conn, classifier_id, source_id, classify_fn,
             break
         conn.execute("SAVEPOINT classify_event")
         try:
+            reviews_before = conn.execute(
+                "SELECT COUNT(*) FROM review_queue "
+                "WHERE raw_event_id = ? AND disposition = 'pending'",
+                (raw["raw_event_id"],)).fetchone()[0]
+            candidates = classify_fn(conn, raw) or []
+            reviews_after_classify = conn.execute(
+                "SELECT COUNT(*) FROM review_queue "
+                "WHERE raw_event_id = ? AND disposition = 'pending'",
+                (raw["raw_event_id"],)).fetchone()[0]
+            classifier_queued_review = reviews_after_classify > reviews_before
             emitted = 0
-            for cand in classify_fn(conn, raw) or []:
+            for cand in candidates:
                 emitted += _process_candidate(
                     conn, resolver, raw, cand, evidence_rank, triggers_cfg,
                     parser_version, counts)
+            if classifier_queued_review:
+                counts["review_enqueued"] += 1
             conn.execute(
                 "INSERT INTO classified_events (raw_event_id, classifier_id, "
                 " parser_version, processed_at, signals_emitted) "
