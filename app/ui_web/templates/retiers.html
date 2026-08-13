@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — Recent re-tiers{% endblock %}
+{% block content %}
+<div class="gs-feed-head">
+  <h1 class="gs-h1">Recent re-tiers</h1>
+  <p class="gs-muted-text">Every incident re-tier across all cards, newest first
+    (R8.7 provenance). A re-tier that clears a card for customer-facing outreach
+    (R7.12) is flagged and always carries the operator's recorded reason.</p>
+</div>
+{% if not retiers %}
+  {% with message = "No re-tiers yet — an incident keeps the tier its classifier assigned until an operator changes it." %}{% include "_empty.html" %}{% endwith %}
+{% else %}
+<table class="gs-table">
+  <thead><tr><th>when</th><th>signal</th><th>account</th><th>change</th>
+    <th>outreach</th><th>editor</th><th>reason</th></tr></thead>
+  <tbody>
+    {% for r in retiers %}
+    <tr>
+      <td>{{ r.when }}</td>
+      <td>{{ r.headline }}</td>
+      <td>{{ r.account }}</td>
+      <td>{{ r.change }}</td>
+      <td>{% if r.gate_raised %}<span class="gs-badge">{{ r.outreach }}</span>{% else %}{{ r.outreach }}{% endif %}</td>
+      <td>{{ r.editor }}</td>
+      <td>{{ r.reason }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

@@ -763,6 +763,33 @@ def incident_tier_history(conn, signal_id):
     return [dict(r) for r in rows]
 
 
+def recent_retiers(conn, limit=50):
+    """Central re-tier audit trail across ALL incident cards, newest first (R8.7
+    oversight). incident_tier_history shows one signal's trail on its own card;
+    this is the single place an operator sees every re-tier — who changed which
+    card's tier, and whether any card was cleared for customer-facing outreach.
+    Each incident_tier_edits row is joined to its signal's headline / scope /
+    entity / current tier as a plain dict. ``gate_raised`` is True for the one
+    transition that clears outreach (old_cfa 0 -> new_cfa 1) and so required a
+    recorded reason (R4.1/R7.12) — the panel flags it. ``entity_name`` is None
+    for a sector-scoped peer incident (no account). Read-only; ordered by
+    edit_id (append-only, so it never ties like ts can)."""
+    rows = conn.execute(
+        "SELECT ite.edit_id, ite.signal_id, ite.old_level, ite.new_level, "
+        " ite.old_cfa, ite.new_cfa, ite.editor, ite.reason, ite.ts, "
+        " s.headline, e.name AS entity_name "
+        "FROM incident_tier_edits ite "
+        "JOIN signals s ON s.signal_id = ite.signal_id "
+        "LEFT JOIN watchlist_entities e ON e.entity_id = s.entity_id "
+        "ORDER BY ite.edit_id DESC LIMIT ?", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["gate_raised"] = bool(r["old_cfa"] == 0 and r["new_cfa"] == 1)
+        out.append(d)
+    return out
+
+
 def source_policy_rows(conn, now=None):
     """Source policies for the Admin review table (R8.7): each source_health row
     as a plain dict, plus its computed state, its Gate G2 demotion recommendation
