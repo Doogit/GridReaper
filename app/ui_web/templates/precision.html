@@ -65,12 +65,20 @@
   a recommendation to REVIEW (consider store-only / disable), never an auto-action — sources
   are never disabled automatically. A recommendation needs ≥ 20 rated cards; below that the
   sample is too noisy to act on.</p>
+<p class="gs-muted-text">R9.11 disagreement gate (KTD3): when a source's judge-vs-human disagreement
+  exceeds 20% over enough comparable (audited ∩ human-rated) signals, its demotion
+  recommendation is WITHHELD — the judge and humans disagree too much on that source to
+  trust a demotion, so the rubric needs review before acting. Below the comparable floor the
+  gate is "below floor" (too few to judge — never a fabricated block); with no comparable
+  signals it is "n/a". Every gate shows its disagreement rate WITH its comparable n.</p>
 {% if g2 %}
 {% for s in g2 %}
 <div class="gs-g2-source">
   <div><strong>{{ s.source_id }}</strong> <span class="gs-badge">{{ s.flag }}</span>
-    <span class="gs-meta">precision {{ s.precision }}</span></div>
+    <span class="gs-meta">precision {{ s.precision }}</span>
+    <span class="gs-badge">gate: {{ s.gate }}</span></div>
   <div class="gs-meta">{{ s.note }}</div>
+  <div class="gs-meta">judge-human disagreement: {{ s.disagreement }}{% if s.gate_note %} — {{ s.gate_note }}{% endif %}</div>
   {% if s.reason_codes %}
   <div class="gs-meta">reason codes: {{ s.reason_codes | join(", ") }}</div>
   {% endif %}
@@ -79,6 +87,13 @@
 {% else %}
 {% with message = "0 rated cards attributed to any source yet — nothing to evaluate for demotion." %}{% include "_empty.html" %}{% endwith %}
 {% endif %}
+
+{# -- spot-check coverage (R9.11) ------------------------------------------ #}
+<div class="gs-divider">audit spot-check coverage (this month)</div>
+<p class="gs-muted-text">R9.11 spot-check: a human should review ≥ 10 audited signals per month (or
+  20% of what was audited, whichever is smaller; floor 5). "Reviewed" reuses existing feedback
+  on audited signals — no separate log. Window is the UTC calendar month.</p>
+<div class="gs-meta">Spot-check: <strong>{{ spotcheck.status }}</strong> — {{ spotcheck.summary }}.</div>
 
 {# -- useful-rate by dimension --------------------------------------------- #}
 <div class="gs-divider">useful-rate by dimension</div>

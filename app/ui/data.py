@@ -804,9 +804,21 @@ def source_policy_rows(conn, now=None):
     (report-only, R9.5) keyed off the same source_id, its ``origin`` (seed vs
     operator, from source_health), and a ``reference_count`` so the UI renders
     disable-vs-remove (only operator-origin zero-reference sources are
-    removable). ``g2`` is None for a source with no rated feedback yet."""
-    from app.audit.precision import g2_status
-    g2 = g2_status(precision_feedback_rows(conn), now=now)
+    removable). ``g2`` is None for a source with no rated feedback yet.
+
+    The G2 recommendation carries the R9.11 disagreement gate (KTD3): the SAME
+    ``g2_gated`` overlay the Precision page applies is applied here, so the Admin
+    source table and the Precision page can NEVER show contradictory demotion
+    recommendations for a source (the two-surface consistency invariant). The
+    gate needs the per-source judge-human disagreement, so this reader now also
+    fetches ``precision_audit_rows``."""
+    from app.audit.precision import (
+        g2_status, g2_gated, judge_human_disagreement_by_source)
+    feedback = precision_feedback_rows(conn)
+    audit = precision_audit_rows(conn)
+    g2 = g2_status(feedback, now=now)
+    dis = judge_human_disagreement_by_source(audit, feedback)
+    g2 = g2_gated(g2, dis)
     out = []
     for r in source_health(conn):
         d = dict(r)
