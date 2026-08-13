@@ -379,3 +379,44 @@
     min-width: 0;
   }
 }
+
+/* ---- Explore: Trigger Analytics + Watchlist Map (PR3, R8.5) ----
+ * Reuses the CSS-only radio tab toggle (same mechanism as Account 360). The
+ * choropleth density ramp is a DELIBERATELY DISTINCT violet scale — not the
+ * blue accent, not the ok/stale/error badge hues — so signal VOLUME on the map
+ * is never misread as evidence confidence (D5). */
+#gs-tab-analytics:checked ~ .gs-tablist label[for="gs-tab-analytics"],
+#gs-tab-map:checked ~ .gs-tablist label[for="gs-tab-map"] {
+  color: var(--gs-accent); border-bottom-color: var(--gs-accent); }
+#gs-tab-analytics:checked ~ .gs-tabpanel-analytics { display: block; }
+#gs-tab-map:checked ~ .gs-tabpanel-map { display: block; }
+
+.gs-analytics-table { margin-bottom: 18px; }
+.gs-table .gs-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* Fixed density ramp (violet). d0 = an empty/quiet state (never "broken"). */
+.gs-map-d0 { fill: #eceff3; }
+.gs-map-d1 { fill: #dcd3ec; }
+.gs-map-d2 { fill: #b9a2db; }
+.gs-map-d3 { fill: #8f66c4; }
+.gs-map-d4 { fill: #6a2fb0; }
+
+.gs-map-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.gs-map-legend-label { color: var(--gs-muted); font-size: 0.72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0; margin-right: 4px; }
+.gs-map-swatch { display: inline-block; font-size: 0.7rem; color: #1c1330;
+  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--gs-card-border); }
+/* Legend swatches share the density fills as backgrounds (via a parallel set of
+   background rules so the SVG fill classes stay fill-only). */
+.gs-map-swatch.gs-map-d0 { background: #eceff3; }
+.gs-map-swatch.gs-map-d1 { background: #dcd3ec; }
+.gs-map-swatch.gs-map-d2 { background: #b9a2db; }
+.gs-map-swatch.gs-map-d3 { background: #8f66c4; color: #fff; }
+.gs-map-swatch.gs-map-d4 { background: #6a2fb0; color: #fff; }
+
+.gs-map-caption { margin: 4px 0 10px; }
+.gs-map-wrap { width: 100%; overflow-x: auto; background: var(--gs-card);
+  border: 1px solid var(--gs-card-border); border-radius: var(--gs-radius); padding: 8px; }
+.gs-map { display: block; width: 100%; height: auto; max-width: 960px; margin: 0 auto; }
+.gs-map-state { stroke: #ffffff; stroke-width: 0.6; }
+.gs-map-facility { fill: #d55e00; stroke: #ffffff; stroke-width: 1; }

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — Explore{% endblock %}
+{% block content %}
+{# Explore — Trigger Analytics (default) + evidence-safe Watchlist Map (R8.5).
+   CSS-only tab toggle (radio + :checked sibling rules), mirroring the Account
+   360 tabs — no JS to switch tabs. Analytics is checked by default (D4); a
+   ?tab=map deep-link flips the checked input server-side. Each tab carries its
+   OWN honest empty-state copy (R6.6). #}
+<div class="gs-feed-head">
+  <h1 class="gs-h1">Explore</h1>
+  <p class="gs-muted-text">Trigger analytics across all sourced signals, and an evidence-safe watchlist map. Counts are of sourced signals (R4.1); the map plots only facilities with a high-confidence owner match (≥0.85).</p>
+</div>
+
+<div class="gs-tabs">
+  <input type="radio" name="gs-explore-tab" id="gs-tab-analytics" class="gs-tab-input"{% if active_tab != 'map' %} checked{% endif %}>
+  <input type="radio" name="gs-explore-tab" id="gs-tab-map" class="gs-tab-input"{% if active_tab == 'map' %} checked{% endif %}>
+  <div class="gs-tablist">
+    <label class="gs-tab" for="gs-tab-analytics">Trigger Analytics</label>
+    <label class="gs-tab" for="gs-tab-map">Watchlist Map</label>
+  </div>
+
+  <div class="gs-tabpanel gs-tabpanel-analytics">
+    {% if analytics_tables %}
+    {% for table in analytics_tables %}
+    <section class="gs-analytics-table">
+      <h2 class="gs-h2">{{ table.label }}</h2>
+      <table class="gs-table">
+        <thead><tr><th>{{ table.label }}</th><th class="gs-num">Signals</th></tr></thead>
+        <tbody>
+          {% for row in table.rows %}
+          <tr>
+            <td><span class="gs-badge scope">{{ row.label }}</span></td>
+            <td class="gs-num">{{ row.count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endfor %}
+    {% else %}
+    {% with message = analytics_empty %}{% include "_empty.html" %}{% endwith %}
+    {% endif %}
+  </div>
+
+  <div class="gs-tabpanel gs-tabpanel-map">
+    <div class="gs-map-legend" aria-hidden="true">
+      <span class="gs-map-legend-label">Signal density</span>
+      {% for label, cls in density_legend %}
+      <span class="gs-map-swatch {{ cls }}">{{ label }}</span>
+      {% endfor %}
+    </div>
+    <p class="gs-muted-text gs-map-caption">Shading is signal <em>volume</em> on a fixed scale — deliberately a different palette from the evidence-tier and scope badges, so density is never read as confidence. Continental US + DC only; Alaska, Hawaii, and territories are not on this geometry. Hover a state or facility for its identity.</p>
+    <div class="gs-map-wrap">
+      {{ map.svg | safe }}
+    </div>
+    {% if map.empty_note %}
+    {% with message = map.empty_note %}{% include "_empty.html" %}{% endwith %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

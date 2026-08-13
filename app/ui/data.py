@@ -1571,3 +1571,124 @@ def remove_source(conn, source_id, reason="", editor=CONFIG_EDITOR, now=None):
                         source_id, None, editor, reason, now)
     conn.commit()
     return {"source_id": source_id, "removed": True}
+
+
+# -- explore analytics + evidence-safe facility map (R8.5, R4.1) --------------
+#
+# The Explore page's two reads. Both are strictly read-only aggregations.
+#
+# Analytics (a): signal counts sliced by trigger / signal_scope / incident tier.
+# R4.1 (nothing surfaces unsourced) holds by construction: every ``signals`` row
+# is minted by a classifier from a sourced raw_event and carries ranked evidence
+# — a count here is a count of sourced signals, and each returned row keeps the
+# dimension identity (trigger_name, scope, tier) so a number is inspectable back
+# to the same evidence/scope treatment the cards carry. Default is active-only,
+# matching the feed (decayed/superseded/dismissed keep their frozen state but do
+# not inflate the live analytics).
+#
+# Facility points (b): THE 0.85 EVIDENCE GATE LIVES IN THIS READER. A facility
+# whose facility_owner_confidence is NULL or < 0.85 can never leave this
+# function, so an under-evidenced point can never reach the view (R8.5: no
+# inferred points). Only gated points join to their owner entity + subsector.
+#
+# Geography rollup (c): per-state signal density for choropleth shading, derived
+# ONLY from gated facilities — a state's count is the sum of active signals of
+# the entities that own a >=0.85 facility there. States with no gated facility /
+# no signals read 0, never a fabricated value (R6.6).
+
+FACILITY_OWNER_CONFIDENCE_FLOOR = 0.85
+
+
+def explore_analytics_counts(conn, statuses=("active",)):
+    """Signal counts sliced three ways for the Explore Analytics tab (R8.5,
+    R4.1). Returns ``{'trigger': [...], 'scope': [...], 'incident_tier': [...]}``
+    where each list is plain dicts (label/key/count), most-frequent first. Every
+    counted row is a sourced signal (R4.1) — the count carries its dimension
+    identity so it is inspectable back to the same signals the cards render.
+    ``statuses`` filters signal status (default active-only, matching the feed).
+    """
+    statuses = tuple(statuses)
+    ph = _placeholders(len(statuses))
+    trigger = conn.execute(
+        "SELECT s.trigger_id AS key, t.name AS label, COUNT(*) AS count "
+        "FROM signals s LEFT JOIN triggers t ON t.trigger_id = s.trigger_id "
+        f"WHERE s.status IN ({ph}) "
+        "GROUP BY s.trigger_id ORDER BY count DESC, s.trigger_id",
+        list(statuses)).fetchall()
+    scope = conn.execute(
+        "SELECT s.signal_scope AS key, COUNT(*) AS count "
+        f"FROM signals s WHERE s.status IN ({ph}) "
+        "GROUP BY s.signal_scope ORDER BY count DESC, s.signal_scope",
+        list(statuses)).fetchall()
+    # Incident tier is NULL for non-incident signals; only incident signals carry
+    # a tier, so a NULL tier is not a bucket here (the tab counts incidents by
+    # their R10.5 evidence tier).
+    tier = conn.execute(
+        "SELECT s.incident_evidence_level AS key, COUNT(*) AS count "
+        f"FROM signals s WHERE s.status IN ({ph}) "
+        " AND s.incident_evidence_level IS NOT NULL "
+        "GROUP BY s.incident_evidence_level ORDER BY count DESC, "
+        "s.incident_evidence_level", list(statuses)).fetchall()
+    return {
+        "trigger": [{"key": r["key"], "label": r["label"] or r["key"],
+                     "count": r["count"]} for r in trigger],
+        "scope": [{"key": r["key"], "label": r["key"], "count": r["count"]}
+                  for r in scope],
+        "incident_tier": [{"key": r["key"], "label": r["key"],
+                           "count": r["count"]} for r in tier],
+    }
+
+
+def explore_facility_points(conn):
+    """Evidence-gated facility points for the Watchlist Map (R8.5). Returns ONLY
+    facilities whose ``facility_owner_confidence >= 0.85`` (the gate lives HERE,
+    so an under-evidenced point can never reach the view — a 0.5 facility is
+    never returned, a 0.9 facility is), joined to their owner entity + subsector.
+    Facilities with a NULL confidence or no located owner are excluded. Each
+    plain dict carries facility_id, name, lat/long, entity_id + entity_name,
+    subsector, capacity_mw, and confidence. Rows with a NULL latitude/longitude
+    are dropped (unprojectable). Ordered by facility_id for determinism."""
+    rows = conn.execute(
+        "SELECT fa.facility_id, fa.facility_name, fa.latitude, fa.longitude, "
+        " fa.capacity_mw, fa.facility_owner_confidence, "
+        " fa.owner_operator_entity_id AS entity_id, "
+        " e.name AS entity_name, e.subsector "
+        "FROM facility_assets fa "
+        "LEFT JOIN watchlist_entities e "
+        "  ON e.entity_id = fa.owner_operator_entity_id "
+        "WHERE fa.facility_owner_confidence IS NOT NULL "
+        "  AND fa.facility_owner_confidence >= ? "
+        "  AND fa.latitude IS NOT NULL AND fa.longitude IS NOT NULL "
+        "ORDER BY fa.facility_id",
+        (FACILITY_OWNER_CONFIDENCE_FLOOR,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def explore_state_density(conn, statuses=("active",)):
+    """Per-owner-entity active-signal counts for the map choropleth, keyed by the
+    entity that owns a GATED (>=0.85) facility (R8.5). Returns a list of plain
+    dicts (entity_id, entity_name, subsector, latitude, longitude, confidence,
+    signal_count) — one per gated facility, carrying the owner's count of
+    ``statuses`` signals so render.py can project each to its state and sum the
+    density. Density is derived only from gated facilities, so a state with no
+    gated facility / no signals contributes nothing and reads 0 (R6.6). A
+    facility whose owner entity is off-watchlist (no signals) carries count 0."""
+    statuses = tuple(statuses)
+    ph = _placeholders(len(statuses))
+    rows = conn.execute(
+        "SELECT fa.facility_id, fa.latitude, fa.longitude, "
+        " fa.facility_owner_confidence AS confidence, "
+        " fa.owner_operator_entity_id AS entity_id, "
+        " e.name AS entity_name, e.subsector, "
+        " (SELECT COUNT(*) FROM signals s "
+        f"   WHERE s.entity_id = fa.owner_operator_entity_id "
+        f"     AND s.status IN ({ph})) AS signal_count "
+        "FROM facility_assets fa "
+        "LEFT JOIN watchlist_entities e "
+        "  ON e.entity_id = fa.owner_operator_entity_id "
+        "WHERE fa.facility_owner_confidence IS NOT NULL "
+        "  AND fa.facility_owner_confidence >= ? "
+        "  AND fa.latitude IS NOT NULL AND fa.longitude IS NOT NULL "
+        "ORDER BY fa.facility_id",
+        list(statuses) + [FACILITY_OWNER_CONFIDENCE_FLOOR]).fetchall()
+    return [dict(r) for r in rows]
