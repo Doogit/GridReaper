@@ -182,6 +182,9 @@
 .gs-card.tier-unconfirmed { border-left: 3px solid var(--gs-warn-border); }
 
 /* R8.7 incident evidence-tier re-tier editor (on incident cards). */
+.gs-cleared-note { background: var(--gs-ok-bg); border: 1px solid var(--gs-ok-border);
+  color: var(--gs-ok-text); font-size: 0.8rem; font-weight: 600; padding: 6px 10px;
+  border-radius: 6px; margin: 8px 0; }
 .gs-retier-wrap { margin: 8px 0; }
 .gs-retier { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
 .gs-retier-label { font-size: 0.8rem; color: var(--gs-muted); display: inline-flex; align-items: center; gap: 6px; }

@@ -716,6 +716,13 @@ def card_view(detail, legend):
     incident_level = signal["incident_evidence_level"]
     unconfirmed = (incident_level == "unconfirmed_early_warning")
     is_incident = incident_level is not None
+    # A confirmed/corroborated incident is cleared for customer-facing outreach.
+    # Surfaced as a persistent positive marker so the up-tiered state is legible
+    # on the resting card, mirroring the persistent "Outreach withheld" line on
+    # the unconfirmed side (the two tiers were otherwise asymmetric: only the
+    # restrictive state left a durable trace).
+    incident_cleared = (is_incident and not unconfirmed
+                        and bool(signal["customer_facing_allowed"]))
 
     classes = ["gs-card", f"sev-{band}"]
     if status == "superseded":
@@ -754,6 +761,11 @@ def card_view(detail, legend):
         "is_incident": is_incident,
         "incident_level": incident_level,
         "tier_dom_id": tier_dom_id(signal["signal_id"]),
+        # persistent marker that a confirmed/corroborated incident is cleared for
+        # customer-facing outreach (mirrors the unconfirmed "withheld" line).
+        "incident_cleared_note": (
+            f"{incident_level.capitalize()} incident — cleared for "
+            "customer-facing outreach." if incident_cleared else None),
         "card_class": " ".join(classes),
         "headline": signal["headline"] or "",
         "meta_bits": meta_bits,

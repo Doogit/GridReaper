@@ -729,6 +729,16 @@ def retier_incident(conn, signal_id, new_level, reason="",
         return {"old_level": old_level, "new_level": new_level,
                 "old_cfa": old_cfa, "new_cfa": old_cfa, "changed": False}
     new_cfa = customer_facing_for_tier(new_level)
+    # Trust gate (R4.1/R7.12): a re-tier that RAISES customer_facing_allowed
+    # (unconfirmed -> confirmed/corroborated) clears the card for customer-facing
+    # outreach — the one transition that can promote an early warning to a basis
+    # for contacting the account. "Nothing surfaces unsourced" applies to that
+    # promotion itself, so it requires the operator to record why (which source
+    # confirmed it). Suppressing (1 -> 0) and lateral moves stay reason-optional.
+    if new_cfa == 1 and old_cfa == 0 and not (reason or "").strip():
+        raise ValueError(
+            f"Re-tiering to {new_level} clears this card for customer-facing "
+            "outreach — record which source confirmed it (a reason is required).")
     conn.execute(
         "UPDATE signals SET incident_evidence_level = ?, "
         "customer_facing_allowed = ? WHERE signal_id = ?",

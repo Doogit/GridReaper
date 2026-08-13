@@ -36,6 +36,10 @@
   </details>
   {% endif %}
 
+  {% if c.incident_cleared_note %}
+  <div class="gs-cleared-note" role="note">{{ c.incident_cleared_note }}</div>
+  {% endif %}
+
   {% if c.outreach %}
   <div class="gs-evidence"><b>Outreach draft</b><br>{{ c.outreach }}</div>
   {% elif c.outreach_withheld %}

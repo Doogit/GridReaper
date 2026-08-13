@@ -122,6 +122,23 @@ class TestReveal(IncidentTierBase):
         dom = self.client.get("/").text
         self.assertNotIn(tier_dom_id("S_PLAIN"), dom)
 
+    def test_confirmed_card_shows_cleared_marker(self):
+        # a confirmed incident carries a durable "cleared for outreach" marker
+        # even without a play snapshot, so the tier state is legible at rest.
+        dom = self.client.get("/", params={"status": "all"}).text
+        self.assertIn("Confirmed incident — cleared for customer-facing outreach",
+                      dom)
+
+    def test_lateral_move_needs_no_reason(self):
+        # a move between two customer-facing tiers (no cfa change) is not the
+        # outreach-unblocking transition, so no reason is required.
+        self.client.post("/incident/tier", data={
+            "signal_id": "S_CONF", "new_level": "corroborated"})
+        self.assertEqual(self.scalar(
+            "SELECT incident_evidence_level FROM signals WHERE signal_id='S_CONF'"),
+            "corroborated")
+        self.assertEqual(self.edit_count("S_CONF"), 1)
+
     def test_reveal_rejects_non_incident_signal(self):
         resp = self.client.get("/incident/tier", params={"signal_id": "S_PLAIN"})
         self.assertEqual(resp.text.strip(), "")
@@ -130,7 +147,8 @@ class TestReveal(IncidentTierBase):
 class TestRetier(IncidentTierBase):
     def test_unconfirmed_to_confirmed_flips_tier_and_cfa(self):
         resp = self.client.post("/incident/tier", data={
-            "signal_id": "S_UNCONF", "new_level": "confirmed"})
+            "signal_id": "S_UNCONF", "new_level": "confirmed",
+            "reason": "confirmed via SEC 8-K Item 1.05"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.scalar(
             "SELECT incident_evidence_level FROM signals WHERE signal_id='S_UNCONF'"),
@@ -143,6 +161,19 @@ class TestRetier(IncidentTierBase):
         self.assertNotIn("No company, regulator, or SEC confirmation yet", resp.text)
         self.assertNotIn("tier-unconfirmed", resp.text)
         self.assertIn("outreach now allowed", resp.text)
+        # the up-tiered state leaves a durable positive marker on the card
+        self.assertIn("cleared for customer-facing outreach", resp.text)
+
+    def test_uptier_requires_reason(self):
+        # promoting to a customer-facing tier is the one transition that clears
+        # a card for outreach — it must carry a justification (R4.1 provenance).
+        resp = self.client.post("/incident/tier", data={
+            "signal_id": "S_UNCONF", "new_level": "confirmed"})
+        self.assertIn("a reason is required", resp.text)
+        self.assertEqual(self.scalar(
+            "SELECT incident_evidence_level FROM signals WHERE signal_id='S_UNCONF'"),
+            "unconfirmed_early_warning")
+        self.assertEqual(self.edit_count(), 0)
 
     def test_confirmed_to_unconfirmed_suppresses_outreach(self):
         resp = self.client.post("/incident/tier", data={
@@ -166,7 +197,8 @@ class TestRetier(IncidentTierBase):
 class TestAppendOnlyTrail(IncidentTierBase):
     def test_successive_retiers_append_never_mutate(self):
         self.client.post("/incident/tier", data={
-            "signal_id": "S_UNCONF", "new_level": "corroborated"})
+            "signal_id": "S_UNCONF", "new_level": "corroborated",
+            "reason": "vendor advisory corroborates"})
         self.client.post("/incident/tier", data={
             "signal_id": "S_UNCONF", "new_level": "confirmed"})
         self.assertEqual(self.edit_count("S_UNCONF"), 2)
@@ -185,7 +217,8 @@ class TestAppendOnlyTrail(IncidentTierBase):
 
     def test_history_reads_newest_first(self):
         self.client.post("/incident/tier", data={
-            "signal_id": "S_UNCONF", "new_level": "corroborated"})
+            "signal_id": "S_UNCONF", "new_level": "corroborated",
+            "reason": "vendor advisory corroborates"})
         resp = self.client.post("/incident/tier", data={
             "signal_id": "S_UNCONF", "new_level": "confirmed"})
         # the re-rendered card carries the trail, most recent transition first
