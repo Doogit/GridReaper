@@ -121,6 +121,14 @@ def feed_page(conn, scope_group="account", after_key=None, limit=25,
     return conn.execute(sql, params).fetchall()
 
 
+def all_signal_ids(conn):
+    """Every signal_id, any status (the per-card permalink resolves a hashed
+    card_key back to its signal by scanning these — signal_ids are one-way
+    hashed for the URL, so the reverse map is a scan, not an index)."""
+    return [r["signal_id"]
+            for r in conn.execute("SELECT signal_id FROM signals").fetchall()]
+
+
 def signal_detail(conn, signal_id):
     """Full detail for one signal: the card row, its evidence rows, and its
     license-play snapshots with per-play fact provenance. Returns None if the

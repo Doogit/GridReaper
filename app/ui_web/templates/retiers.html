@@ -18,7 +18,7 @@
     {% for r in retiers %}
     <tr>
       <td>{{ r.when }}</td>
-      <td>{{ r.headline }}</td>
+      <td><a class="gs-source-link" href="{{ r.permalink }}">{{ r.headline }}</a></td>
       <td>{{ r.account }}</td>
       <td>{{ r.change }}</td>
       <td>{% if r.gate_raised %}<span class="gs-badge cleared">{{ r.outreach }}</span>{% else %}{{ r.outreach }}{% endif %}</td>

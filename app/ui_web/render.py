@@ -85,6 +85,17 @@ def tier_dom_id(signal_id):
     return f"gs-tier-{digest}"
 
 
+def card_key(signal_id):
+    """Stable, URL-safe permalink key for one card (R8.1). A signal_id is a
+    structured `{trigger}:{raw_event_id}:{scope|entity}` string whose
+    raw_event_id can itself be a URL — never put it raw in a path segment. Same
+    sha256 discipline as the DOM-id helpers, but with no `gs-` prefix because it
+    rides in a URL path (`/card/{key}`), not a CSS selector. 64 bits is
+    collision-safe at this scale; routes/card.py resolves a key back to its
+    signal by scanning, so the mapping stays one source of truth here."""
+    return sha256(str(signal_id or "").encode("utf-8")).hexdigest()[:16]
+
+
 def safe_source_url(url):
     """Return an HTTP(S) source URL, or None for non-clickable schemes."""
     value = (url or "").strip()
@@ -694,6 +705,8 @@ def recent_retiers_view(rows):
         out.append({
             "when": r["ts"],
             "headline": r["headline"] or "",
+            # R8.1 deep link: the audit row links back to the card it re-tiered.
+            "permalink": f"/card/{card_key(r['signal_id'])}",
             "account": r["entity_name"] or "—",
             "change": f"{r['old_level']} → {r['new_level']}",
             "outreach": outreach,
@@ -786,6 +799,9 @@ def card_view(detail, legend):
 
     return {
         "signal_id": signal["signal_id"],
+        # R8.1 per-card permalink: the card is addressable at /card/{card_key}
+        # (a dedicated read-only view) and anchorable in-page as #card-{card_key}.
+        "card_key": card_key(signal["signal_id"]),
         "feedback_dom_id": feedback_dom_id(signal["signal_id"]),
         # R8.7 incident evidence-tier editor: an incident card (any tier) shows a
         # re-tier affordance targeting this CSS-safe id; non-incident cards don't.

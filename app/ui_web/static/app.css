@@ -150,6 +150,11 @@
   margin: 0 0 4px 0; line-height: 1.35; }
 .gs-meta { font-size: 0.8rem; color: var(--gs-muted); margin-bottom: 8px; }
 
+/* per-card permalink (R8.1): unobtrusive top-right deep link into /card/{key} */
+.gs-permalink { position: absolute; top: 10px; right: 12px; font-size: 0.72rem;
+  color: var(--gs-muted); text-decoration: none; }
+.gs-permalink:hover { color: var(--gs-accent); text-decoration: underline; }
+
 /* decay bar: current score vs the signal's fresh base_strength x fits */
 .gs-decay-wrap { height: 6px; background: var(--gs-chip-bg); border-radius: 3px;
   overflow: hidden; margin: 8px 0; }

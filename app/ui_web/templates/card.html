@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}GridSignals — {% if c %}{{ c.headline or "Signal card" }}{% else %}Card not found{% endif %}{% endblock %}
+{% block content %}
+<div class="gs-feed-head">
+  <h1 class="gs-h1">Signal card</h1>
+  <p class="gs-muted-text"><a class="gs-source-link" href="/">← Back to feed</a></p>
+</div>
+{% if c %}
+  {% include "_card.html" %}
+{% else %}
+  {% with message = "No card at this link — the signal may have been rebuilt from seeds, or the link is wrong." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}
+{% endblock %}
