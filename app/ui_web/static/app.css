@@ -69,6 +69,7 @@
 
 .gs-topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 20px;
   padding: 12px 24px;
@@ -76,9 +77,9 @@
   border-bottom: 1px solid var(--gs-card-border);
   box-shadow: var(--gs-shadow-sm);
 }
-.gs-brand { font-weight: 700; letter-spacing: 0.01em; color: var(--gs-text); }
+.gs-brand { font-weight: 700; letter-spacing: 0; color: var(--gs-text); }
 
-.gs-nav { display: flex; gap: 16px; }
+.gs-nav { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .gs-nav a {
   color: var(--gs-muted);
   text-decoration: none;
@@ -108,17 +109,18 @@
   padding: 28px 24px;
   box-shadow: var(--gs-shadow-card);
 }
-.gs-h1 { margin: 0 0 6px; font-size: 1.4rem; font-weight: 640; letter-spacing: -0.01em; }
+.gs-h1 { margin: 0 0 6px; font-size: 1.4rem; font-weight: 640; letter-spacing: 0; }
 .gs-lead { margin: 0 0 10px; color: var(--gs-text); }
 .gs-muted-text { margin: 0; color: var(--gs-muted); font-size: 0.85rem; }
 
 /* ---- signal card (R8.1) ---- */
 .gs-feed-head { margin-bottom: 10px; }
 .gs-feed-head .gs-h1 { margin-bottom: 2px; }
-.gs-status { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px;
+.gs-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px;
   color: var(--gs-muted); font-size: 0.85rem; }
 .gs-status select { background: var(--gs-card); color: var(--gs-text);
-  border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 4px 8px; }
+  border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 4px 8px;
+  max-width: 100%; }
 
 .gs-card {
   position: relative;
@@ -156,7 +158,7 @@
 .gs-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .gs-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px;
   background: var(--gs-chip-bg); color: var(--gs-text); border: 1px solid var(--gs-card-border);
-  letter-spacing: 0.01em; }
+  letter-spacing: 0; }
 .gs-badge.nonprimary { background: var(--gs-np-bg); border-color: var(--gs-np-border);
   color: var(--gs-np-text); }     /* R4.3 distinct non-primary badge */
 .gs-badge.scope { background: var(--gs-scope-bg); border-color: var(--gs-scope-border);
@@ -180,7 +182,7 @@
 
 .gs-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px 0;
   color: var(--gs-muted); font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.08em; }
+  letter-spacing: 0; }
 .gs-divider::before, .gs-divider::after { content: ""; flex: 1; height: 1px; background: var(--gs-card-border); }
 
 .gs-empty { background: var(--gs-card); border: 1px dashed var(--gs-card-border);
@@ -231,7 +233,7 @@
 .gs-source-row code { color: var(--gs-muted); }
 
 .gs-state-badge { display: inline-block; font-size: 0.7rem; font-weight: 600;
-  padding: 1px 8px; border-radius: 10px; letter-spacing: 0.03em;
+  padding: 1px 8px; border-radius: 10px; letter-spacing: 0;
   border: 1px solid var(--gs-card-border); }
 .gs-state-badge.state-ok       { background: var(--gs-ok-bg); border-color: var(--gs-ok-border); color: var(--gs-ok-text); }
 .gs-state-badge.state-stale    { background: var(--gs-stale-bg); border-color: var(--gs-stale-border); color: var(--gs-stale-text); }
@@ -251,7 +253,7 @@
   border: 1px solid var(--gs-card-border); border-radius: var(--gs-radius); padding: 14px 16px;
   box-shadow: var(--gs-shadow-card); }
 .gs-metric-label { color: var(--gs-muted); font-size: 0.72rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 4px; }
+  text-transform: uppercase; letter-spacing: 0; margin-bottom: 4px; }
 .gs-metric-value { font-size: 1.8rem; font-weight: 640; color: var(--gs-text); line-height: 1.2; }
 .gs-metric-value.gs-metric-na { color: var(--gs-muted); font-weight: 500; }
 .gs-metric .gs-empty { margin-top: 8px; text-align: left; padding: 10px 12px; box-shadow: none; }
@@ -261,7 +263,7 @@
 .gs-table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 0.82rem;
   display: block; overflow-x: auto; }
 .gs-table thead th { text-align: left; color: var(--gs-muted); font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.72rem;
+  text-transform: uppercase; letter-spacing: 0; font-size: 0.72rem;
   border-bottom: 1px solid var(--gs-card-border); padding: 6px 12px 6px 0; white-space: nowrap; }
 .gs-table tbody td { color: var(--gs-text); border-bottom: 1px solid var(--gs-card-border);
   padding: 6px 12px 6px 0; vertical-align: top; }
@@ -332,10 +334,21 @@
   color: var(--gs-text); white-space: nowrap;
 }
 .gs-admin-table th { color: var(--gs-muted); font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.72rem; }
+  text-transform: uppercase; letter-spacing: 0; font-size: 0.72rem; }
 
 /* Flash levels: base .gs-flash is warning-toned; success/info/error recolor it. */
 .gs-flash-success { background: var(--gs-ok-bg); border-color: var(--gs-ok-border); color: var(--gs-ok-text); }
 .gs-flash-info { background: var(--gs-never-bg); border-color: var(--gs-never-border); color: var(--gs-never-text); }
 .gs-flash-warning { background: var(--gs-warn-bg); border-color: var(--gs-warn-border); color: var(--gs-warn-text); }
 .gs-flash-error { background: var(--gs-error-bg); border-color: var(--gs-error-border); color: var(--gs-error-text); }
+
+@media (max-width: 560px) {
+  .gs-topbar { gap: 8px 14px; padding: 12px 16px; }
+  .gs-main { padding: 16px; }
+  .gs-admin-label { width: 100%; min-width: 0; }
+  .gs-admin-label input[type="text"], .gs-admin-label input[type="number"],
+  .gs-admin-label select {
+    width: 100%;
+    min-width: 0;
+  }
+}
