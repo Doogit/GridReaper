@@ -1,0 +1,194 @@
+<!doctype html>
+{# Standalone daily digest (R8.8). A self-contained HTML document written to
+   disk by app/digest.py and also served by the /digest route. It deliberately
+   does NOT extend base.html (which uses url_for + loads htmx.min.js): the saved
+   file must open with no server, no CDN, and no external request. All card
+   styling is an inlined subset of app/ui_web/static/app.css. Every string is
+   autoescaped by the shared Jinja env (XSS guard). Cards are shaped by
+   render.card_view so they read identically to the live feed, EXCEPT the
+   interactive feedback / re-tier affordances are dropped (a digest is a
+   read-only snapshot). Timestamps are UTC ISO-8601 (R10.2). #}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GridSignals Digest — {{ generated_date }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root {
+      --gs-bg: #f6f7f9; --gs-card: #ffffff; --gs-card-border: #e1e5ea;
+      --gs-text: #171c24; --gs-muted: #59616e;
+      --gs-accent: #0072b2; --gs-accent-strong: #005e93;
+      --gs-crit: #d55e00; --gs-high: #e69f00; --gs-mod: #0072b2; --gs-low: #009e73;
+      --gs-chip-bg: #eef1f4;
+      --gs-warn-bg: #fbf3de; --gs-warn-border: #e3c36b; --gs-warn-text: #8a6a00;
+      --gs-np-bg: #fbf0d9; --gs-np-border: #e0b053; --gs-np-text: #8a5a00;
+      --gs-scope-bg: #e3f0f8; --gs-scope-border: #9dcbe6; --gs-scope-text: #0a5a85;
+      --gs-cov-bg: #efeaf6; --gs-cov-border: #c4b0dc; --gs-cov-text: #6a4a8f;
+      --gs-ok-bg: #e1f3ec; --gs-ok-border: #9fd8c2; --gs-ok-text: #00674e;
+      --gs-shadow-sm: 0 1px 2px rgba(23,28,36,0.04);
+      --gs-shadow-card: 0 1px 2px rgba(23,28,36,0.04), 0 1px 3px rgba(23,28,36,0.06);
+      --gs-radius: 10px;
+    }
+    body { margin: 0; background: var(--gs-bg); color: var(--gs-text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 15px; line-height: 1.5; font-variant-numeric: tabular-nums;
+      -webkit-font-smoothing: antialiased; }
+    .gs-digest { max-width: 960px; margin: 0 auto; padding: 24px; }
+    .gs-digest-head { background: var(--gs-card); border: 1px solid var(--gs-card-border);
+      border-radius: 12px; padding: 22px 24px; box-shadow: var(--gs-shadow-card);
+      margin-bottom: 18px; }
+    .gs-brand { font-weight: 700; color: var(--gs-text); font-size: 0.95rem; letter-spacing: 0.02em; }
+    .gs-h1 { margin: 4px 0 6px; font-size: 1.4rem; font-weight: 640; }
+    .gs-asof { color: var(--gs-muted); font-size: 0.85rem; margin: 0 0 10px; }
+    .gs-framing { margin: 10px 0 0; padding: 10px 14px; background: var(--gs-scope-bg);
+      border: 1px solid var(--gs-scope-border); border-radius: 8px;
+      color: var(--gs-scope-text); font-size: 0.82rem; }
+    .gs-section-title { margin: 22px 0 8px; font-size: 1.05rem; font-weight: 640; color: var(--gs-text); }
+    .gs-section-sub { margin: 0 0 8px; color: var(--gs-muted); font-size: 0.82rem; }
+    .gs-empty { background: var(--gs-card); border: 1px dashed var(--gs-card-border);
+      border-radius: var(--gs-radius); padding: 20px; color: var(--gs-muted); text-align: center; }
+    .gs-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px;
+      color: var(--gs-muted); font-size: 0.72rem; font-weight: 600; text-transform: uppercase; }
+    .gs-divider::before, .gs-divider::after { content: ""; flex: 1; height: 1px; background: var(--gs-card-border); }
+    .gs-card { position: relative; background: var(--gs-card); border: 1px solid var(--gs-card-border);
+      border-radius: var(--gs-radius); padding: 14px 16px 12px 20px; margin-bottom: 14px;
+      overflow: hidden; box-shadow: var(--gs-shadow-card); }
+    .gs-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+      width: 5px; background: var(--gs-mod); }
+    .gs-card.sev-critical::before { background: var(--gs-crit); }
+    .gs-card.sev-high::before { background: var(--gs-high); }
+    .gs-card.sev-moderate::before { background: var(--gs-mod); }
+    .gs-card.sev-low::before { background: var(--gs-low); }
+    .gs-card.status-superseded, .gs-card.status-decayed { opacity: 0.72; }
+    .gs-card.tier-unconfirmed { border-left: 3px solid var(--gs-warn-border); }
+    .gs-headline { font-size: 1.02rem; font-weight: 600; color: var(--gs-text);
+      margin: 0 0 4px; line-height: 1.35; }
+    .gs-meta { font-size: 0.8rem; color: var(--gs-muted); margin-bottom: 8px; }
+    .gs-decay-wrap { height: 6px; background: var(--gs-chip-bg); border-radius: 3px;
+      overflow: hidden; margin: 8px 0; }
+    .gs-decay-fill { height: 100%; background: var(--gs-accent); }
+    .gs-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .gs-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px;
+      background: var(--gs-chip-bg); color: var(--gs-text); border: 1px solid var(--gs-card-border); }
+    .gs-badge.nonprimary { background: var(--gs-np-bg); border-color: var(--gs-np-border); color: var(--gs-np-text); }
+    .gs-badge.scope { background: var(--gs-scope-bg); border-color: var(--gs-scope-border); color: var(--gs-scope-text); }
+    .gs-badge.coverage-dark { background: var(--gs-cov-bg); border-color: var(--gs-cov-border); color: var(--gs-cov-text); }
+    .gs-badge.unconfirmed { background: var(--gs-warn-bg); border-color: var(--gs-warn-border); color: var(--gs-warn-text); }
+    .gs-chip { display: inline-block; font-size: 0.74rem; padding: 2px 8px; border-radius: 6px;
+      background: var(--gs-chip-bg); color: var(--gs-text); margin: 0 4px 4px 0; }
+    .gs-gov-caution { background: var(--gs-warn-bg); border: 1px solid var(--gs-warn-border);
+      color: var(--gs-warn-text); font-size: 0.8rem; padding: 6px 10px; border-radius: 6px; margin: 8px 0; }
+    .gs-unconfirmed-warning { background: var(--gs-warn-bg); border: 1px solid var(--gs-warn-border);
+      color: var(--gs-warn-text); font-size: 0.8rem; font-weight: 600; padding: 6px 10px;
+      border-radius: 6px; margin: 8px 0; }
+    .gs-cleared-note { background: var(--gs-ok-bg); border: 1px solid var(--gs-ok-border);
+      color: var(--gs-ok-text); font-size: 0.8rem; font-weight: 600; padding: 6px 10px;
+      border-radius: 6px; margin: 8px 0; }
+    .gs-evidence { font-size: 0.82rem; color: var(--gs-text); border-left: 2px solid var(--gs-card-border);
+      padding-left: 10px; margin: 6px 0; }
+    .gs-locator { color: var(--gs-muted); font-size: 0.74rem; }
+    .gs-source-link { color: var(--gs-accent); font-size: 0.8rem; text-decoration: none; }
+    .gs-muted-text { margin: 6px 0 0; color: var(--gs-muted); font-size: 0.82rem; }
+    .gs-foot { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--gs-card-border);
+      color: var(--gs-muted); font-size: 0.76rem; }
+  </style>
+</head>
+<body>
+  <div class="gs-digest">
+    <header class="gs-digest-head">
+      <div class="gs-brand">GRIDSIGNALS</div>
+      <h1 class="gs-h1">Account signal digest</h1>
+      <p class="gs-asof">Generated at {{ generated_at }} (UTC). Point-in-time snapshot — not a live feed.</p>
+      <p class="gs-framing">
+        Evidence-first: every card links back to its source (R4.1). Scores are a
+        buy-likelihood heuristic, <strong>not validated sales lift</strong> — treat
+        cards as sourced leads to qualify, not forecasts.
+      </p>
+    </header>
+
+    {% macro card(c) %}
+    <article class="{{ c.card_class }}">
+      <div class="gs-headline">{{ c.headline }}</div>
+      <div class="gs-meta">{{ c.meta_bits | join(" · ") }}</div>
+      {% if c.unconfirmed_warning %}
+      <div class="gs-unconfirmed-warning" role="note">{{ c.unconfirmed_warning }}</div>
+      {% endif %}
+      {% if c.decay %}
+      <div class="gs-decay-wrap"><div class="gs-decay-fill" style="width:{{ c.decay.fill_pct }}%"></div></div>
+      <div class="gs-meta">strength {{ c.decay.strength }} of {{ c.decay.ceiling }} fresh ceiling</div>
+      {% endif %}
+      {% if c.breakdown %}
+      <div class="gs-meta" title="base strength × time decay × account fit × scope fit">{{ c.breakdown }}</div>
+      {% endif %}
+      {% if c.badges %}
+      <div class="gs-badges">
+        {% for b in c.badges %}<span class="{{ b.cls }}"{% if b.title %} title="{{ b.title }}"{% endif %}>{{ b.text }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      {% for chip in c.chips %}
+      <span class="gs-chip">{{ chip.text }}</span>
+      {% if chip.gov_caution %}<div class="gs-gov-caution">{{ chip.gov_caution }}</div>{% endif %}
+      {% endfor %}
+      {% if c.evidence %}
+      <div class="gs-evidence-block">
+        {% for ev in c.evidence %}
+        <div class="gs-evidence">{{ ev.text }}<div class="gs-locator">{{ ev.locator }}</div></div>
+        {% endfor %}
+        {% if c.source_url %}<a class="gs-source-link" href="{{ c.source_url }}" target="_blank" rel="noopener">Source</a>{% endif %}
+      </div>
+      {% endif %}
+      {% if c.incident_cleared_note %}
+      <div class="gs-cleared-note" role="note">{{ c.incident_cleared_note }}</div>
+      {% endif %}
+      {% if c.outreach %}
+      <div class="gs-evidence"><b>Outreach draft</b><br>{{ c.outreach }}</div>
+      {% elif c.outreach_withheld %}
+      <div class="gs-muted-text">Outreach withheld — verification-first: not cleared for customer-facing use.</div>
+      {% endif %}
+    </article>
+    {% endmacro %}
+
+    {% if not has_content %}
+    <div class="gs-empty">
+      No active signals today. GridSignals is low-volume by design (R6.6) — it
+      surfaces only sourced, scored events, so a quiet digest means no qualifying
+      activity, not a broken pipeline.
+    </div>
+    {% else %}
+
+    <h2 class="gs-section-title">Top accounts</h2>
+    <p class="gs-section-sub">Highest-scoring account-scoped signals, most likely to warrant outreach.</p>
+    {% if account_cards %}
+      {% for c in account_cards %}{{ card(c) }}{% endfor %}
+    {% else %}
+      <div class="gs-empty">No account-scoped signals in this window.</div>
+    {% endif %}
+
+    <div class="gs-divider">Sector &amp; regulatory</div>
+
+    <h2 class="gs-section-title">Sector</h2>
+    <p class="gs-section-sub">Peer / subsector activity — context, not account-specific leads.</p>
+    {% if sector_cards %}
+      {% for c in sector_cards %}{{ card(c) }}{% endfor %}
+    {% else %}
+      <div class="gs-empty">No sector-scoped signals in this window.</div>
+    {% endif %}
+
+    <h2 class="gs-section-title">Regulatory</h2>
+    <p class="gs-section-sub">Regulatory-calendar signals (R8.4).</p>
+    {% if regulatory_cards %}
+      {% for c in regulatory_cards %}{{ card(c) }}{% endfor %}
+    {% else %}
+      <div class="gs-empty">No regulatory-calendar signals in this window.</div>
+    {% endif %}
+
+    {% endif %}
+
+    <footer class="gs-foot">
+      GridSignals digest · generated {{ generated_at }} (UTC) · sources cited per card (R4.1) ·
+      scores are a buy-likelihood heuristic, not validated sales lift.
+    </footer>
+  </div>
+</body>
+</html>

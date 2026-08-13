@@ -43,6 +43,14 @@ jobs:
           assert n>0, ('signals', n);
           print('OK:', n, 'signals')"
 
+      - name: Assert the digest was baked (runs last in the pipeline, R8.8)
+        run: >
+          docker exec gs python -c "import glob, os;
+          d=os.path.join(os.path.dirname(os.environ['GRIDSIGNALS_DB']), 'digests');
+          f=glob.glob(os.path.join(d, 'digest-2*.html'));
+          assert f, ('no digest baked', d);
+          print('OK: digest', f[-1])"
+
       - name: Container logs on failure
         if: failure()
         run: docker logs gs || true

@@ -1,6 +1,7 @@
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/digests/
 __pycache__/
 *.pyc
 .env
