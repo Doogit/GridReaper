@@ -43,3 +43,7 @@ app.include_router(card.router)
 def healthz():
     """Liveness probe. Returns 200 'ok'."""
     return "ok"
+
+
+from app.ui_web.routes import explore
+app.include_router(explore.router)

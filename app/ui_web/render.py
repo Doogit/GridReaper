@@ -20,6 +20,7 @@ from hashlib import sha256
 from urllib.parse import urlsplit
 
 from app.classify.runner import INCIDENT_TIERS
+from app.ui_web import us_geometry
 
 
 # Score bands for the severity strip (R8.1); mirrors components.SEVERITY_BANDS.
@@ -918,3 +919,210 @@ def regulatory_records(items):
             "source_url": safe_source_url(item["url"]),
         })
     return views
+
+
+# -- Explore: Trigger Analytics + evidence-safe Watchlist Map (R8.5, R4.1) ----
+#
+# Two view shapers for the Explore page. Analytics reshapes data's three sliced
+# counts into template-ready table dicts; the map builds a self-contained inline
+# <svg> (baked US-states geometry from us_geometry + KTD5 projection).
+#
+# TRUST INVARIANTS carried to the DOM:
+#   * R4.1: every analytics row keeps its dimension identity (trigger/scope/tier
+#     key + label) so a count is inspectable back to the same sourced signals the
+#     cards render — it is a count of sourced rows, never a bare number.
+#   * R8.5 evidence gate: the map draws a facility <circle> ONLY for a point the
+#     reader already gated (>=0.85). This shaper never re-derives a point; it
+#     renders exactly what data.explore_facility_points returned. AK/HI/offshore
+#     points that project outside the continental bounds are omitted (never
+#     mis-placed on a wrong state), via us_geometry.project_or_none.
+#   * Volume != confidence (D5): the choropleth uses a FIXED density scale with a
+#     palette DELIBERATELY DISTINCT from the evidence-tier / scope badge palette
+#     (the "gs-map-d0..d4" classes below, styled apart in app.css), so a dense
+#     state is never misread as a high-confidence one.
+#   * R6.6: empty input -> the base geography still renders with an honest
+#     "no facility-level evidence yet" note, never a broken/blank surface.
+#
+# The <svg> string is emitted with manual html.escape on every interpolated
+# value (state names, entity names, counts) because the template renders it with
+# |safe — the escaping that Jinja does elsewhere is done here by hand instead,
+# in exactly one place, so upstream text can never break out of an attribute or
+# a <title>.
+
+from html import escape as _esc
+
+# Fixed choropleth density buckets (upper-bound inclusive; the last is open).
+# Deliberately coarse and fixed so the shade means the same thing on every load
+# and is not a per-request relative scale. Class names map to app.css swatches
+# that are a distinct hue ramp from the badge palette (D5).
+_MAP_DENSITY_BUCKETS = ((0, "gs-map-d0"), (2, "gs-map-d1"), (6, "gs-map-d2"),
+                        (14, "gs-map-d3"))
+_MAP_DENSITY_TOP = "gs-map-d4"
+# Human labels for the fixed scale legend (parallel to the buckets above).
+MAP_DENSITY_LEGEND = ("0", "1–2", "3–6", "7–14", "15+")
+
+
+def map_density_class(count):
+    """Map a per-state signal count to its FIXED-scale choropleth class (D5).
+    A count of 0 reads the base 'gs-map-d0' shade (an empty state, not a broken
+    one). The scale is absolute, not relative to the busiest state, so the same
+    count always reads the same shade."""
+    n = count or 0
+    for upper, cls in _MAP_DENSITY_BUCKETS:
+        if n <= upper:
+            return cls
+    return _MAP_DENSITY_TOP
+
+
+def explore_analytics_view(counts):
+    """Reshape data.explore_analytics_counts into template-ready tables (R8.5,
+    R4.1). Returns a list of {'label','dimension','rows':[{key,label,count}]}
+    tables, one per dimension that has any rows; each row keeps its dimension
+    identity so the count is inspectable back to its sourced signals. Empty
+    dimensions drop out; a wholly-empty store yields an empty list (the route /
+    template then shows the tab's honest empty-state copy, R6.6)."""
+    dimensions = (
+        ("trigger", "Trigger"),
+        ("scope", "Signal scope"),
+        ("incident_tier", "Incident tier"),
+    )
+    tables = []
+    for key, label in dimensions:
+        rows = counts.get(key) or []
+        if not rows:
+            continue
+        tables.append({
+            "dimension": key,
+            "label": label,
+            "rows": [{"key": r["key"], "label": r["label"] or r["key"],
+                      "count": r["count"]} for r in rows],
+        })
+    return tables
+
+
+def _state_density(state_rows):
+    """Sum per-state signal density from data.explore_state_density rows by
+    projecting each gated facility to its state. Returns {usps: total_count}.
+    A facility that projects outside the continental bounds is skipped (its
+    density is not attributed to any state — AK/HI limitation, documented).
+    The same owner is counted at most once per state, so multiple facilities for
+    one entity in Texas do not multiply that entity's signal volume."""
+    # Precompute state path bounding boxes once so we can attribute a projected
+    # point to the state whose bbox contains it (point-in-bbox, matching the
+    # spike's regression method — the paths are simple enough that bbox is a
+    # sufficient, cheap containment test at this scale).
+    density = {}
+    seen_owner_states = set()
+    for r in state_rows:
+        xy = us_geometry.project_or_none(r["longitude"], r["latitude"])
+        if xy is None:
+            continue
+        usps = _state_for_point(*xy)
+        if usps is None:
+            continue
+        owner_state = (usps, r.get("entity_id"))
+        if owner_state in seen_owner_states:
+            continue
+        seen_owner_states.add(owner_state)
+        density[usps] = density.get(usps, 0) + (r["signal_count"] or 0)
+    return density
+
+
+# State path bounding boxes, computed once from the baked geometry. Used to
+# attribute a projected facility point to a state for the choropleth density.
+def _is_float(tok):
+    try:
+        float(tok)
+        return True
+    except ValueError:
+        return False
+
+
+def _bbox_of_path(d):
+    """Bounding box (x0, y0, x1, y1) of an SVG path d-string. The d-string is a
+    stream of ``M``/``L``/``Z`` commands with ``x y`` coordinate pairs; the
+    numeric tokens alternate x, y, x, y, so even-index numbers are xs and
+    odd-index are ys. Returns None for a path with no coordinates."""
+    nums = [float(t) for t in d.replace(",", " ").split() if _is_float(t)]
+    xs, ys = nums[0::2], nums[1::2]
+    if not xs or not ys:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+_STATE_BBOXES = tuple(
+    (usps, _bbox_of_path(d))
+    for usps, _name, d in us_geometry.STATE_PATHS
+    if _bbox_of_path(d) is not None)
+
+
+def _state_for_point(x, y):
+    """The USPS code of the smallest state bbox containing (x, y), or None.
+    Smallest-bbox-wins so an eastern-seaboard point in overlapping bboxes is
+    attributed to the tightest (usually correct) state."""
+    best = None
+    best_area = None
+    for usps, (x0, y0, x1, y1) in _STATE_BBOXES:
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            area = (x1 - x0) * (y1 - y0)
+            if best_area is None or area < best_area:
+                best, best_area = usps, area
+    return best
+
+
+def explore_map_svg(facility_points, state_rows):
+    """Build the self-contained inline Watchlist Map <svg> (R8.5, R6.6, KTD5).
+
+    ``facility_points`` = data.explore_facility_points (already >=0.85 gated —
+    this shaper renders exactly those, gating nothing itself). ``state_rows`` =
+    data.explore_state_density (for the choropleth). Returns
+    {'svg': <markup>, 'has_facilities': bool, 'empty_note': str|None}. Every
+    state <path> and facility <circle> carries a native SVG <title> (zero-JS,
+    CSP-safe) with its identity + count / subsector / entity. A facility outside
+    the continental bounds (AK/HI/offshore) is omitted, never mis-projected.
+    Empty facility input still renders the base geography plus an honest note.
+    """
+    density = _state_density(state_rows)
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="{us_geometry.VIEWBOX}" class="gs-map" role="img" '
+        f'aria-label="US watchlist map: signal density by state, gated '
+        f'facilities as points">']
+    # States, each shaded by its fixed-scale density and titled with its count.
+    for usps, name, d in us_geometry.STATE_PATHS:
+        count = density.get(usps, 0)
+        cls = map_density_class(count)
+        plural = "signal" if count == 1 else "signals"
+        title = f"{name}: {count} {plural}"
+        parts.append(
+            f'<path class="gs-map-state {cls}" data-state="{_esc(usps, True)}" '
+            f'd="{d}"><title>{_esc(title)}</title></path>')
+    # Gated facility points only. Project each; omit any that fall outside the
+    # continental bounds so an AK/HI/offshore facility never lands on a wrong
+    # state (KTD5 / us_geometry.project_or_none).
+    drawn = 0
+    for f in facility_points:
+        xy = us_geometry.project_or_none(f.get("longitude"), f.get("latitude"))
+        if xy is None:
+            continue
+        x, y = xy
+        entity = f.get("entity_name") or f.get("entity_id") or "(unlinked owner)"
+        subsector = f.get("subsector") or "unknown subsector"
+        fac_name = f.get("facility_name") or f.get("facility_id") or "facility"
+        title = f"{fac_name} — {entity} · {subsector}"
+        parts.append(
+            f'<circle class="gs-map-facility" cx="{x:.2f}" cy="{y:.2f}" '
+            f'r="4"><title>{_esc(title)}</title></circle>')
+        drawn += 1
+    parts.append("</svg>")
+    empty_note = None
+    if drawn == 0:
+        # R6.6: honest low-evidence state — the base geography still renders, but
+        # we say plainly there is no facility-level evidence to plot yet, rather
+        # than implying an empty map means "no activity".
+        empty_note = ("No facility-level evidence yet — only facilities with a "
+                      "high-confidence owner match (≥0.85) are plotted, and none "
+                      "qualify today. The state shading above reflects signal "
+                      "volume, not facility coverage.")
+    return {"svg": "".join(parts), "has_facilities": drawn > 0,
+            "empty_note": empty_note}

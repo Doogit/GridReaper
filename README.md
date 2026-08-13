@@ -88,7 +88,7 @@ pip install -r requirements.txt   # UI packages only; pipeline/data code stays s
 python -m app.db.load_seeds       # create data/gridsignals.db + config tables
 python -m app.licensing           # normalize license facts + play candidates
 python -m unittest discover -s tests   # hermetic tests, no network
-uvicorn app.ui_web.app:app --reload    # launch the web UI: Signal Feed / Review Queue / Account 360 / Precision / Re-tiers / Regulatory / Admin
+uvicorn app.ui_web.app:app --reload    # launch the web UI: Signal Feed / Review Queue / Account 360 / Precision / Re-tiers / Regulatory / Digest / Admin / Explore
 ```
 
 This creates `data/gridsignals.db` (gitignored) and populates the config layer from `seeds/`. All commands are idempotent and safe to re-run. A fresh clone has no event data yet, so the feed reads "low-volume by design" until you build a backfill (below).
@@ -172,7 +172,7 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
 | Stage-2 incident classification — framework evidence-tiering/outreach gating (R10.5/R7.12) + SEC 8-K Item 1.05 own/peer classifier + ransomware.live unconfirmed early-warning classifier with operator-only verification-first UI (R8.6 separate precision) + company-statement press-release classifier + security-press RSS own/peer classifier (per-source tier: The Record corroborated, BleepingComputer leak-adjacent down-tiered to unconfirmed) | Implemented (combos next; regulator incident notices fold into existing FERC/NERC enforcement) |
 | License-play snapshots + gov-cloud gating | Implemented |
-| FastAPI + HTMX + Tailwind UI (multi-page dark theme; signal feed, review queue, account 360, precision, recent re-tiers, regulatory, admin) | Implemented (replaced Streamlit at R8.9 cutover) |
+| FastAPI + HTMX + Tailwind UI (multi-page dark theme; signal feed, review queue, account 360, precision, recent re-tiers, regulatory, digest, explore analytics + watchlist map, admin) | Implemented (replaced Streamlit at R8.9 cutover) |
 | Regulatory Monitor page (read-only view of non-graduated regulatory chatter) | Implemented |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | Implemented |
 | Admin / Config (weight + half-life tuning, source registry with add/enable/disable/guarded-remove, license-fact editor + add, staleness, config audit trail, watchlist entity manager + alias/collision editor + reset/remove) + incident evidence-tier re-tier editor on incident cards (audited `incident_tier_edits` trail) | Implemented |

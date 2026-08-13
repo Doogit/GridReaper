@@ -417,5 +417,118 @@ class TestWrites(unittest.TestCase):
         self.assertEqual(rq["disposition"], "rejected")
 
 
+class TestExploreData(unittest.TestCase):
+    """Explore reads (U8, R8.5, R4.1): analytics counts, evidence-gated facility
+    points, and the state-density rollup. The 0.85 owner-confidence gate MUST
+    live in the reader — an under-evidenced facility can never be returned."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+        # Two facilities on the same TX-owning entity: one gated (0.9, kept),
+        # one below the floor (0.5, must never be returned). Austin, TX coords.
+        self.conn.execute(
+            "INSERT INTO facility_assets (facility_id, source_id, "
+            " facility_name, latitude, longitude, capacity_mw, "
+            " owner_operator_entity_id, facility_owner_confidence) VALUES "
+            "('F_GOOD','sp_ok','Austin Plant', 30.3, -97.7, 500, "
+            " 'E_ACME', 0.9)")
+        self.conn.execute(
+            "INSERT INTO facility_assets (facility_id, source_id, "
+            " facility_name, latitude, longitude, capacity_mw, "
+            " owner_operator_entity_id, facility_owner_confidence) VALUES "
+            "('F_WEAK','sp_ok','Guessed Plant', 31.0, -98.0, 200, "
+            " 'E_ACME', 0.5)")
+        # An incident signal so the incident-tier slice is non-empty.
+        self.conn.execute(
+            "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+            " signal_scope, trigger_id, event_date, headline, evidence_snippet, "
+            " source_url, confidence, evidence_quality, "
+            " incident_evidence_level, customer_facing_allowed, score, status) "
+            "VALUES ('S_INC','re_acc','E_ACME','account','t_lead', ?, "
+            "'Acme breach disclosed','ev','http://src',0.9,'IR',"
+            "'confirmed',1,3.0,'active')", (days_ago_date(4),))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_analytics_counts_match_seeded_signals(self):
+        counts = data.explore_analytics_counts(self.conn)
+        # active signals: 3 account t_lead + S_INC (t_lead) + S_SEC + S_REG (t_reg);
+        # S_DEAD is decayed and excluded.
+        by_trigger = {r["key"]: r["count"] for r in counts["trigger"]}
+        self.assertEqual(by_trigger["t_lead"], 4)   # 3 account + 1 incident
+        self.assertEqual(by_trigger["t_reg"], 2)    # sector + regulatory
+        by_scope = {r["key"]: r["count"] for r in counts["scope"]}
+        self.assertEqual(by_scope["account"], 4)
+        self.assertEqual(by_scope["sector"], 1)
+        self.assertEqual(by_scope["regulatory_calendar"], 1)
+        # Only the incident signal carries a tier.
+        by_tier = {r["key"]: r["count"] for r in counts["incident_tier"]}
+        self.assertEqual(by_tier, {"confirmed": 1})
+
+    def test_analytics_excludes_decayed_by_default(self):
+        by_trigger = {r["key"]: r["count"]
+                      for r in data.explore_analytics_counts(self.conn)["trigger"]}
+        # S_DEAD (decayed) would push t_lead to 5 if it leaked in.
+        self.assertEqual(by_trigger["t_lead"], 4)
+
+    def test_facility_gate_returns_only_high_confidence(self):
+        points = data.explore_facility_points(self.conn)
+        ids = {p["facility_id"] for p in points}
+        self.assertIn("F_GOOD", ids)          # 0.9 -> kept
+        self.assertNotIn("F_WEAK", ids)        # 0.5 -> gated out in the reader
+        good = next(p for p in points if p["facility_id"] == "F_GOOD")
+        self.assertEqual(good["entity_name"], "Acme Energy")
+        self.assertEqual(good["subsector"], "iou_electric")
+
+    def test_facility_gate_boundary_exactly_085(self):
+        # A facility at exactly the floor (0.85) is admitted (>= gate).
+        self.conn.execute(
+            "INSERT INTO facility_assets (facility_id, latitude, longitude, "
+            " owner_operator_entity_id, facility_owner_confidence) VALUES "
+            "('F_EDGE', 30.0, -96.0, 'E_ACME', 0.85)")
+        self.conn.commit()
+        ids = {p["facility_id"] for p in data.explore_facility_points(self.conn)}
+        self.assertIn("F_EDGE", ids)
+
+    def test_facility_null_confidence_excluded(self):
+        self.conn.execute(
+            "INSERT INTO facility_assets (facility_id, latitude, longitude, "
+            " owner_operator_entity_id) VALUES ('F_NULL', 30.0, -96.0, 'E_ACME')")
+        self.conn.commit()
+        ids = {p["facility_id"] for p in data.explore_facility_points(self.conn)}
+        self.assertNotIn("F_NULL", ids)
+
+    def test_facility_without_owner_excluded(self):
+        self.conn.execute(
+            "INSERT INTO facility_assets (facility_id, latitude, longitude, "
+            " facility_owner_confidence) VALUES ('F_NO_OWNER', 30.0, -96.0, 0.95)")
+        self.conn.commit()
+        point_ids = {p["facility_id"] for p in data.explore_facility_points(self.conn)}
+        density_ids = {r["facility_id"] for r in data.explore_state_density(self.conn)}
+        self.assertNotIn("F_NO_OWNER", point_ids)
+        self.assertNotIn("F_NO_OWNER", density_ids)
+
+    def test_state_density_carries_owner_signal_count(self):
+        rows = data.explore_state_density(self.conn)
+        # Only the gated facility appears; its owner E_ACME has 3 active signals
+        # (S_ACC1, S_ACC2, and S_INC — S_ACC3 is E_SUB, S_DEAD is decayed).
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["entity_id"], "E_ACME")
+        self.assertEqual(rows[0]["signal_count"], 3)
+
+    def test_empty_store_reads_zero_not_fabricated(self):
+        empty = sqlite3.connect(":memory:")
+        empty.row_factory = sqlite3.Row
+        empty.execute("PRAGMA foreign_keys=ON")
+        apply_migrations(empty)
+        counts = data.explore_analytics_counts(empty)
+        self.assertEqual(counts, {"trigger": [], "scope": [], "incident_tier": []})
+        self.assertEqual(data.explore_facility_points(empty), [])
+        self.assertEqual(data.explore_state_density(empty), [])
+        empty.close()
+
+
 if __name__ == "__main__":
     unittest.main()
