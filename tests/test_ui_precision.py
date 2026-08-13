@@ -251,6 +251,31 @@ def seed_populated(conn):
         "26, 51, 0.12, '')", (iso(NOW), iso(NOW)))
 
 
+def seed_gated_source(conn):
+    """One source (sp_edgar) that WOULD be demoted by base G2 (low precision,
+    n>=20) but is GATED OFF by R9.11: 30 account signals, 4 useful / 26
+    not_useful (13% precision < 40%), each judged 'pass' (judge positive) so the
+    26 not_useful humans DISAGREE with the judge -> 87% disagreement over 30
+    comparable (>20%, >= floor). g2_gated must withhold the demote recommendation
+    on BOTH surfaces. sp_ferc is left with no rated feedback (n/a control)."""
+    _schema(conn)
+    for i in range(30):
+        sid = f"S_G{i:02d}"
+        conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id, event_date, url) "
+            "VALUES (?, 'sp_edgar', ?, 'http://edgar/x')",
+            (f"reg_{i:02d}", days_ago_date(20)))
+        _signal(conn, sid, "E_ACME", "account", "leadership_change",
+                f"reg_{i:02d}", incident="confirmed")
+        # judge always 'pass' (judge positive)
+        _audit(conn, sid, "entity_match", "pass")
+        if i < 4:
+            _feedback(conn, sid, "useful")               # agrees with judge
+        else:
+            _feedback(conn, sid, "not_useful",
+                      reason="weak_evidence")             # disagrees with judge
+
+
 class PrecisionRouteCase(unittest.TestCase):
     def setUp(self):
         self.path = None
@@ -307,6 +332,45 @@ class TestPopulatedState(PrecisionRouteCase):
         self.assertIn("audit run history", text)
         # framing caption still present
         self.assertIn("NOT validated sales lift", text)
+
+
+class TestR911Gate(PrecisionRouteCase):
+    def _get_both(self, seed):
+        self.path = make_db(seed)
+        os.environ["GRIDSIGNALS_DB"] = self.path
+        prec = self.client.get("/precision")
+        adm = self.client.get("/admin")
+        self.assertEqual(prec.status_code, 200)
+        self.assertEqual(adm.status_code, 200)
+        return prec.text, adm.text
+
+    def test_gated_source_withheld_on_both_surfaces(self):
+        # The two-surface regression test: a source that base G2 would demote is
+        # withheld by R9.11, and Precision + Admin must AGREE on that.
+        prec, adm = self._get_both(seed_gated_source)
+        # Precision page flags the source as withheld and NOT DEMOTE?
+        self.assertIn("judge verdicts withheld from demotion", prec)
+        self.assertIn("gate: withheld", prec)
+        # Admin source table shows the SAME gated recommendation for sp_edgar:
+        # the withheld note is present and it is not recommending demotion.
+        self.assertIn("judge verdicts withheld from demotion", adm)
+        self.assertIn("gate: withheld", adm)
+        # The gate suppressed the recommendation, so the base demote guidance
+        # ("consider store-only/disable") must NOT appear on either surface —
+        # the source is not being recommended for demotion anymore.
+        self.assertNotIn("consider store-only/disable", prec)
+        self.assertNotIn("consider store-only/disable", adm)
+
+    def test_precision_spotcheck_tracker_present(self):
+        text, _ = self._get_both(seed_gated_source)
+        self.assertIn("audit spot-check coverage", text)
+        self.assertIn("Spot-check:", text)
+
+    def test_no_rated_feedback_reads_na(self):
+        # sp_ferc has no rated feedback in this seed -> its G2 gate is absent
+        # (no g2 cell) on Admin, i.e. the honest "no rated feedback" copy.
+        _, adm = self._get_both(seed_gated_source)
+        self.assertIn("no rated feedback for this source yet", adm)
 
 
 if __name__ == "__main__":

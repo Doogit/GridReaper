@@ -34,6 +34,7 @@ mirror ``app.audit.schema`` (CHECKS / RESULTS); only entity_match +
 evidence_support feed auto-accuracy, and only "pass"/"fail" are scored
 ("unclear"/"not_applicable" are excluded from the denominator).
 """
+import math
 from datetime import datetime, timezone
 
 # Verdicts counted as a human positive vs negative (R9.1).
@@ -321,6 +322,233 @@ def judge_human_disagreement(audit_rows, feedback_rows):
         "disagree": disagree,
         "disagreement_rate": _rate(disagree, comparable),
         "items": items,
+    }
+
+
+# R9.11 per-source disagreement gate + spot-check coverage.
+#
+# KTD3 (Kevin-ratified reconciliation): R9.11 literally says high judge-human
+# disagreement "blocks judge verdicts from demotion." In THIS build the only
+# demotion signal (G2 ``demote_recommended``) is computed from the HUMAN
+# useful-rate, and the judge is report-only (R9.8) — there are no judge verdicts
+# flowing into demotion. So we treat >20% per-source disagreement as a trigger to
+# SUPPRESS the G2 demote recommendation for that source and flag it, rather than
+# gating a (non-existent) judge->demotion path. Report-only (R9.5); the judge
+# never gates or tunes (R9.8).
+DISAGREEMENT_GATE_THRESHOLD = 0.20   # ">20% disagreement" per R9.11
+# Sample floor for TRUSTING a per-source disagreement rate enough to act on it.
+# Below it, the rate is too noisy to justify withholding a human-derived
+# recommendation, so the gate reads "below floor" — never a fabricated block. We
+# reuse the G2 sample floor so the gate demands the same evidence bar that the
+# recommendation it overrides does.
+DISAGREEMENT_MIN_COMPARABLE = G2_MIN_N
+
+# R9.11 spot-check coverage: >= 10 human-reviewed audit verdicts per month, OR
+# 20% of that month's audited signals, whichever is smaller — with a hard floor
+# of 5.
+SPOTCHECK_ABS_TARGET = 10
+SPOTCHECK_FRACTION = 0.20
+SPOTCHECK_MIN_FLOOR = 5
+
+GATE_WITHHELD_NOTE = (
+    "judge verdicts withheld from demotion — revise rubric")
+
+
+def _month_key(value):
+    """UTC calendar-month key ``(year, month)`` for an ISO ts, or None.
+
+    WINDOW DECISION (Open Q#2, default): the spot-check window is a UTC CALENDAR
+    month. Kevin may prefer a trailing-30-day window instead — flagged, not
+    silently chosen.
+    """
+    dt = _parse_ts(value)
+    if dt is None:
+        return None
+    return (dt.year, dt.month)
+
+
+def judge_human_disagreement_by_source(audit_rows, feedback_rows):
+    """Per-source judge-vs-human disagreement (R9.11, KTD3).
+
+    Same comparability rule as ``judge_human_disagreement`` (a signal is
+    comparable only when it has BOTH a judge side — an entity_match/
+    evidence_support verdict — AND a human side), but bucketed by the signal's
+    ``source_id``. Source is resolved from the AUDIT row's ``source_id`` (which
+    ``app.ui.data.precision_audit_rows`` fills via the raw_events JOIN), exactly
+    as the other per-source metrics do; a signal with no audit source falls in
+    the ``None`` bucket.
+
+    Trust invariant: every rate ships with its ``comparable`` count, and a rate
+    over an empty denominator is ``None`` — the caller reads ``comparable`` to
+    tell dormant (0 comparable) from active. Returns
+    ``{source_id: {"comparable", "agree", "disagree", "disagreement_rate"}}``
+    sorted by source_id.
+    """
+    judged, judge_neg = _judge_negative_signals(audit_rows)
+
+    # signal_id -> source_id (from the audit side, where the join lives). Last
+    # non-None wins, so a signal's source is stable across its audit rows.
+    source_of = {}
+    for row in audit_rows:
+        if row.get("check_type") not in AUTO_ACCURACY_CHECKS:
+            continue
+        sid = row.get("signal_id")
+        src = row.get("source_id")
+        if src is not None or sid not in source_of:
+            source_of[sid] = src
+
+    human = {}  # signal_id -> "positive"/"negative"; last verdict wins
+    for row in feedback_rows:
+        verdict = row.get("verdict")
+        if verdict in POSITIVE_VERDICTS:
+            human[row.get("signal_id")] = "positive"
+        elif verdict in NEGATIVE_VERDICTS:
+            human[row.get("signal_id")] = "negative"
+
+    buckets = {}
+    for sid in judged & human.keys():
+        source = source_of.get(sid)
+        b = buckets.setdefault(source, {"comparable": 0, "agree": 0,
+                                        "disagree": 0})
+        judge_verdict = "negative" if sid in judge_neg else "positive"
+        b["comparable"] += 1
+        if judge_verdict == human[sid]:
+            b["agree"] += 1
+        else:
+            b["disagree"] += 1
+
+    out = {}
+    for source in sorted(buckets, key=lambda s: (s is None, s)):
+        b = buckets[source]
+        out[source] = {
+            "comparable": b["comparable"],
+            "agree": b["agree"],
+            "disagree": b["disagree"],
+            "disagreement_rate": _rate(b["disagree"], b["comparable"]),
+        }
+    return out
+
+
+def g2_gated(g2_result, disagreement_by_source,
+             threshold=DISAGREEMENT_GATE_THRESHOLD,
+             min_comparable=DISAGREEMENT_MIN_COMPARABLE):
+    """Overlay G2 with the R9.11 disagreement gate (KTD3) — PURE, non-mutating.
+
+    Returns a NEW dict (the input ``g2_result`` is never mutated) shaped exactly
+    like ``g2_status`` output but with two added keys per source:
+      * ``gate``: one of ``"withheld"`` (disagreement > threshold with enough
+        comparable evidence — demotion suppressed), ``"below_floor"`` (comparable
+        < ``min_comparable``, so the rate is too noisy to trust — NO block),
+        ``"na"`` (no comparable judge∩human signals for this source), or ``"ok"``
+        (enough comparable evidence, disagreement at/below threshold).
+      * ``gate_note``: human copy for the gate state (``None`` when ``ok``).
+    Plus ``disagreement_rate`` and ``comparable`` (always carried, so the UI can
+    show the rate WITH its n — a reachability readout).
+
+    When ``gate == "withheld"`` the copy of that source's cell has
+    ``demote_recommended`` forced to False and its ``note`` prefixed with the
+    withheld flag — so a noisy judge can veto a human-derived recommendation, but
+    only when the disagreement rate is itself well-evidenced (comparable >=
+    floor). Below the floor the gate NEVER blocks: honest low-n, not a fabricated
+    gate.
+
+    ``disagreement_by_source`` is the output of
+    ``judge_human_disagreement_by_source``.
+    """
+    out = {}
+    for sid, cell in g2_result.items():
+        new_cell = dict(cell)
+        dis = disagreement_by_source.get(sid)
+        comparable = dis["comparable"] if dis else 0
+        rate = dis["disagreement_rate"] if dis else None
+        new_cell["comparable"] = comparable
+        new_cell["disagreement_rate"] = rate
+        if comparable == 0 or rate is None:
+            new_cell["gate"] = "na"
+            new_cell["gate_note"] = (
+                "no comparable judge∩human signals for this source — "
+                "gate n/a")
+        elif comparable < min_comparable:
+            new_cell["gate"] = "below_floor"
+            new_cell["gate_note"] = (
+                f"disagreement {rate:.0%} over only {comparable} comparable "
+                f"(<{min_comparable}) — too few to gate; not blocking")
+        elif rate > threshold and cell["demote_recommended"]:
+            new_cell["gate"] = "withheld"
+            new_cell["gate_note"] = (
+                f"{GATE_WITHHELD_NOTE} (disagreement {rate:.0%}>"
+                f"{threshold:.0%} over {comparable} comparable)")
+            new_cell["demote_recommended"] = False
+            # Replace (not prefix) the base note so no residual "consider
+            # store-only/disable" demote guidance survives the suppression.
+            new_cell["note"] = (
+                f"{GATE_WITHHELD_NOTE} — base precision was "
+                f"{cell['precision']:.0%}<{G2_THRESHOLD:.0%} over n={cell['n']}, "
+                "but judge-human disagreement is too high to act on it")
+        else:
+            new_cell["gate"] = "ok"
+            new_cell["gate_note"] = None
+        out[sid] = new_cell
+    return out
+
+
+def spotcheck_coverage(audit_rows, feedback_rows, now=None,
+                       abs_target=SPOTCHECK_ABS_TARGET,
+                       fraction=SPOTCHECK_FRACTION,
+                       floor=SPOTCHECK_MIN_FLOOR):
+    """Monthly audit spot-check coverage (R9.11) — report-only.
+
+    R9.11 asks for >= 10 human-reviewed audit verdicts per month OR 20% of that
+    month's audited signals (whichever is smaller), with a hard floor of 5.
+
+    STORAGE (Open Q#2 decision): reuses the EXISTING human-feedback-on-audited-
+    signal rows — no new table. A "spot-check" is a human rating a signal that
+    was audited; that act is already a ``feedback`` row on an audited signal.
+      * ``reviewed`` (numerator) = distinct signals AUDITED this month
+        (entity_match/evidence_support verdict, ``audit.ts`` in the month) that
+        also have a human ``feedback`` verdict in the same month — i.e. a human
+        reviewed the audited signal inside the reported window.
+      * ``audited`` (denominator for the 20% branch) = distinct signals audited
+        this month (distinct audited signal_id — named source table: the ``audit``
+        rows / ``precision_audit_rows``).
+    The month is the calendar month containing ``now`` (UTC; see ``_month_key``).
+
+    ``target`` = ``max(floor, min(abs_target, ceil(fraction * audited)))``.
+    ``met`` is True when ``reviewed >= target``. Trust invariant: ``reviewed``,
+    ``audited`` and ``target`` all ship together. Returns
+    ``{"reviewed", "audited", "target", "met", "window"}`` where ``window`` is
+    the ``"YYYY-MM"`` UTC month.
+    """
+    now_dt = _now(now)
+    month = (now_dt.year, now_dt.month)
+
+    audited = set()
+    for row in audit_rows:
+        if row.get("check_type") not in AUTO_ACCURACY_CHECKS:
+            continue
+        if _month_key(row.get("ts")) != month:
+            continue
+        audited.add(row.get("signal_id"))
+
+    human_signals = set()
+    for row in feedback_rows:
+        verdict = row.get("verdict")
+        if verdict not in POSITIVE_VERDICTS and verdict not in NEGATIVE_VERDICTS:
+            continue
+        if _month_key(row.get("ts")) != month:
+            continue
+        human_signals.add(row.get("signal_id"))
+
+    reviewed = len(audited & human_signals)
+    audited_n = len(audited)
+    frac_target = math.ceil(fraction * audited_n) if audited_n else 0
+    target = max(floor, min(abs_target, frac_target)) if audited_n else floor
+    return {
+        "reviewed": reviewed,
+        "audited": audited_n,
+        "target": target,
+        "met": reviewed >= target,
+        "window": f"{month[0]:04d}-{month[1]:02d}",
     }
 
 

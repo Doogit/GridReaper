@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.ui_web.routes import (account, admin, card, explore, feed, incident,
+from app.ui_web.routes import (account, admin, card, digest, feed, incident,
                                precision, regulatory, retiers, review)
 from app.ui_web.templating import STATIC_DIR
 
@@ -35,7 +35,7 @@ app.include_router(regulatory.router)
 app.include_router(admin.router)
 app.include_router(incident.router)
 app.include_router(retiers.router)
-app.include_router(explore.router)
+app.include_router(digest.router)
 app.include_router(card.router)
 
 
@@ -43,3 +43,7 @@ app.include_router(card.router)
 def healthz():
     """Liveness probe. Returns 200 'ok'."""
     return "ok"
+
+
+from app.ui_web.routes import explore
+app.include_router(explore.router)
