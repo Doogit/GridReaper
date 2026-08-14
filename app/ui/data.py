@@ -740,24 +740,59 @@ def update_tuning(conn, weight_edits=(), half_life_edits=(), reason="",
     config_audit row (per-field provenance is the R3.3 contract; a batch is a
     UI convenience, not a coarser audit unit). Raises ValueError. Returns
     {'changed': n, 'submitted': n}."""
-    weight_edits = list(weight_edits)
-    half_life_edits = list(half_life_edits)
-    for _, _, value in weight_edits:
-        _validate_weight_value(value)
-    for _, value in half_life_edits:
-        _validate_half_life_value(value)
+    parsed_weights = []
+    parsed_half_lives = []
+    for weight_kind, key, value in weight_edits:
+        new = _validate_weight_value(value)
+        row = conn.execute(
+            "SELECT weight FROM scoring_weights "
+            "WHERE weight_kind = ? AND key = ?",
+            (weight_kind, key)).fetchone()
+        if row is None:
+            raise ValueError(f"unknown scoring weight {(weight_kind, key)!r}")
+        parsed_weights.append((weight_kind, key, row["weight"], new))
+    for trigger_id, value in half_life_edits:
+        new = _validate_half_life_value(value)
+        row = conn.execute(
+            "SELECT decay_half_life_days FROM triggers WHERE trigger_id = ?",
+            (trigger_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"unknown trigger {trigger_id!r}")
+        parsed_half_lives.append((trigger_id, row["decay_half_life_days"], new))
 
     changed = 0
-    for weight_kind, key, value in weight_edits:
-        if update_weight(conn, weight_kind, key, value, reason=reason,
-                         editor=editor, now=now)["changed"]:
-            changed += 1
-    for trigger_id, value in half_life_edits:
-        if update_half_life(conn, trigger_id, value, reason=reason,
-                            editor=editor, now=now)["changed"]:
-            changed += 1
+    for weight_kind, key, old, new in parsed_weights:
+        if new == old:
+            continue
+        conn.execute(
+            "UPDATE scoring_weights SET weight = ? "
+            "WHERE weight_kind = ? AND key = ?",
+            (new, weight_kind, key))
+        _record_config_edit(
+            conn, "scoring_weights",
+            json.dumps({"weight_kind": weight_kind, "key": key},
+                       sort_keys=True),
+            "weight", old, new, editor, reason, now)
+        changed += 1
+    for trigger_id, old, new in parsed_half_lives:
+        if new == old:
+            continue
+        conn.execute(
+            "UPDATE triggers SET decay_half_life_days = ? "
+            "WHERE trigger_id = ?",
+            (new, trigger_id))
+        _record_config_edit(conn, "triggers", trigger_id,
+                            "decay_half_life_days", old, new, editor,
+                            reason, now)
+        changed += 1
+    if changed:
+        try:
+            rescore(conn, now=now)
+        except Exception:
+            conn.rollback()
+            raise
     return {"changed": changed,
-            "submitted": len(weight_edits) + len(half_life_edits)}
+            "submitted": len(parsed_weights) + len(parsed_half_lives)}
 
 
 def set_source_enabled(conn, source_id, enabled, reason="",

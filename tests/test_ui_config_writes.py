@@ -192,6 +192,55 @@ class TestRescoreFailureRollback(unittest.TestCase):
             "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
 
 
+class TestUpdateTuningBatch(unittest.TestCase):
+    def test_unknown_key_rejects_whole_batch_before_any_write(self):
+        conn = fixture_conn()
+        with self.assertRaises(ValueError):
+            data.update_tuning(
+                conn,
+                [("scope", "sector", 0.90), ("scope", "missing", 1.1)],
+                [("t_lead", 120)],
+                reason="batch",
+                now=NOW)
+
+        self.assertEqual(conn.execute(
+            "SELECT weight FROM scoring_weights WHERE weight_kind='scope' "
+            "AND key='sector'").fetchone()["weight"], 0.55)
+        self.assertEqual(conn.execute(
+            "SELECT decay_half_life_days FROM triggers WHERE trigger_id='t_lead'"
+            ).fetchone()["decay_half_life_days"], 90)
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+
+    def test_rescore_failure_rolls_back_whole_batch(self):
+        conn = fixture_conn()
+        original_rescore = data.rescore
+
+        def boom(conn, now=None):
+            raise RuntimeError("rescore failed")
+
+        data.rescore = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                data.update_tuning(
+                    conn,
+                    [("scope", "sector", 0.90)],
+                    [("t_lead", 120)],
+                    reason="batch",
+                    now=NOW)
+        finally:
+            data.rescore = original_rescore
+
+        self.assertEqual(conn.execute(
+            "SELECT weight FROM scoring_weights WHERE weight_kind='scope' "
+            "AND key='sector'").fetchone()["weight"], 0.55)
+        self.assertEqual(conn.execute(
+            "SELECT decay_half_life_days FROM triggers WHERE trigger_id='t_lead'"
+            ).fetchone()["decay_half_life_days"], 90)
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) c FROM config_audit").fetchone()["c"], 0)
+
+
 class TestUpdateHalfLife(unittest.TestCase):
     def test_happy(self):
         conn = fixture_conn()
