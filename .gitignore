@@ -3,9 +3,13 @@ data/*.db-wal
 data/*.db-shm
 data/digests/
 data/backups/
+data/.ingest.lock
 __pycache__/
 *.pyc
 .env
+
+# Local git worktrees
+.worktrees/
 
 # Internal planning/spec docs — not for the public repo
 docs/
