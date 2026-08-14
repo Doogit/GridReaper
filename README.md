@@ -204,4 +204,4 @@ Later stages add combo scoring, GDELT-based classification, and a hiring/macro-t
 
 ## Notes
 
-Single-operator demo/portfolio project — no auth, no multi-tenancy. The only recurring cost is the Claude API accuracy-audit judge, held down by a per-run budget ceiling (config; a normal run is well under a cent) and gated on the `ANTHROPIC_API_KEY` env var — with no key it simply skips. There are no paid data sources.
+Single-operator demo/portfolio project — no auth, no multi-tenancy. The only recurring cost is the Claude API accuracy-audit judge, held down by a per-run budget ceiling (config; a measured 5-signal run cost $0.016, so the 20-signal default run is roughly $0.06, against a $0.50 ceiling) and gated on the `ANTHROPIC_API_KEY` env var — with no key it simply skips. There are no paid data sources.
