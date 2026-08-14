@@ -123,7 +123,7 @@ class AdminTestBase(unittest.TestCase):
 class TestRender(AdminTestBase):
     def test_all_sections_render(self):
         dom = self.page()
-        for section in ("Scoring weights", "Decay half-lives", "Source registry",
+        for section in ("Scoring &amp; decay", "Source registry",
                         "Watchlist entities", "License facts",
                         "Recent config changes"):
             self.assertIn(section, dom)
@@ -137,8 +137,7 @@ class TestRender(AdminTestBase):
 
 class TestWeightSave(AdminTestBase):
     def test_save_edits_audits_and_rescores(self):
-        resp = self.client.post("/admin/weight", data={
-            "weight_kind": "scope", "key": "sector", "weight": "0.90"})
+        resp = self.client.post("/admin/tuning", data={"w:scope:sector": "0.90"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.scalar(
             "SELECT weight FROM scoring_weights WHERE key='sector'"), 0.90)
@@ -153,16 +152,14 @@ class TestWeightSave(AdminTestBase):
 
 class TestNoOpSave(AdminTestBase):
     def test_saving_unchanged_weight_writes_nothing_and_shows_info(self):
-        resp = self.client.post("/admin/weight", data={
-            "weight_kind": "scope", "key": "sector", "weight": "0.55"})
+        resp = self.client.post("/admin/tuning", data={"w:scope:sector": "0.55"})
         self.assertIn("No change", resp.text)
         self.assertEqual(self.audit_count(), 0)
 
 
 class TestHalfLifeSave(AdminTestBase):
     def test_save_edits_and_audits(self):
-        resp = self.client.post("/admin/half-life", data={
-            "trigger_id": "t_lead", "half_life": "150"})
+        resp = self.client.post("/admin/tuning", data={"h:t_lead": "150"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.scalar(
             "SELECT decay_half_life_days FROM triggers WHERE trigger_id='t_lead'"),
@@ -185,8 +182,8 @@ class TestSourceToggle(AdminTestBase):
 class TestLockHeld(AdminTestBase):
     def test_save_under_held_lock_warns_and_writes_nothing(self):
         with ingest_lock():
-            resp = self.client.post("/admin/weight", data={
-                "weight_kind": "scope", "key": "sector", "weight": "0.90"})
+            resp = self.client.post("/admin/tuning",
+                                    data={"w:scope:sector": "0.90"})
         self.assertIn("Ingestion in progress", resp.text)
         self.assertEqual(self.scalar(
             "SELECT weight FROM scoring_weights WHERE key='sector'"), 0.55)
@@ -373,14 +370,151 @@ class TestScoringConfigNeverDeletes(AdminTestBase):
             "SELECT 1 FROM source_policies WHERE source_id='edgar'"))
 
     def test_weight_and_halflife_rows_persist(self):
-        self.client.post("/admin/weight", data={
-            "weight_kind": "scope", "key": "sector", "weight": "0.90"})
-        self.client.post("/admin/half-life", data={
-            "trigger_id": "t_lead", "half_life": "150"})
+        self.client.post("/admin/tuning", data={"w:scope:sector": "0.90"})
+        self.client.post("/admin/tuning", data={"h:t_lead": "150"})
         self.assertIsNotNone(self.scalar(
             "SELECT 1 FROM scoring_weights WHERE key='sector'"))
         self.assertIsNotNone(self.scalar(
             "SELECT 1 FROM triggers WHERE trigger_id='t_lead'"))
+
+
+class TestTuningPartition(AdminTestBase):
+    """The live/inert split is MEASURED against active signals by replaying the
+    scorer's own key selection — not a hand-ordered list of "important" knobs."""
+
+    def add_weight(self, kind, key, weight=1.0):
+        conn = self.conn()
+        conn.execute("INSERT INTO scoring_weights (weight_kind, key, weight) "
+                     "VALUES (?, ?, ?)", (kind, key, weight))
+        conn.commit()
+        conn.close()
+
+    def tiers(self):
+        """(live_html, inert_html) — the inert tier is the collapsed <details>."""
+        dom = self.page()
+        head = dom.index('class="gs-admin-tier-head"')
+        split = dom.index('class="gs-admin-inert"')
+        end = dom.index('class="gs-admin-savebar"')
+        return dom[head:split], dom[split:end]
+
+    def test_consulted_weight_is_live(self):
+        # s1 is an active sector card, so scope_fit reads ('scope','sector').
+        live, inert = self.tiers()
+        self.assertIn("w:scope:sector", live)
+        self.assertNotIn("w:scope:sector", inert)
+
+    def test_unconsulted_weight_is_inert_but_still_editable(self):
+        self.add_weight("subsector", "iou_electric", 1.1)
+        live, inert = self.tiers()
+        self.assertNotIn("w:subsector:iou_electric", live)
+        self.assertIn("w:subsector:iou_electric", inert)
+        # Inert does not mean hidden: it is still a real, submittable input.
+        self.assertIn('name="w:subsector:iou_electric"', inert)
+
+    def test_only_active_signals_count(self):
+        """rescore() touches status='active' rows only, so a knob consulted
+        exclusively by a decayed card is inert — the split has to agree."""
+        conn = self.conn()
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, name, base_strength, "
+            " decay_half_life_days) VALUES ('t_dead','Dead trigger',3,60)")
+        conn.execute(
+            "INSERT INTO signals (signal_id, signal_scope, trigger_id, "
+            " event_date, headline, status, score) VALUES "
+            "('s_dead','sector','t_dead','2026-08-01','Old','decayed',0.01)")
+        conn.commit()
+        conn.close()
+        live, inert = self.tiers()
+        self.assertIn("h:t_dead", inert)
+        self.assertNotIn("h:t_dead", live)
+
+    def test_regulatory_calendar_promotes_applicability_default(self):
+        """An entity-less regulatory_calendar card consults
+        applicability['default'] and NOT richness — the transcription of
+        account_fit has to reproduce that, or the wrong knob surfaces."""
+        self.add_weight("applicability", "default", 0.9)
+        self.add_weight("richness", "high", 1.0)
+        conn = self.conn()
+        conn.execute(
+            "INSERT INTO signals (signal_id, signal_scope, trigger_id, "
+            " event_date, headline, status, score) VALUES "
+            "('s_reg','regulatory_calendar','t_lead','2026-08-01','Reg',"
+            "'active',1.0)")
+        conn.commit()
+        conn.close()
+        live, inert = self.tiers()
+        self.assertIn("w:applicability:default", live)
+        self.assertIn("w:richness:high", inert)
+
+    def test_counts_are_reported_with_the_active_denominator(self):
+        self.add_weight("subsector", "iou_electric", 1.1)
+        dom = self.page()
+        self.assertIn("2 of 3", dom)                  # live of total
+        self.assertIn("Inert on the current corpus (1)", dom)
+        self.assertIn("2 active card(s)", dom)
+
+
+class TestTuningBatchSave(AdminTestBase):
+    """One save per tier: several knobs move together under one lock, with one
+    reason, but each applied change still writes its OWN config_audit row."""
+
+    def test_batch_saves_weight_and_half_life_together(self):
+        resp = self.client.post("/admin/tuning", data={
+            "w:scope:sector": "0.90", "h:t_lead": "150",
+            "reason": "tuning pass"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.scalar(
+            "SELECT weight FROM scoring_weights WHERE key='sector'"), 0.90)
+        self.assertEqual(self.scalar(
+            "SELECT decay_half_life_days FROM triggers WHERE trigger_id='t_lead'"),
+            150)
+        self.assertEqual(self.audit_count(), 2)
+        self.assertEqual(self.audit_count("reason='tuning pass'"), 2)
+        self.assertIn("Saved 2 of 2", resp.text)
+
+    def test_only_changed_values_are_audited(self):
+        """Submitting the whole tier must not record button presses — an
+        unchanged field is skipped exactly as the single-row save was."""
+        resp = self.client.post("/admin/tuning", data={
+            "w:scope:sector": "0.55", "h:t_lead": "150"})   # weight unchanged
+        self.assertEqual(self.audit_count(), 1)
+        self.assertEqual(self.scalar("SELECT field FROM config_audit"),
+                         "decay_half_life_days")
+        self.assertIn("Saved 1 of 2", resp.text)
+
+    def test_all_unchanged_writes_nothing(self):
+        resp = self.client.post("/admin/tuning", data={
+            "w:scope:sector": "0.55", "h:t_lead": "90"})
+        self.assertIn("No change", resp.text)
+        self.assertEqual(self.audit_count(), 0)
+
+    def test_one_bad_value_rejects_the_whole_batch(self):
+        """Pre-validation is what makes a batch safe: a bad entry anywhere
+        writes NOTHING, rather than half-applying the tier."""
+        resp = self.client.post("/admin/tuning", data={
+            "w:scope:sector": "0.90", "h:t_lead": "-5"})
+        self.assertEqual(self.scalar(
+            "SELECT weight FROM scoring_weights WHERE key='sector'"), 0.55)
+        self.assertEqual(self.scalar(
+            "SELECT decay_half_life_days FROM triggers WHERE trigger_id='t_lead'"),
+            90)
+        self.assertEqual(self.audit_count(), 0)
+        self.assertIn("half-life must be", resp.text)
+
+    def test_held_lock_writes_nothing(self):
+        with ingest_lock():
+            resp = self.client.post("/admin/tuning", data={
+                "w:scope:sector": "0.90", "h:t_lead": "150"})
+        self.assertIn("Ingestion in progress", resp.text)
+        self.assertEqual(self.scalar(
+            "SELECT weight FROM scoring_weights WHERE key='sector'"), 0.55)
+        self.assertEqual(self.audit_count(), 0)
+
+    def test_unparseable_field_names_are_ignored(self):
+        resp = self.client.post("/admin/tuning", data={
+            "w:malformed": "1.0", "bogus": "x", "w:scope:sector": "0.90"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.audit_count(), 1)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,9 @@
     {{ stale_window_days }} days (R10.7). Editing a fact below never moves an
     existing card — cards read frozen play snapshots (R7.6); the edit is picked up
     by the next snapshot. There is no fact-delete (edit / add / supersede only).</p>
+  <label class="gs-admin-label">Reason (optional)
+    <input type="text" id="reason-facts" name="reason" value=""
+           title="Attached to the audit-trail entry of the next fact edit."></label>
   {% if not stale_facts %}
     <div class="gs-empty">0 stale facts — every license fact was verified within
       the window.</div>
@@ -18,7 +21,7 @@
   <details class="gs-admin-add">
     <summary>Add a license fact</summary>
     <form class="gs-admin-form" hx-post="/admin/fact/add" hx-target="#admin-facts"
-          hx-swap="outerHTML" hx-include="[name='reason']">
+          hx-swap="outerHTML" hx-include="#reason-facts">
       <label class="gs-admin-label">Fact ID <input type="text" name="fact_id"></label>
       <label class="gs-admin-label">Product ID (optional)
         <input type="text" name="product_id"></label>
@@ -55,7 +58,7 @@
     (cards keep their frozen snapshot; the next snapshot picks up the edit).</p>
   {% for fld in fact_fields %}
   <form class="gs-admin-row" hx-post="/admin/fact/edit" hx-target="#admin-facts"
-        hx-swap="outerHTML" hx-include="[name='reason']">
+        hx-swap="outerHTML" hx-include="#reason-facts">
     <input type="hidden" name="fact_id" value="{{ fact.fact_id }}">
     <input type="hidden" name="field" value="{{ fld.name }}">
     <label class="gs-admin-label">{{ fld.name }}

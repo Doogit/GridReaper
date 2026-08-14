@@ -551,6 +551,53 @@ _SOURCE_REFERENCING = (
 )
 
 
+def tuning_usage(conn):
+    """Which tuning knobs actually reach a live card (R8.7 prioritization).
+
+    Admin renders 30 scoring weights and one half-life per trigger, but a knob
+    only changes a score if scoring CONSULTS it, and rescore() reads
+    status='active' signals only. This replays app.scoring.account_fit's key
+    selection over exactly the rows rescore() would score, so the answer is a
+    transcription of the scorer rather than a guess about it. A knob no active
+    signal consults is inert: editing it is a no-op until such a signal exists
+    (scoring._weight already falls back to a neutral 1.0 for absent keys).
+
+    Read-only. Returns {'weights': {(weight_kind, key), ...},
+    'triggers': {trigger_id, ...}} - the keys that are LIVE.
+    """
+    rows = conn.execute(
+        "SELECT s.signal_scope, s.entity_id, s.trigger_id, "
+        " e.subsector, e.richness, e.coverage_flag "
+        "FROM signals s "
+        "LEFT JOIN watchlist_entities e ON e.entity_id = s.entity_id "
+        "WHERE s.status = 'active'").fetchall()
+    applicability_keys = {
+        r["key"] for r in conn.execute(
+            "SELECT key FROM scoring_weights WHERE weight_kind = 'applicability'")}
+    weights, triggers = set(), set()
+    for r in rows:
+        scope = r["signal_scope"]
+        triggers.add(r["trigger_id"])
+        weights.add(("scope", scope))
+        if not r["entity_id"]:
+            # Entity-less: sector is neutral 1.0 (no account to fit); only a
+            # regulatory_calendar card consults applicability['default'].
+            if scope == "regulatory_calendar":
+                weights.add(("applicability", "default"))
+            continue
+        weights.add(("subsector", r["subsector"]))
+        weights.add(("coverage", r["coverage_flag"]))
+        if scope == "regulatory_calendar":
+            # Subsector-keyed applicability REPLACES richness, falling back to
+            # 'default' exactly as account_fit does.
+            sub = r["subsector"] or ""
+            weights.add(("applicability",
+                         sub if sub in applicability_keys else "default"))
+        else:
+            weights.add(("richness", r["richness"]))
+    return {"weights": weights, "triggers": triggers}
+
+
 @contextlib.contextmanager
 def config_write_conn(db_path=None, lock_path=None):
     """Fresh connection holding the single-writer ingestion lock (R3.2) for one
@@ -582,6 +629,37 @@ def _record_config_edit(conn, table_name, pk, field, old_value, new_value,
          editor, reason or "", _utcnow_iso(now)))
 
 
+def _validate_weight_value(new_weight):
+    """Parse/validate a scoring weight without touching the DB, so a batch save
+    can reject a bad entry before it writes anything. Raises ValueError."""
+    try:
+        w = float(new_weight)
+    except (TypeError, ValueError):
+        raise ValueError(f"weight must be a number, got {new_weight!r}")
+    if not math.isfinite(w) or w < 0:
+        raise ValueError(f"weight must be a finite value >= 0, got {w}")
+    return w
+
+
+def _validate_half_life_value(new_half_life_days):
+    """Parse/validate a decay half-life without touching the DB (see
+    _validate_weight_value). Raises ValueError."""
+    if isinstance(new_half_life_days, bool):
+        raise ValueError("half-life must be a whole number of days")
+    try:
+        f = float(new_half_life_days)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"half-life must be a whole number of days, got {new_half_life_days!r}")
+    hl = int(f)
+    if hl != f:
+        raise ValueError(
+            f"half-life must be a whole number of days, got {new_half_life_days!r}")
+    if hl < 1:
+        raise ValueError(f"half-life must be >= 1 day, got {hl}")
+    return hl
+
+
 def update_weight(conn, weight_kind, key, new_weight, reason="",
                   editor=CONFIG_EDITOR, now=None):
     """Set a scoring_weights.weight (R7.5 tunable), audit it, and rescore active
@@ -591,12 +669,7 @@ def update_weight(conn, weight_kind, key, new_weight, reason="",
     A no-op edit (new == old) writes nothing and does not rescore. Raises
     ValueError (the page surfaces it, never writes). Returns
     {old, new, changed[, scored, decayed]} (rescore stats only when changed)."""
-    try:
-        w = float(new_weight)
-    except (TypeError, ValueError):
-        raise ValueError(f"weight must be a number, got {new_weight!r}")
-    if not math.isfinite(w) or w < 0:
-        raise ValueError(f"weight must be a finite value >= 0, got {w}")
+    w = _validate_weight_value(new_weight)
     row = conn.execute(
         "SELECT weight FROM scoring_weights WHERE weight_kind = ? AND key = ?",
         (weight_kind, key)).fetchone()
@@ -629,19 +702,7 @@ def update_half_life(conn, trigger_id, new_half_life_days, reason="",
     divisor; a fractional or non-positive value is rejected, not truncated) and
     that the trigger exists. A no-op edit writes nothing and does not rescore.
     Raises ValueError. Returns {old, new, changed[, scored, decayed]}."""
-    if isinstance(new_half_life_days, bool):
-        raise ValueError("half-life must be a whole number of days")
-    try:
-        f = float(new_half_life_days)
-    except (TypeError, ValueError):
-        raise ValueError(
-            f"half-life must be a whole number of days, got {new_half_life_days!r}")
-    hl = int(f)
-    if hl != f:
-        raise ValueError(
-            f"half-life must be a whole number of days, got {new_half_life_days!r}")
-    if hl < 1:
-        raise ValueError(f"half-life must be >= 1 day, got {hl}")
+    hl = _validate_half_life_value(new_half_life_days)
     row = conn.execute(
         "SELECT decay_half_life_days FROM triggers WHERE trigger_id = ?",
         (trigger_id,)).fetchone()
@@ -661,6 +722,42 @@ def update_half_life(conn, trigger_id, new_half_life_days, reason="",
         conn.rollback()
         raise
     return {"old": old, "new": hl, "changed": True, **summary}
+
+
+def update_tuning(conn, weight_edits=(), half_life_edits=(), reason="",
+                  editor=CONFIG_EDITOR, now=None):
+    """Apply a batch of weight (R7.5) and half-life (R7.4) edits as ONE Admin
+    save, so a tier of related knobs is tuned and audited together instead of
+    one button-press per row.
+
+    ``weight_edits``: iterable of (weight_kind, key, new_weight).
+    ``half_life_edits``: iterable of (trigger_id, new_half_life_days).
+
+    EVERY value is validated before ANYTHING is written, so one bad entry
+    rejects the whole batch rather than half-applying it. Unchanged values are
+    skipped by the underlying helpers, so the audit trail still records real
+    changes and not button presses. Each applied edit writes its own
+    config_audit row (per-field provenance is the R3.3 contract; a batch is a
+    UI convenience, not a coarser audit unit). Raises ValueError. Returns
+    {'changed': n, 'submitted': n}."""
+    weight_edits = list(weight_edits)
+    half_life_edits = list(half_life_edits)
+    for _, _, value in weight_edits:
+        _validate_weight_value(value)
+    for _, value in half_life_edits:
+        _validate_half_life_value(value)
+
+    changed = 0
+    for weight_kind, key, value in weight_edits:
+        if update_weight(conn, weight_kind, key, value, reason=reason,
+                         editor=editor, now=now)["changed"]:
+            changed += 1
+    for trigger_id, value in half_life_edits:
+        if update_half_life(conn, trigger_id, value, reason=reason,
+                            editor=editor, now=now)["changed"]:
+            changed += 1
+    return {"changed": changed,
+            "submitted": len(weight_edits) + len(half_life_edits)}
 
 
 def set_source_enabled(conn, source_id, enabled, reason="",

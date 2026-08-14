@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse
 
 from app.ui import data
 from app.ui_web import render
-from app.ui_web.deps import config_write, get_db
+from app.ui_web.deps import config_write, get_db, get_db_async
 from app.ui_web.templating import templates
 
 router = APIRouter()
@@ -40,30 +40,37 @@ STALE_FACT_WINDOW_DAYS = 180
 
 # -- section context builders (read from DB each render) ---------------------
 
-def _weights_ctx(conn):
-    rows = conn.execute(
-        "SELECT weight_kind, key, weight FROM scoring_weights "
-        "ORDER BY weight_kind, key").fetchall()
-    by_kind = []
-    seen = {}
-    for r in rows:
-        group = seen.get(r["weight_kind"])
-        if group is None:
-            group = {"kind": r["weight_kind"],
-                     "label": render.weight_kind_label(r["weight_kind"]),
-                     "rows": []}
-            seen[r["weight_kind"]] = group
-            by_kind.append(group)
-        group["rows"].append({"kind": r["weight_kind"], "key": r["key"],
-                              "weight": float(r["weight"])})
-    return {"weight_groups": by_kind}
-
-
-def _half_lives_ctx(conn):
-    rows = conn.execute(
-        "SELECT trigger_id, name, decay_half_life_days FROM triggers "
-        "ORDER BY trigger_id").fetchall()
-    return {"triggers": [dict(r) for r in rows]}
+def _tuning_ctx(conn):
+    """Scoring weights + decay half-lives, partitioned by whether they reach a
+    live card (R8.7). data.tuning_usage() replays the scorer's own key
+    selection over active signals, so "live" is measured, not hand-ordered: the
+    day an account-scoped signal lands, its subsector/richness/coverage knobs
+    promote themselves out of the inert tier with no code change."""
+    usage = data.tuning_usage(conn)
+    live, inert = [], []
+    for r in conn.execute("SELECT weight_kind, key, weight FROM scoring_weights "
+                          "ORDER BY weight_kind, key"):
+        row = {"kind": r["weight_kind"], "key": r["key"],
+               "label": (f"{render.weight_kind_label(r['weight_kind'])}"
+                         f" · {r['key']}"),
+               "field": f"w:{r['weight_kind']}:{r['key']}",
+               "value": f"{float(r['weight']):.2f}", "step": "0.05",
+               "min": "0", "max": ""}
+        (live if (r["weight_kind"], r["key"]) in usage["weights"]
+         else inert).append(row)
+    for r in conn.execute("SELECT trigger_id, name, decay_half_life_days "
+                          "FROM triggers ORDER BY trigger_id"):
+        row = {"kind": "half_life", "key": r["trigger_id"],
+               "label": f"{r['name']} — half-life days",
+               "field": f"h:{r['trigger_id']}",
+               "value": str(r["decay_half_life_days"]), "step": "1",
+               "min": "1", "max": "3650"}
+        (live if r["trigger_id"] in usage["triggers"] else inert).append(row)
+    return {"tuning_live": live, "tuning_inert": inert,
+            "tuning_live_n": len(live), "tuning_inert_n": len(inert),
+            "active_card_n": conn.execute(
+                "SELECT COUNT(*) FROM signals WHERE status = 'active'"
+            ).fetchone()[0]}
 
 
 def _sources_ctx(conn):
@@ -166,8 +173,7 @@ def _audit_ctx(conn):
 def _page_context(conn, reason=""):
     ctx = {"reason": reason, "stale_window_days": STALE_FACT_WINDOW_DAYS,
            "nav_active": "admin", "flash": None}
-    ctx.update(_weights_ctx(conn))
-    ctx.update(_half_lives_ctx(conn))
+    ctx.update(_tuning_ctx(conn))
     ctx.update(_sources_ctx(conn))
     ctx.update(_entities_ctx(conn))
     ctx.update(_facts_ctx(conn))
@@ -215,25 +221,28 @@ def admin(request: Request, conn=Depends(get_db)):
 
 # -- scoring weights ---------------------------------------------------------
 
-@router.post("/admin/weight", response_class=HTMLResponse)
-def save_weight(request: Request, weight_kind: str = Form(...),
-                key: str = Form(...), weight: str = Form(...),
-                reason: str = Form(""), conn=Depends(get_db)):
-    flash = _run_write(data.update_weight, weight_kind, key, weight,
-                       reason=reason)
-    return _section(request, "_admin_weights.html", _weights_ctx(conn), flash)
+@router.post("/admin/tuning", response_class=HTMLResponse)
+async def save_tuning(request: Request, conn=Depends(get_db_async)):
+    """Save a whole tier of tuning knobs in one write (R7.4/R7.5).
 
-
-# -- decay half-lives --------------------------------------------------------
-
-@router.post("/admin/half-life", response_class=HTMLResponse)
-def save_half_life(request: Request, trigger_id: str = Form(...),
-                   half_life: str = Form(...), reason: str = Form(""),
-                   conn=Depends(get_db)):
-    flash = _run_write(data.update_half_life, trigger_id, half_life,
-                       reason=reason)
-    return _section(request, "_admin_half_lives.html", _half_lives_ctx(conn),
-                    flash)
+    Field names carry their own identity ("w:{weight_kind}:{key}",
+    "h:{trigger_id}") so one form can post any mix of weights and half-lives.
+    The reason rides in the same submission, so provenance is attached to the
+    save the operator is actually looking at. Unknown or malformed field names
+    are ignored rather than trusted — the form is generated from the DB, so a
+    name that does not parse did not come from this page."""
+    form = await request.form()
+    weight_edits, half_life_edits = [], []
+    for name, value in form.multi_items():
+        if name.startswith("w:"):
+            parts = name.split(":", 2)
+            if len(parts) == 3:
+                weight_edits.append((parts[1], parts[2], value))
+        elif name.startswith("h:"):
+            half_life_edits.append((name[2:], value))
+    flash = _run_write(data.update_tuning, weight_edits, half_life_edits,
+                       reason=form.get("reason", ""))
+    return _section(request, "_admin_tuning.html", _tuning_ctx(conn), flash)
 
 
 # -- source registry ---------------------------------------------------------

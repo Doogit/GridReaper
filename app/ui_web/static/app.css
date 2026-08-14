@@ -575,8 +575,27 @@ html { interpolate-size: allow-keywords; }  /* lets height:auto animate (details
 .gs-admin-h2 { margin: 0 0 4px; font-size: 1.05rem; font-weight: 620; color: var(--gs-text); }
 .gs-admin-section .gs-muted-text { margin-bottom: 10px; }
 
-.gs-admin-group { margin: 10px 0; }
-.gs-admin-group-head { font-weight: 600; margin: 8px 0 4px; color: var(--gs-text); }
+/* Tuning tier: knobs that reach a live card sit open; the inert majority and
+   the registries collapse. One save bar per tier, so the Save button no longer
+   trails each row (and no longer shifts with label width). */
+.gs-admin-tier-head { font-weight: 600; margin: 8px 0 6px; color: var(--gs-text); }
+.gs-admin-grid {
+  display: grid; gap: 10px 18px; margin: 8px 0 14px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+.gs-admin-inert { margin: 6px 0 12px; }
+.gs-admin-inert > summary { cursor: pointer; color: var(--gs-accent); font-size: 0.85rem; }
+.gs-admin-savebar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+  padding-top: 12px; border-top: 1px solid var(--gs-card-border);
+}
+.gs-admin-savebar .gs-admin-label { flex: 1 1 260px; }
+.gs-admin-drawer { margin: 10px 0; border-top: 1px solid var(--gs-card-border); padding-top: 10px; }
+.gs-admin-drawer > summary {
+  cursor: pointer; color: var(--gs-text); font-weight: 600; font-size: 0.95rem;
+}
+.gs-admin-drawer > summary::marker { color: var(--gs-muted); }
+.gs-admin-drawer .gs-admin-section { border-top: none; margin-top: 6px; padding-top: 6px; }
 
 .gs-admin-row, .gs-admin-form {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0;

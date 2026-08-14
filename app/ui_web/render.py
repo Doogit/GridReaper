@@ -634,6 +634,14 @@ def result_message(fn_name, result):
     """Operator-facing flash text for one config-write result (ported verbatim
     from the Streamlit page's _result_msg). ``fn_name`` is the data.py helper
     name; ``result`` is its return dict."""
+    if fn_name == "update_tuning":
+        # A batch reports a COUNT, not an old -> new pair: the operator saved a
+        # tier, and only the values they actually moved were written.
+        if not result["changed"]:
+            return (f"No change — all {result['submitted']} value(s) were "
+                    "already set.")
+        return (f"Saved {result['changed']} of {result['submitted']} value(s). "
+                "Active cards rescored.")
     if not result.get("changed", True):
         if fn_name == "set_source_enabled":
             return f"No change — source already {_enabled_label(result['new'])}."

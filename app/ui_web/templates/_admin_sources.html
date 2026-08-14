@@ -6,11 +6,14 @@
     falls below 40% over enough rated cards — a recommendation to REVIEW, never an
     auto-action. Seeded sources are disabled, never removed; only an operator-added,
     zero-reference source can be removed.</p>
+  <label class="gs-admin-label">Reason (optional)
+    <input type="text" id="reason-sources" name="reason" value=""
+           title="Attached to the audit-trail entry of the next source edit."></label>
 
   <details class="gs-admin-add">
     <summary>Add a source</summary>
     <form class="gs-admin-form" hx-post="/admin/source/add" hx-target="#admin-sources"
-          hx-swap="outerHTML" hx-include="[name='reason']">
+          hx-swap="outerHTML" hx-include="#reason-sources">
       <label class="gs-admin-label">Source ID
         <input type="text" name="source_id"></label>
       <label class="gs-admin-label">Name
@@ -44,7 +47,7 @@
         cards useful / not-useful to build a signal.</div>
       {% endif %}
       <form class="gs-admin-row" hx-post="/admin/source/enabled" hx-target="#admin-sources"
-            hx-swap="outerHTML" hx-include="[name='reason']">
+            hx-swap="outerHTML" hx-include="#reason-sources">
         <input type="hidden" name="source_id" value="{{ s.source_id }}">
         <label class="gs-admin-toggle">
           <input type="checkbox" name="enabled" value="true"
@@ -56,7 +59,7 @@
         <p class="gs-muted-text">Operator-added source. Nothing references it, so
           Remove will delete it.</p>
         <form class="gs-admin-row" hx-post="/admin/source/remove" hx-target="#admin-sources"
-              hx-swap="outerHTML" hx-include="[name='reason']">
+              hx-swap="outerHTML" hx-include="#reason-sources">
           <input type="hidden" name="source_id" value="{{ s.source_id }}">
           <label class="gs-admin-toggle">
             <input type="checkbox" name="confirm" value="true"> Confirm remove</label>

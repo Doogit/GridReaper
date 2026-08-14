@@ -1,0 +1,53 @@
+{% include "_admin_flash.html" %}
+<section id="admin-tuning" class="gs-admin-section">
+  <h2 class="gs-admin-h2">Scoring &amp; decay</h2>
+  <p class="gs-muted-text">Account-fit and scope-fit multipliers (R7.5) and
+    per-trigger decay half-lives in days (R7.4). Half-lives are prioritization
+    heuristics, not measurements. Saving re-runs scoring on active cards only —
+    decayed and dismissed cards keep their frozen score.</p>
+
+  <form class="gs-admin-tier" hx-post="/admin/tuning" hx-target="#admin-tuning"
+        hx-swap="outerHTML">
+    <div class="gs-admin-tier-head">Affects live cards now
+      <span class="gs-meta">{{ tuning_live_n }} of {{ tuning_live_n + tuning_inert_n }}
+        · measured against {{ active_card_n }} active card(s)</span></div>
+    {% if not tuning_live %}
+      <div class="gs-empty">No knob reaches a live card — there are no active
+        signals to score yet.</div>
+    {% else %}
+      <div class="gs-admin-grid">
+        {% for r in tuning_live %}
+        <label class="gs-admin-label">{{ r.label }}
+          <input class="gs-admin-num" type="number" name="{{ r.field }}"
+                 step="{{ r.step }}" min="{{ r.min }}"
+                 {% if r.max %}max="{{ r.max }}"{% endif %}
+                 value="{{ r.value }}"></label>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <details class="gs-admin-inert">
+      <summary>Inert on the current corpus ({{ tuning_inert_n }})</summary>
+      <p class="gs-muted-text">No active signal consults these, so editing one
+        changes no card today — scoring falls back to a neutral 1.0 for a key it
+        never reads. They are here, editable, and will move to the tier above on
+        their own as soon as a signal that uses them lands.</p>
+      <div class="gs-admin-grid">
+        {% for r in tuning_inert %}
+        <label class="gs-admin-label">{{ r.label }}
+          <input class="gs-admin-num" type="number" name="{{ r.field }}"
+                 step="{{ r.step }}" min="{{ r.min }}"
+                 {% if r.max %}max="{{ r.max }}"{% endif %}
+                 value="{{ r.value }}"></label>
+        {% endfor %}
+      </div>
+    </details>
+
+    <div class="gs-admin-savebar">
+      <label class="gs-admin-label">Reason (optional)
+        <input type="text" name="reason" value=""
+               title="Attached to the audit-trail entry for every value this save changes."></label>
+      <button type="submit" class="gs-btn">Save changes</button>
+    </div>
+  </form>
+</section>
