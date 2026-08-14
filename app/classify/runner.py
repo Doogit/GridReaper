@@ -27,6 +27,31 @@ in classified_events. A classifier exception on one event rolls back that
 event's writes and leaves it unprocessed for the next run; it never aborts
 the run.
 
+RETRACTION (R3.7). Insert-or-skip lets a re-run ADD what a corrected rule now
+emits, but until now nothing could take back what the OLD rule emitted: a
+stored signal could outlive the rule that minted it, so the store was not
+reproducible from raw events plus current rules. A run therefore reconciles
+in both directions. For the events it processed cleanly, any signal of its own
+that it no longer emits is flipped to ``status='retracted'``; a retracted
+signal the classifier emits again is restored to 'active'. This is what makes
+a parser_version bump self-correcting - see app/classify/ransomware.py 1.0 ->
+1.1, which invalidated 97 stored peer cards.
+
+  scope   Only raw_events this run processed WITHOUT error are eligible. An
+          errored event is rolled back before its classified_events row is
+          written and never reaches events_processed, so a classifier that
+          crashes retracts NOTHING - the failure mode that would otherwise
+          empty the store. A --limit'ed run likewise reconciles only what it
+          reached.
+  owner   Only signals belonging to THIS classifier, matched on the
+          ``signal_evidence.extraction_version`` prefix ("{name}/"). Necessary
+          because one source can feed several classifiers -
+          sec_edgar_submissions feeds both `incident` and `leadership` - and
+          retracting by raw_event alone would take the other one's cards down.
+  respect A 'dismissed' signal is never overwritten: that status is the
+          operator's own judgment, and a rule change does not get to restate
+          it. Every other status yields to retraction.
+
   incident_evidence_level  optional (R10.5): confirmed / corroborated /
                     unconfirmed_early_warning. When set, the candidate is an
                     incident: the framework stores the tier and derives
@@ -121,17 +146,20 @@ def _triggers_config(conn):
 
 def _process_candidate(conn, resolver, raw, cand, evidence_rank,
                        triggers_cfg, parser_version, counts):
-    """Resolve, roll up, and insert-or-skip one candidate. Returns 1 when
-    the candidate mapped to a signal (new or already existing), else 0."""
+    """Resolve, roll up, and insert-or-skip one candidate. Returns the
+    signal_id when the candidate mapped to a signal (new or already existing),
+    else None. The caller collects those ids: a signal this run did NOT emit is
+    what retraction acts on, so "emitted" must include an already-existing row,
+    not just a fresh insert."""
     trig = triggers_cfg.get(cand.get("trigger_id"))
     if trig is None or cand.get("signal_scope") not in trig["allowed_scopes"]:
         counts["dropped_scope"] += 1
-        return 0
+        return None
     evidence = [e for e in (cand.get("evidence") or [])
                 if (e.get("text") or "").strip()]
     if not evidence:
         counts["dropped_no_evidence"] += 1
-        return 0
+        return None
 
     confidence = float(cand.get("confidence") or 0.0)
     entity_id = None
@@ -141,7 +169,7 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
             hint = (cand.get("entity_name_hint") or "").strip()
             if not hint:
                 counts["dropped_no_entity"] += 1
-                return 0
+                return None
             context = " ".join(
                 [cand.get("headline") or ""] + [e["text"] for e in evidence])
             res = resolver.resolve(name=hint, context_text=context)
@@ -154,13 +182,13 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
                 # R6.2: below-threshold/ambiguous MUST NOT auto-fire
                 enqueue_review(conn, raw["raw_event_id"], res)
                 counts["review_enqueued"] += 1
-                return 0
+                return None
             else:
                 counts["dropped_no_entity"] += 1
-                return 0
+                return None
         elif not _active_entity_exists(conn, entity_id):
             counts["dropped_no_entity"] += 1
-            return 0
+            return None
         entity_id = top_level_entity(conn, entity_id)
 
     incident_level = cand.get("incident_evidence_level")
@@ -175,7 +203,7 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
     if conn.execute("SELECT 1 FROM signals WHERE signal_id = ?",
                     (signal_id,)).fetchone():
         counts["signals_existing"] += 1
-        return 1
+        return signal_id
 
     conn.execute(
         "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
@@ -196,7 +224,59 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
             (signal_id, raw["raw_event_id"], e["text"],
              e.get("locator", "") or "", evidence_rank, parser_version))
     counts["signals_new"] += 1
-    return 1
+    return signal_id
+
+
+def _classifier_prefix(parser_version):
+    """The "{name}/" owner prefix stored in signal_evidence.extraction_version.
+    Compared with substr(), not LIKE, because several classifier names contain
+    '_' - a LIKE wildcard - and 'incident_security_rss/%' would then match more
+    than itself."""
+    return parser_version.split("/", 1)[0] + "/"
+
+
+def _reconcile_retractions(conn, parser_version, processed_ids, emitted_ids):
+    """Reconcile stored signals against what this run actually emitted (R3.7).
+
+    Retracts a signal of this classifier's that the run no longer emits, and
+    restores one it emits again. Both directions matter: without the restore, a
+    signal retracted by one rule change would stay invisible forever even after
+    a later change re-supports it. Returns {'retracted': n, 'restored': n}.
+
+    Scoped to ``processed_ids`` (events this run classified WITHOUT error) so a
+    crashing classifier retracts nothing, and to this classifier's own signals
+    so a co-tenant classifier on the same source is untouched. A 'dismissed'
+    signal is left alone - that is the operator's judgment, not the rule's.
+    """
+    if not processed_ids:
+        return {"retracted": 0, "restored": 0}
+    prefix = _classifier_prefix(parser_version)
+    owned = conn.execute(
+        "SELECT DISTINCT s.signal_id, s.raw_event_id, s.status "
+        "FROM signals s "
+        "JOIN signal_evidence e ON e.signal_id = s.signal_id "
+        "WHERE substr(e.extraction_version, 1, ?) = ?",
+        (len(prefix), prefix)).fetchall()
+
+    retract, restore = [], []
+    for row in owned:
+        if row["raw_event_id"] not in processed_ids:
+            continue                      # not re-evaluated by this run
+        if row["signal_id"] in emitted_ids:
+            if row["status"] == "retracted":
+                restore.append(row["signal_id"])
+        elif row["status"] not in ("retracted", "dismissed"):
+            retract.append(row["signal_id"])
+
+    for signal_id in retract:
+        conn.execute("UPDATE signals SET status = 'retracted' "
+                     "WHERE signal_id = ?", (signal_id,))
+    for signal_id in restore:
+        # Back to 'active'; its stored score is stale until the next scoring
+        # pass, exactly as for any newly emitted signal.
+        conn.execute("UPDATE signals SET status = 'active' "
+                     "WHERE signal_id = ?", (signal_id,))
+    return {"retracted": len(retract), "restored": len(restore)}
 
 
 def run_classifier(conn, classifier_id, source_id, classify_fn,
@@ -229,8 +309,12 @@ def run_classifier(conn, classifier_id, source_id, classify_fn,
     counts = {"events_processed": 0, "events_errored": 0, "signals_new": 0,
               "signals_existing": 0, "review_enqueued": 0,
               "dropped_scope": 0, "dropped_no_evidence": 0,
-              "dropped_no_entity": 0}
+              "dropped_no_entity": 0, "signals_retracted": 0,
+              "signals_restored": 0}
     last_error = ""
+    # Retraction inputs: only cleanly-processed events, and every signal_id
+    # this run stands behind (freshly inserted OR already present).
+    processed_ids, emitted_ids = set(), set()
     for i, raw in enumerate(rows):
         if limit is not None and i >= limit:
             break
@@ -247,10 +331,14 @@ def run_classifier(conn, classifier_id, source_id, classify_fn,
                 (raw["raw_event_id"],)).fetchone()[0]
             classifier_queued_review = reviews_after_classify > reviews_before
             emitted = 0
+            event_emitted = []
             for cand in candidates:
-                emitted += _process_candidate(
+                signal_id = _process_candidate(
                     conn, resolver, raw, cand, evidence_rank, triggers_cfg,
                     parser_version, counts)
+                if signal_id:
+                    event_emitted.append(signal_id)
+                    emitted += 1
             if classifier_queued_review:
                 counts["review_enqueued"] += 1
             conn.execute(
@@ -271,8 +359,18 @@ def run_classifier(conn, classifier_id, source_id, classify_fn,
             last_error = f"{raw['raw_event_id']}: {type(exc).__name__}: {exc}"
             continue
         counts["events_processed"] += 1
+        # Recorded only past the except: an errored event is rolled back and
+        # must never make its signals eligible for retraction.
+        processed_ids.add(raw["raw_event_id"])
+        emitted_ids.update(event_emitted)
         if counts["events_processed"] % COMMIT_EVERY == 0:
             conn.commit()
+    conn.commit()
+
+    reconciled = _reconcile_retractions(
+        conn, parser_version, processed_ids, emitted_ids)
+    counts["signals_retracted"] = reconciled["retracted"]
+    counts["signals_restored"] = reconciled["restored"]
     conn.commit()
 
     counts.update({
@@ -315,6 +413,8 @@ def cli(classifier_id, sources, parser_version, description):
                         f"dropped_scope={s['dropped_scope']} "
                         f"dropped_no_evidence={s['dropped_no_evidence']} "
                         f"dropped_no_entity={s['dropped_no_entity']} "
+                        f"retracted={s['signals_retracted']} "
+                        f"restored={s['signals_restored']} "
                         f"errors={s['events_errored']}")
                 if s["last_error"]:
                     line += f" last_error={s['last_error']}"

@@ -329,5 +329,114 @@ class TestTriggerScopes(unittest.TestCase):
         conn.close()
 
 
+class TestRetraction(unittest.TestCase):
+    """R3.7: a corrected rule must be able to take back what the old rule
+    emitted, or the store stops being reproducible from raw + current rules."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def run_one(self, candidates_by_event, version="clf/1.0", **kwargs):
+        return run_classifier(
+            self.conn, "clf_test", SOURCE,
+            make_classifier(candidates_by_event), version, **kwargs)
+
+    def status(self, signal_id=f"t_lead:{SOURCE}:1:EA1"):
+        row = self.conn.execute(
+            "SELECT status FROM signals WHERE signal_id = ?",
+            (signal_id,)).fetchone()
+        return row["status"] if row else None
+
+    def test_rule_change_retracts_what_it_no_longer_emits(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        self.assertEqual(self.status(), "active")
+        # v1.1 of the same classifier declines to emit for that event.
+        s = self.run_one({}, version="clf/1.1")
+        self.assertEqual(s["signals_retracted"], 1)
+        self.assertEqual(self.status(), "retracted")
+
+    def test_re_emitting_restores_a_retracted_signal(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        self.run_one({}, version="clf/1.1")
+        self.assertEqual(self.status(), "retracted")
+        s = self.run_one({f"{SOURCE}:1": [account_candidate()]},
+                         version="clf/1.2")
+        self.assertEqual(s["signals_restored"], 1)
+        self.assertEqual(self.status(), "active")
+
+    def test_a_crashing_classifier_retracts_nothing(self):
+        """The failure mode that would otherwise empty the store: an errored
+        event is rolled back before bookkeeping, so it is never 'reprocessed'
+        and its signals stay put."""
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+
+        def boom(conn, raw):
+            raise RuntimeError("classifier exploded")
+
+        s = run_classifier(self.conn, "clf_test", SOURCE, boom, "clf/1.1")
+        self.assertEqual(s["events_errored"], 2)
+        self.assertEqual(s["events_processed"], 0)
+        self.assertEqual(s["signals_retracted"], 0)
+        self.assertEqual(self.status(), "active")
+
+    def test_a_co_tenant_classifier_on_the_same_source_is_untouched(self):
+        """sec_edgar_submissions feeds both `incident` and `leadership`.
+        Retracting by raw_event alone would take the other one's cards down."""
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        run_classifier(
+            self.conn, "other_clf", SOURCE,
+            make_classifier({f"{SOURCE}:1": [account_candidate(
+                trigger_id="t_reg", signal_scope="sector", entity_id=None,
+                headline="Sector item")]}),
+            "other/1.0")
+        other_id = f"t_reg:{SOURCE}:1:sector"
+        self.assertEqual(self.status(other_id), "active")
+        # The first classifier stops emitting; only ITS signal retracts.
+        s = self.run_one({}, version="clf/1.1")
+        self.assertEqual(s["signals_retracted"], 1)
+        self.assertEqual(self.status(), "retracted")
+        self.assertEqual(self.status(other_id), "active")
+
+    def test_an_operator_dismissal_is_never_overwritten(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        self.conn.execute("UPDATE signals SET status = 'dismissed' "
+                          "WHERE signal_id = ?", (f"t_lead:{SOURCE}:1:EA1",))
+        self.conn.commit()
+        s = self.run_one({}, version="clf/1.1")
+        self.assertEqual(s["signals_retracted"], 0)
+        self.assertEqual(self.status(), "dismissed")
+
+    def test_a_limited_run_only_reconciles_what_it_reached(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()],
+                      f"{SOURCE}:2": [account_candidate(
+                          entity_id="EP1", headline="Parent card")]})
+        second = f"t_lead:{SOURCE}:2:EP1"
+        self.assertEqual(self.status(second), "active")
+        # Events are ordered by first_seen_at, so limit=1 reaches only :1.
+        s = self.run_one({}, version="clf/1.1", limit=1)
+        self.assertEqual(s["events_processed"], 1)
+        self.assertEqual(s["signals_retracted"], 1)
+        self.assertEqual(self.status(), "retracted")
+        self.assertEqual(self.status(second), "active")
+
+    def test_a_run_that_reprocesses_nothing_retracts_nothing(self):
+        """A normal re-run at the SAME version skips every already-bookkept
+        event, so it re-evaluates nothing and must not touch the store."""
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        s = self.run_one({})                      # same version, no force
+        self.assertEqual(s["events_processed"], 0)
+        self.assertEqual(s["signals_retracted"], 0)
+        self.assertEqual(self.status(), "active")
+
+    def test_force_rerun_of_an_unchanged_rule_is_a_no_op(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        s = self.run_one({f"{SOURCE}:1": [account_candidate()]}, force=True)
+        self.assertEqual((s["signals_retracted"], s["signals_restored"]), (0, 0))
+        self.assertEqual(self.status(), "active")
+
+
 if __name__ == "__main__":
     unittest.main()
