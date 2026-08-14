@@ -6,7 +6,7 @@
   <p class="gs-muted-text">External events scored into Microsoft security license plays.</p>
   <label class="gs-status">Status
     <select name="status" hx-get="/feed" hx-target="#gs-feed-body" hx-swap="innerHTML"
-            title="Feed defaults to active; widen to see decayed / superseded / dismissed signals.">
+            title="Feed defaults to active; widen to see decayed / superseded / dismissed / retracted signals.">
       {% for opt in status_options %}
       <option value="{{ opt }}"{% if opt == status %} selected{% endif %}>{{ opt }}</option>
       {% endfor %}
