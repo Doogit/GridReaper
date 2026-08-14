@@ -110,10 +110,14 @@ PEER_CONFIDENCE = 0.45
 TIER = "unconfirmed_early_warning"
 
 
-def _is_peer_industry(activity):
+def is_peer_industry(activity):
     """True when the tracker's ``activity`` tag places the victim in the
     watchlist's industry. Normalizes "&" to "and" and casefolds so
-    "Energy & Utilities" / "energy and utilities" both match."""
+    "Energy & Utilities" / "energy and utilities" both match.
+
+    Public because the Explore Ransomware Activity aggregate (app/ui/data.py)
+    highlights exactly the industry rows that mint peer cards; sharing this one
+    predicate is what keeps the panel and the gate from drifting apart."""
     normalized = " ".join((activity or "").replace("&", "and").split()).lower()
     return normalized in PEER_ACTIVITIES
 
@@ -188,7 +192,7 @@ def classify_ransomware(conn, raw):
     # the tracker places the victim in the watchlist's industry. A peer card
     # asserts "sector peer"; an off-industry victim would make that a claim the
     # source never supports (R4.1), so it mints nothing.
-    if not _is_peer_industry(payload.get("activity")):
+    if not is_peer_industry(payload.get("activity")):
         return []
 
     # Name-free in the strong sense - neither victim NOR the attacker-controlled

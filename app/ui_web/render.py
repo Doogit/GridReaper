@@ -1020,6 +1020,99 @@ def explore_analytics_view(counts):
     return tables
 
 
+# -- Explore: Ransomware Activity (R8.5, R4.1, R6.6) -------------------------
+#
+# Display shaping ONLY. Every privacy decision in this panel was already made in
+# data.ransomware_activity (singleton crews withheld there, marginals never
+# cross-tabbed); this shaper adds no data and re-derives nothing, so there is no
+# second place a leak could be introduced. Bar widths are percentages of the
+# largest row in the SAME list — a relative bar for reading rank at a glance,
+# never compared across the two lists.
+
+# Kept out of the template so the framing is reviewable in one place with the
+# rest of the trust copy, matching the route-level empty-state constants.
+RANSOMWARE_CAPTION = (
+    "Situational awareness only — leak-site listings are unverified claims by "
+    "ransomware crews (R10.5), counted here as threat activity. Nothing on this "
+    "tab is scored, attributed to a watchlist account, or implies an account is "
+    "affected. Only the energy rows below mint sector-peer cards.")
+
+
+def _bar_pct(count, top):
+    """Row width as a whole percent of the largest row in its own list."""
+    if not top or count <= 0:
+        return 0
+    return max(2, round(100 * count / top))
+
+
+def _ransomware_rows(rows):
+    """Attach a relative bar width to a count list, largest row first."""
+    top = max((r["count"] for r in rows), default=0)
+    return [dict(r, bar=_bar_pct(r["count"], top)) for r in rows]
+
+
+def ransomware_activity_view(activity):
+    """Shape data.ransomware_activity into a template view dict (R8.5, R4.1).
+
+    Adds the derived window label, the relative bar widths, and the honest notes
+    for what is deliberately NOT shown — the crews withheld under the
+    single-listing privacy floor and the listings the tracker never classified.
+    ``empty`` drives the R6.6 empty state; ``peer_note`` states the peer count in
+    the same breath as the total so the panel never reads as if the whole feed
+    were peer activity.
+    """
+    total = activity.get("total") or 0
+    start = activity.get("window_start") or ""
+    end = activity.get("window_end") or ""
+    days = activity.get("window_days") or 0
+
+    window = ""
+    if start and end:
+        span = f"{days} day" if days == 1 else f"{days} days"
+        window = f"{start} → {end} · {span}"
+
+    withheld = activity.get("crews_withheld") or 0
+    withheld_listings = activity.get("crews_withheld_listings") or 0
+    crew_note = ""
+    if withheld:
+        crew_note = (
+            f"{withheld} further "
+            f"{'crew is' if withheld == 1 else 'crews are'} not named here: "
+            f"{'it claims' if withheld == 1 else 'each claims'} a single "
+            f"listing ({withheld_listings} in total), and a crew that has named "
+            "itself after its one victim would identify that company (R4.1). "
+            "They are still counted in the total.")
+
+    unclassified = activity.get("unclassified") or 0
+    industry_note = ""
+    if unclassified:
+        industry_note = (
+            f"{unclassified} of {total} listings carry no industry from the "
+            "tracker and are counted as unclassified rather than dropped — an "
+            "unknown industry is not evidence of a match, so none of them mint "
+            "a peer card.")
+
+    peers = activity.get("peer_listings") or 0
+    peer_note = (
+        f"{peers} of {total} listings are in the watchlist's own industry"
+        f"{' — the only rows that mint sector-peer cards.' if peers else '.'}")
+
+    return {
+        "total": total,
+        "window": window,
+        "crews": _ransomware_rows(activity.get("crews") or []),
+        "crew_total": activity.get("crew_total") or 0,
+        "crew_note": crew_note,
+        "industries": _ransomware_rows(activity.get("industries") or []),
+        "industry_note": industry_note,
+        "unclassified": unclassified,
+        "peer_listings": peers,
+        "peer_note": peer_note,
+        "caption": RANSOMWARE_CAPTION,
+        "empty": total == 0,
+    }
+
+
 def _state_density(state_rows):
     """Sum per-state signal density from data.explore_state_density rows by
     projecting each gated facility to its state. Returns {usps: total_count}.

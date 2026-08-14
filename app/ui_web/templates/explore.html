@@ -2,22 +2,24 @@
 {% block title %}GridSignals — Explore{% endblock %}
 {% block pagetitle %}Explore{% endblock %}
 {% block content %}
-{# Explore — Trigger Analytics (default) + evidence-safe Watchlist Map (R8.5).
-   CSS-only tab toggle (radio + :checked sibling rules), mirroring the Account
-   360 tabs — no JS to switch tabs. Analytics is checked by default (D4); a
-   ?tab=map deep-link flips the checked input server-side. Each tab carries its
-   OWN honest empty-state copy (R6.6). #}
+{# Explore — Trigger Analytics (default) + Watchlist Map + Ransomware Activity
+   (R8.5). CSS-only tab toggle (radio + :checked sibling rules), mirroring the
+   Account 360 tabs — no JS to switch tabs. Analytics is checked by default (D4);
+   a ?tab=map / ?tab=ransomware deep-link flips the checked input server-side.
+   Each tab carries its OWN honest empty-state copy (R6.6). #}
 <div class="gs-feed-head">
   <h1 class="gs-h1">Explore</h1>
-  <p class="gs-muted-text">Trigger analytics across all sourced signals, and an evidence-safe watchlist map. Counts are of sourced signals (R4.1); the map plots only facilities with a high-confidence owner match (≥0.85).</p>
+  <p class="gs-muted-text">Trigger analytics across all sourced signals, an evidence-safe watchlist map, and aggregate ransomware leak-site activity. Counts are of sourced signals (R4.1); the map plots only facilities with a high-confidence owner match (≥0.85); the ransomware tab counts raw listings, not signals.</p>
 </div>
 
 <div class="gs-tabs">
-  <input type="radio" name="gs-explore-tab" id="gs-tab-analytics" class="gs-tab-input"{% if active_tab != 'map' %} checked{% endif %}>
+  <input type="radio" name="gs-explore-tab" id="gs-tab-analytics" class="gs-tab-input"{% if active_tab not in ('map', 'ransomware') %} checked{% endif %}>
   <input type="radio" name="gs-explore-tab" id="gs-tab-map" class="gs-tab-input"{% if active_tab == 'map' %} checked{% endif %}>
+  <input type="radio" name="gs-explore-tab" id="gs-tab-ransomware" class="gs-tab-input"{% if active_tab == 'ransomware' %} checked{% endif %}>
   <div class="gs-tablist">
     <label class="gs-tab" for="gs-tab-analytics">Trigger Analytics</label>
     <label class="gs-tab" for="gs-tab-map">Watchlist Map</label>
+    <label class="gs-tab" for="gs-tab-ransomware">Ransomware Activity</label>
   </div>
 
   <div class="gs-tabpanel gs-tabpanel-analytics">
@@ -56,6 +58,53 @@
     </div>
     {% if map.empty_note %}
     {% with message = map.empty_note %}{% include "_empty.html" %}{% endwith %}
+    {% endif %}
+  </div>
+
+  {# Ransomware Activity — an aggregate COUNTS surface, never a card surface.
+     No score, no entity, no victim name, no crew with a single listing (that
+     privacy floor is enforced in data.py, R4.1). The two distributions are
+     marginals and are deliberately never cross-tabbed. #}
+  <div class="gs-tabpanel gs-tabpanel-ransomware">
+    {% if ransomware.empty %}
+    {% with message = ransomware_empty %}{% include "_empty.html" %}{% endwith %}
+    {% else %}
+    <div class="gs-rw-head">
+      <span class="gs-rw-total">{{ ransomware.total }} leak-site listings</span>
+      <span class="gs-rw-window">{{ ransomware.window }}</span>
+    </div>
+    <p class="gs-muted-text gs-map-caption">{{ ransomware.caption }}</p>
+
+    <div class="gs-rw-cols">
+      <section class="gs-rw-col">
+        <h2>Most active crews</h2>
+        {% for row in ransomware.crews %}
+        <div class="gs-rw-row">
+          <span class="gs-rw-label">{{ row.label }}</span>
+          <span class="gs-rw-count">{{ row.count }}</span>
+          <span class="gs-rw-rail"><span class="gs-rw-fill" style="--fill: {{ row.bar }}%"></span></span>
+        </div>
+        {% endfor %}
+        {% if ransomware.crew_note %}
+        <p class="gs-rw-note">{{ ransomware.crew_note }}</p>
+        {% endif %}
+      </section>
+
+      <section class="gs-rw-col">
+        <h2>Industries hit</h2>
+        {% for row in ransomware.industries %}
+        <div class="gs-rw-row{% if row.is_peer %} peer{% endif %}">
+          <span class="gs-rw-label">{{ row.label }}{% if row.is_peer %} <span class="gs-rw-peer-tag">peer</span>{% endif %}</span>
+          <span class="gs-rw-count">{{ row.count }}</span>
+          <span class="gs-rw-rail"><span class="gs-rw-fill" style="--fill: {{ row.bar }}%"></span></span>
+        </div>
+        {% endfor %}
+        <p class="gs-rw-note">{{ ransomware.peer_note }}</p>
+        {% if ransomware.industry_note %}
+        <p class="gs-rw-note">{{ ransomware.industry_note }}</p>
+        {% endif %}
+      </section>
+    </div>
     {% endif %}
   </div>
 </div>

@@ -644,10 +644,12 @@ html { interpolate-size: allow-keywords; }  /* lets height:auto animate (details
  * the map is never misread as evidence confidence (D5). Fills resolve
  * through per-theme --gs-map-* tokens so the ramp reads on both canvases. */
 #gs-tab-analytics:checked ~ .gs-tablist label[for="gs-tab-analytics"],
+#gs-tab-ransomware:checked ~ .gs-tablist label[for="gs-tab-ransomware"],
 #gs-tab-map:checked ~ .gs-tablist label[for="gs-tab-map"] {
   color: var(--gs-accent); border-bottom-color: var(--gs-accent); }
 #gs-tab-analytics:checked ~ .gs-tabpanel-analytics { display: block; }
 #gs-tab-map:checked ~ .gs-tabpanel-map { display: block; }
+#gs-tab-ransomware:checked ~ .gs-tabpanel-ransomware { display: block; }
 
 .gs-analytics-table { margin-bottom: 18px; }
 .gs-table .gs-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
@@ -672,6 +674,45 @@ html { interpolate-size: allow-keywords; }  /* lets height:auto animate (details
 .gs-map-swatch.gs-map-d2 { background: var(--gs-map-d2); }
 .gs-map-swatch.gs-map-d3 { background: var(--gs-map-d3); color: var(--gs-map-swatch-ink-dense); }
 .gs-map-swatch.gs-map-d4 { background: var(--gs-map-d4); color: var(--gs-map-swatch-ink-dense); }
+
+/* ---- Explore: Ransomware Activity (R8.5, R4.1) ----
+ * A counts surface, not a card surface. Bars are the neutral --gs-muted rail,
+ * NOT the accent used by the score decay bar and NOT the violet density ramp:
+ * leak-site volume is neither a score nor map density, and must not be read as
+ * either. The one energy row is marked with the same warn palette the
+ * unconfirmed-tier badge uses, because that is exactly what it is — the
+ * unverified early-warning band that mints peer cards. */
+.gs-rw-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px;
+  margin-bottom: 4px; }
+.gs-rw-total { font-size: 1.05rem; font-weight: 650; color: var(--gs-text);
+  font-variant-numeric: tabular-nums; }
+.gs-rw-window { font-size: 0.78rem; color: var(--gs-muted); font-family: var(--gs-mono); }
+.gs-rw-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px; margin-top: 14px; }
+.gs-rw-col { min-width: 0; }
+.gs-rw-col h2 { font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--gs-muted); margin: 0 0 8px; }
+.gs-rw-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px;
+  align-items: baseline; margin-bottom: 7px; }
+.gs-rw-label { font-size: 0.83rem; color: var(--gs-text); overflow-wrap: anywhere; }
+.gs-rw-count { font-size: 0.83rem; color: var(--gs-text); font-family: var(--gs-mono);
+  font-variant-numeric: tabular-nums; }
+.gs-rw-rail { grid-column: 1 / -1; display: block; height: 4px;
+  background: var(--gs-sunken); border-radius: 2px; overflow: hidden; }
+/* display:block is load-bearing, not cosmetic: these are <span>s, and width /
+   height do not apply to a non-replaced inline box — without it every bar
+   renders at zero width and the rail reads as a stray divider line. */
+.gs-rw-fill { display: block; height: 100%; background: var(--gs-muted);
+  border-radius: 2px; width: var(--fill, 0%);
+  transition: width 700ms cubic-bezier(0.2,0,0,1) 150ms; }
+@starting-style { .gs-rw-fill { width: 0%; } }
+/* The peer band: same warn hue as the unconfirmed-tier badge (R10.5). */
+.gs-rw-row.peer .gs-rw-label { color: var(--gs-warn-text); font-weight: 600; }
+.gs-rw-row.peer .gs-rw-fill { background: var(--gs-warn-border); }
+.gs-rw-peer-tag { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--gs-warn-text); margin-left: 6px; }
+.gs-rw-note { font-size: 0.76rem; color: var(--gs-muted); margin: 10px 0 0;
+  line-height: 1.45; }
 
 .gs-map-caption { margin: 4px 0 10px; }
 .gs-map-wrap { width: 100%; overflow-x: auto; background: var(--gs-card);

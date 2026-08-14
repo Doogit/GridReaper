@@ -1,0 +1,282 @@
+"""Explore Ransomware Activity aggregate tests (R8.5, R4.1, R6.6).
+
+Hermetic: real migrations against in-memory SQLite, FK on, canned payloads, no
+network. Covers the aggregation itself (marginal counts, deterministic order,
+derived window), the R4.1 protections that make an aggregate safe where a card
+would not be (singleton crews withheld, no victim/domain/url ever returned),
+the unclassified-industry bucket, and the peer flag's shared predicate with the
+classifier gate. The view shaper's notes are covered alongside, since the honest
+"what is NOT shown" copy is the point of the panel.
+"""
+import json
+import sqlite3
+import unittest
+
+from app.classify import ransomware as ransomware_classifier
+from app.db.migrate import apply_migrations
+from app.ui import data
+from app.ui_web import render
+
+
+def victim(name, group, activity, event_date="2026-08-12", domain=None):
+    """One ransomware.live listing shaped like the real feed."""
+    return {
+        "victim": name,
+        "group": group,
+        "activity": activity,
+        "country": "US",
+        "domain": domain or (name.lower().replace(" ", "") + ".com"),
+        "description": f"{name} is a company.",
+        "discovered": event_date + "T00:00:00+00:00",
+        "url": f"https://www.ransomware.live/id/{name}",
+    }, event_date
+
+
+def fixture_conn(listings=(), source_id="ransomware_live"):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON;")
+    apply_migrations(conn)
+    conn.execute(
+        "INSERT INTO source_policies (source_id, name, enabled, ttl, "
+        "access_method, evidence_rank) VALUES (?,'ransomware.live',1,3600,"
+        "'json',3)", (source_id,))
+    for i, (payload, event_date) in enumerate(listings):
+        conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+            "payload, url) VALUES (?,?,?,?,?)",
+            (f"{source_id}:h:{i:04d}", source_id, event_date,
+             json.dumps(payload), payload.get("url")))
+    conn.commit()
+    return conn
+
+
+# A corpus shaped like the real one: a dominant crew, a mid crew, a singleton
+# crew, the two energy listings, and an unclassified listing.
+CORPUS = (
+    victim("Alpha Mfg", "qilin", "Manufacturing"),
+    victim("Beta Mfg", "qilin", "Manufacturing"),
+    victim("Gamma Mfg", "qilin", "Manufacturing"),
+    victim("Delta Health", "thegentlemen", "Healthcare"),
+    victim("Epsilon Health", "thegentlemen", "Healthcare"),
+    victim("Zeta Power", "thegentlemen", "Energy & Utilities",
+           event_date="2026-08-10"),
+    victim("Eta Midstream", "incransom", "Oil and Gas"),
+    victim("Theta Ltd", "incransom", "Technology"),
+    victim("Iota Corp", "lonewolfcrew", "Retail & E-Commerce",
+           event_date="2026-08-14"),
+    victim("Kappa Inc", "qilin", "Not Found"),
+)
+
+
+class TestRansomwareActivityCounts(unittest.TestCase):
+    def setUp(self):
+        self.conn = fixture_conn(CORPUS)
+        self.activity = data.ransomware_activity(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_total_counts_every_stored_listing(self):
+        # Including the unclassified one and the withheld singleton crew's:
+        # the total is the honest corpus size, not the displayed subset.
+        self.assertEqual(self.activity["total"], 10)
+
+    def test_crews_ranked_by_volume_descending(self):
+        labels = [r["label"] for r in self.activity["crews"]]
+        counts = [r["count"] for r in self.activity["crews"]]
+        self.assertEqual(labels, ["qilin", "thegentlemen", "incransom"])
+        self.assertEqual(counts, [4, 3, 2])
+
+    def test_industries_ranked_by_volume_descending(self):
+        rows = self.activity["industries"]
+        self.assertEqual(rows[0]["label"], "Manufacturing")
+        self.assertEqual(rows[0]["count"], 3)
+        self.assertEqual([r["count"] for r in rows],
+                         sorted((r["count"] for r in rows), reverse=True))
+
+    def test_unclassified_is_its_own_bucket_not_an_industry_row(self):
+        self.assertEqual(self.activity["unclassified"], 1)
+        self.assertNotIn("Not Found",
+                         [r["label"] for r in self.activity["industries"]])
+
+    def test_window_is_derived_from_the_data_inclusive(self):
+        self.assertEqual(self.activity["window_start"], "2026-08-10")
+        self.assertEqual(self.activity["window_end"], "2026-08-14")
+        # 10th..14th inclusive is 5 days, not 4 — the panel states a real span.
+        self.assertEqual(self.activity["window_days"], 5)
+
+
+class TestPeerFlagSharesTheClassifierGate(unittest.TestCase):
+    """The highlighted rows must be EXACTLY the rows that mint peer cards."""
+
+    def test_energy_and_oil_and_gas_flagged_others_not(self):
+        conn = fixture_conn(CORPUS)
+        rows = {r["label"]: r["is_peer"]
+                for r in data.ransomware_activity(conn)["industries"]}
+        conn.close()
+        self.assertTrue(rows["Energy & Utilities"])
+        self.assertTrue(rows["Oil and Gas"])
+        self.assertFalse(rows["Manufacturing"])
+        self.assertFalse(rows["Healthcare"])
+        self.assertFalse(rows["Technology"])
+
+    def test_peer_listings_totals_the_flagged_rows(self):
+        conn = fixture_conn(CORPUS)
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        self.assertEqual(activity["peer_listings"], 2)
+
+    def test_flag_matches_the_classifier_predicate_for_every_row(self):
+        # If the gate widens or narrows, this panel follows it automatically
+        # rather than drifting into a claim the classifier no longer makes.
+        conn = fixture_conn(CORPUS)
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        for row in activity["industries"]:
+            self.assertEqual(
+                row["is_peer"],
+                ransomware_classifier.is_peer_industry(row["label"]),
+                f"panel and classifier disagree on {row['label']!r}")
+
+
+class TestAggregatePrivacy(unittest.TestCase):
+    """R4.1 in aggregate: an N:1 count is safe only while N > 1."""
+
+    def setUp(self):
+        self.conn = fixture_conn(CORPUS)
+        self.activity = data.ransomware_activity(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_singleton_crew_name_is_never_returned(self):
+        # A crew with one listing maps 1:1 back to one company, and a crew that
+        # named itself after its victim would leak that company's identity.
+        self.assertNotIn("lonewolfcrew",
+                         [r["label"] for r in self.activity["crews"]])
+
+    def test_withheld_crews_are_still_counted_and_reported(self):
+        self.assertEqual(self.activity["crews_withheld"], 1)
+        self.assertEqual(self.activity["crews_withheld_listings"], 1)
+        # crew_total counts every distinct crew, named or not, so the panel can
+        # say how much it is holding back rather than implying completeness.
+        self.assertEqual(self.activity["crew_total"], 4)
+
+    def test_no_victim_domain_or_url_anywhere_in_the_result(self):
+        blob = json.dumps(self.activity).lower()
+        for leak in ("alpha mfg", "zeta power", "alphamfg.com", "zetapower.com",
+                     "ransomware.live/id", "is a company"):
+            self.assertNotIn(leak, blob, f"{leak!r} reached the view layer")
+
+    def test_result_carries_no_score_entity_or_signal_identity(self):
+        # This is a counts surface, not a card surface.
+        for forbidden in ("score", "entity_id", "signal_id", "confidence"):
+            self.assertNotIn(forbidden, self.activity)
+
+
+class TestRansomwareActivityEdges(unittest.TestCase):
+    def test_empty_store_yields_zeroed_counts_not_an_error(self):
+        conn = fixture_conn(())
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        self.assertEqual(activity["total"], 0)
+        self.assertEqual(activity["crews"], [])
+        self.assertEqual(activity["industries"], [])
+        self.assertEqual(activity["window_days"], 0)
+        self.assertEqual(activity["window_start"], "")
+
+    def test_other_sources_are_not_counted(self):
+        conn = fixture_conn(CORPUS, source_id="some_other_feed")
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        self.assertEqual(activity["total"], 0)
+
+    def test_malformed_and_empty_payloads_do_not_crash(self):
+        conn = fixture_conn(())
+        conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+            "payload, url) VALUES ('r1','ransomware_live','2026-08-12',"
+            "'not json','http://x')")
+        conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+            "payload, url) VALUES ('r2','ransomware_live','2026-08-12',"
+            "'[1,2,3]','http://x')")
+        conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+            "payload, url) VALUES ('r3','ransomware_live','2026-08-12',"
+            "NULL,'http://x')")
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        self.assertEqual(activity["total"], 3)
+        self.assertEqual(activity["crews"], [])
+        # No usable industry on any of them -> all unclassified, none dropped.
+        self.assertEqual(activity["unclassified"], 3)
+
+    def test_blank_and_unknown_activity_read_as_unclassified(self):
+        conn = fixture_conn((
+            victim("A Co", "crewx", ""),
+            victim("B Co", "crewx", "unknown"),
+            victim("C Co", "crewx", "N/A"),
+        ))
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        self.assertEqual(activity["unclassified"], 3)
+        self.assertEqual(activity["industries"], [])
+
+
+class TestRansomwareActivityView(unittest.TestCase):
+    def setUp(self):
+        conn = fixture_conn(CORPUS)
+        self.view = render.ransomware_activity_view(
+            data.ransomware_activity(conn))
+        conn.close()
+
+    def test_window_label_states_the_real_span(self):
+        self.assertEqual(self.view["window"], "2026-08-10 → 2026-08-14 · 5 days")
+
+    def test_crew_note_explains_what_is_withheld_and_why(self):
+        note = self.view["crew_note"]
+        self.assertIn("1 further crew is not named", note)
+        self.assertIn("single listing", note)
+        self.assertIn("still counted in the total", note)
+        self.assertNotIn("lonewolfcrew", note)
+
+    def test_industry_note_states_the_unclassified_share(self):
+        self.assertIn("1 of 10", self.view["industry_note"])
+        self.assertIn("unclassified", self.view["industry_note"])
+
+    def test_peer_note_states_peers_against_the_total(self):
+        self.assertIn("2 of 10", self.view["peer_note"])
+
+    def test_caption_disclaims_score_and_account_implication(self):
+        caption = self.view["caption"].lower()
+        self.assertIn("unverified", caption)
+        self.assertIn("nothing on this tab is scored", caption)
+        self.assertIn("attributed to a watchlist account", caption)
+
+    def test_bars_are_relative_within_their_own_list(self):
+        # Top row is full width; every row gets a visible minimum.
+        self.assertEqual(self.view["crews"][0]["bar"], 100)
+        self.assertTrue(all(r["bar"] >= 2 for r in self.view["crews"]))
+        self.assertEqual(self.view["industries"][0]["bar"], 100)
+
+    def test_empty_activity_flags_empty_without_notes(self):
+        conn = fixture_conn(())
+        view = render.ransomware_activity_view(data.ransomware_activity(conn))
+        conn.close()
+        self.assertTrue(view["empty"])
+        self.assertEqual(view["window"], "")
+        self.assertEqual(view["crew_note"], "")
+
+    def test_single_day_corpus_reads_one_day_not_zero(self):
+        conn = fixture_conn((victim("Solo Co", "crewx", "Healthcare"),
+                             victim("Duo Co", "crewx", "Healthcare")))
+        view = render.ransomware_activity_view(data.ransomware_activity(conn))
+        conn.close()
+        self.assertIn("1 day", view["window"])
+        self.assertNotIn("1 days", view["window"])
+
+
+if __name__ == "__main__":
+    unittest.main()

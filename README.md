@@ -26,11 +26,15 @@ The FastAPI + HTMX interface in its default light theme (a dark and a system the
 
 ![Signal Feed](assets/screenshots/signal-feed.png)
 
-**Explore** — trigger, scope, and incident-tier analytics over all sourced signals, plus an evidence-safe watchlist map. The map plots a facility only with a stored owner match at ≥0.85 confidence; with nothing over that bar it shades signal volume by state and says so, rather than inferring points.
+**Explore** — trigger, scope, and incident-tier analytics over all sourced signals, an evidence-safe watchlist map, and aggregate ransomware leak-site activity. The map plots a facility only with a stored owner match at ≥0.85 confidence; with nothing over that bar it shades signal volume by state and says so, rather than inferring points.
 
 ![Explore — Trigger Analytics](assets/screenshots/explore-analytics.png)
 
 ![Explore — Watchlist Map](assets/screenshots/explore-map.png)
+
+The Ransomware Activity tab counts raw leak-site listings rather than signals, over the window the stored data actually spans. Only an energy-industry victim supports the "sector peer" claim a card would make, so the other listings never mint a card — this tab is where they stay visible as threat context, unscored and attributed to no account. Crews claiming a single listing are counted but not named: a crew that has named itself after its one victim would identify that company.
+
+![Explore — Ransomware Activity](assets/screenshots/explore-ransomware.png)
 
 **Digest** — the in-app mirror of the standalone daily HTML digest the pipeline writes to disk for a human to send, shown as a timestamped point-in-time snapshot and framed as a buy-likelihood heuristic, not validated sales lift.
 
@@ -195,7 +199,7 @@ The MVP classifies regulatory actions, leadership changes, and precision-first c
 | Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
 | Stage-2 incident classification — framework evidence-tiering/outreach gating (R10.5/R7.12) + SEC 8-K Item 1.05 own/peer classifier + ransomware.live unconfirmed early-warning classifier with operator-only verification-first UI (R8.6 separate precision) + company-statement press-release classifier + security-press RSS own/peer classifier (per-source tier: The Record corroborated, BleepingComputer leak-adjacent down-tiered to unconfirmed) | Implemented (combos next; regulator incident notices fold into existing FERC/NERC enforcement) |
 | License-play snapshots + gov-cloud gating | Implemented |
-| FastAPI + HTMX + Tailwind UI (nine pages behind a grouped sidebar; light / dark / system theming; signal feed, explore analytics + watchlist map, digest, account 360, review queue, precision, recent re-tiers, regulatory, admin) | Implemented (replaced Streamlit at R8.9 cutover) |
+| FastAPI + HTMX + Tailwind UI (nine pages behind a grouped sidebar; light / dark / system theming; signal feed, explore analytics + watchlist map + ransomware activity, digest, account 360, review queue, precision, recent re-tiers, regulatory, admin) | Implemented (replaced Streamlit at R8.9 cutover) |
 | Regulatory Monitor page (read-only view of non-graduated regulatory chatter) | Implemented |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | Implemented |
 | Admin / Config (weight + half-life tuning, source registry with add/enable/disable/guarded-remove, license-fact editor + add, staleness, config audit trail, watchlist entity manager + alias/collision editor + reset/remove) + incident evidence-tier re-tier editor on incident cards (audited `incident_tier_edits` trail) | Implemented |
