@@ -10,15 +10,27 @@
     next ingestion run. Seed files stay untouched. Your edits persist across
     <code>python -m app.db.load_seeds</code>; a fresh rebuild-from-seeds restores
     the pristine defaults.</p>
-  <label class="gs-admin-label">Reason for the next edit (optional)
-    <input type="text" name="reason" value=""
-           title="Attached to the audit-trail entry of whatever you save next."></label>
 </div>
 
-{% include "_admin_weights.html" %}
-{% include "_admin_half_lives.html" %}
-{% include "_admin_sources.html" %}
-{% include "_admin_entities.html" %}
-{% include "_admin_facts.html" %}
-{% include "_admin_audit.html" %}
+{% include "_admin_tuning.html" %}
+
+<details class="gs-admin-drawer">
+  <summary>Source registry ({{ sources | length }})</summary>
+  {% include "_admin_sources.html" %}
+</details>
+
+<details class="gs-admin-drawer">
+  <summary>Watchlist entities ({{ entities | length }})</summary>
+  {% include "_admin_entities.html" %}
+</details>
+
+<details class="gs-admin-drawer">
+  <summary>License facts ({{ facts | length }} · {{ stale_count }} stale)</summary>
+  {% include "_admin_facts.html" %}
+</details>
+
+<details class="gs-admin-drawer">
+  <summary>Recent config changes ({{ audit | length }})</summary>
+  {% include "_admin_audit.html" %}
+</details>
 {% endblock %}

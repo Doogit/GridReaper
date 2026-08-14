@@ -23,5 +23,18 @@ def get_db():
         conn.close()
 
 
+async def get_db_async():
+    """get_db for an ``async def`` endpoint. FastAPI runs a sync dependency in a
+    worker thread, but an async endpoint runs on the event loop — and a sqlite3
+    connection may only be used on the thread that created it. An async
+    dependency is created and consumed on the same (event loop) thread, so the
+    connection stays valid. Same connection settings as get_db."""
+    conn = get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 # Routes depend on the UI package's seam, not app.ui.data directly.
 config_write = config_write_conn
