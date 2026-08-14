@@ -168,6 +168,67 @@ class TestPeerOffList(RansomwareTestCase):
             self.assertNotIn("breach crew", text)
 
 
+class TestPeerIndustryGate(RansomwareTestCase):
+    """A peer card asserts "sector peer", so the tracker's own industry tag has
+    to support that claim (R4.1). Industry only - never geography."""
+
+    def test_offindustry_victim_mints_no_card(self):
+        add_victim(self.conn, 1, "Obscure Regional Clinic",
+                   activity="Healthcare")
+        s = self.run_it()
+        self.assertEqual(s["signals_new"], 0)
+        self.assertEqual(self.signals(), [])
+
+    def test_unknown_industry_mints_no_card(self):
+        """"Not Found" is 17 of 100 records upstream. An unknown industry is
+        not evidence of a match, so it under-fires rather than over-claims."""
+        for n, activity in enumerate(["Not Found", ""], start=1):
+            add_victim(self.conn, n, f"Obscure Co {n}", activity=activity)
+        s = self.run_it()
+        self.assertEqual(s["signals_new"], 0)
+        self.assertEqual(self.signals(), [])
+
+    def test_missing_activity_key_mints_no_card(self):
+        add_victim(self.conn, 1, "Obscure Co", activity=None)
+        self.assertEqual(self.run_it()["signals_new"], 0)
+
+    def test_energy_variants_all_fire(self):
+        """Upstream punctuation/case drift must not silently drop a real peer."""
+        for n, activity in enumerate(
+                ["Energy & Utilities", "energy and utilities", "Utilities",
+                 "Oil and Gas", "  ENERGY  "], start=1):
+            add_victim(self.conn, n, f"Obscure Energy Co {n}",
+                       activity=activity)
+        self.assertEqual(self.run_it()["signals_new"], 5)
+
+    def test_foreign_energy_victim_still_a_peer(self):
+        """Kevin's ruling: peers are same-industry regardless of region."""
+        add_victim(self.conn, 1, "Obscure Osaka Power", country="JP",
+                   activity="Energy & Utilities")
+        self.assertEqual(self.run_it()["signals_new"], 1)
+        self.assertEqual(self.signals()[0]["trigger_id"], "peer_incident")
+
+    def test_watchlist_victim_fires_despite_offindustry_tag(self):
+        """The own path is attribution, not industry inference: a watchlist
+        company mis-tagged upstream must still mint its account card."""
+        add_victim(self.conn, 1, "NextEra Energy", activity="Manufacturing")
+        self.assertEqual(self.run_it()["signals_new"], 1)
+        own = self.signals()[0]
+        self.assertEqual(own["trigger_id"], "own_incident")
+        self.assertEqual(own["entity_id"], "E0001")
+
+    def test_offindustry_ambiguous_name_still_reaches_review(self):
+        """The gate must not swallow a resolution question. An ambiguous name
+        might BE a mis-tagged watchlist company, so a human still sees it."""
+        add_victim(self.conn, 1, "Dominion", activity="Healthcare")
+        self.run_it()
+        self.assertEqual(self.signals(), [])
+        pending = self.conn.execute(
+            "SELECT COUNT(*) FROM review_queue WHERE disposition = 'pending'"
+        ).fetchone()[0]
+        self.assertEqual(pending, 1)
+
+
 class TestCollisionReview(RansomwareTestCase):
     def test_ambiguous_victim_goes_to_review_no_card(self):
         """R6.2/R6.3: a bare collision term never auto-fires; it queues for
