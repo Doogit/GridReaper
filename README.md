@@ -120,10 +120,10 @@ python -m app.ingest.cisa_kev                       # CISA KEV (store-only)
 
 python -m app.ingest.gdelt                          # GDELT energy news (store-only, ~90d window)
 python -m app.ingest.nvd                            # NVD CVE API (store-only; NVD_API_KEY optional)
-python -m app.ingest.ransomware                     # ransomware.live victims (store-only)
+python -m app.ingest.ransomware                     # ransomware.live victims (raw feed)
 python -m app.ingest.eia                            # EIA plant capacity (store-only; needs EIA_API_KEY)
-python -m app.ingest.security_rss --source therecord        # The Record RSS (store-only)
-python -m app.ingest.security_rss --source bleepingcomputer # BleepingComputer RSS (store-only)
+python -m app.ingest.security_rss --source therecord        # The Record RSS (raw feed)
+python -m app.ingest.security_rss --source bleepingcomputer # BleepingComputer RSS (raw feed)
 
 python -m app.classify.leadership                   # offline from here on
 python -m app.classify.regulatory
@@ -175,7 +175,7 @@ Ingestion runs as a separate process from the app — invoked as a CLI, or start
 
 ## Roadmap
 
-The MVP classifies two trigger types — regulatory actions and leadership changes — into cards over a watchlist of US energy companies, while ingesting a broader signal set to build backfill for later stages.
+The MVP classifies regulatory actions, leadership changes, and precision-first cyber-incident slices into cards over a watchlist of US energy companies, while ingesting a broader signal set to build backfill for later stages.
 
 | Area | Status |
 |---|---|
@@ -184,8 +184,8 @@ The MVP classifies two trigger types — regulatory actions and leadership chang
 | Entity resolution core (deterministic + fuzzy matching, collision guard, review queue, decision log) | Implemented |
 | Entity enrichment (GLEIF LEI / Wikidata QID population, parent/child relationships) | Implemented |
 | Ingestion runner (dedupe, run bookkeeping, error containment, single-writer lock) | Implemented |
-| Ingestion: EDGAR, Federal Register, press-wire RSS, NERC pages, CISA KEV | Implemented |
-| Store-only ingestion for backfill (GDELT news, NVD, ransomware.live, security-press RSS) + EIA plant records | Implemented |
+| Ingestion: EDGAR, Federal Register, press-wire RSS, NERC pages, ransomware.live, security-press RSS, CISA KEV, GDELT, NVD, EIA | Implemented |
+| Store-only backfill tier (CISA KEV, GDELT news, NVD, EIA plant records) | Implemented |
 | License facts + play candidates (normalized from the license matrix) | Implemented |
 | Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
 | Stage-2 incident classification — framework evidence-tiering/outreach gating (R10.5/R7.12) + SEC 8-K Item 1.05 own/peer classifier + ransomware.live unconfirmed early-warning classifier with operator-only verification-first UI (R8.6 separate precision) + company-statement press-release classifier + security-press RSS own/peer classifier (per-source tier: The Record corroborated, BleepingComputer leak-adjacent down-tiered to unconfirmed) | Implemented (combos next; regulator incident notices fold into existing FERC/NERC enforcement) |
