@@ -39,7 +39,9 @@ jobs:
           echo "container did not become healthy in time"; exit 1
 
       - name: Assert the feed page serves (empty feed is valid on first load)
-        run: curl -sf http://127.0.0.1:8000/ > /dev/null && echo "OK: feed page served"
+        run: |
+          curl -sf http://127.0.0.1:8000/ > /dev/null
+          echo "OK: feed page served"
 
       - name: Container logs on failure
         if: failure()

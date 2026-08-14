@@ -189,6 +189,14 @@ class PackagingContractTest(unittest.TestCase):
         self.assertIn("/healthz", workflow)
         self.assertNotIn("/_stcore/health", workflow)
 
+    def test_package_workflow_feed_probe_uses_yaml_safe_run_block(self):
+        workflow = PACKAGE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('echo "OK: feed page served"', workflow)
+        self.assertNotIn(
+            'run: curl -sf http://127.0.0.1:8000/ > /dev/null && echo "OK: feed page served"',
+            workflow,
+        )
+
     def test_dockerfile_and_deploy_agree_on_port(self):
         port = re.search(r"ENV PORT=(\d+)", self._dockerfile())
         self.assertIsNotNone(port, "Dockerfile no longer sets ENV PORT")
