@@ -1,93 +1,260 @@
-/* GridSignals web UI stylesheet (R8.9 UI port).
+/* GridSignals web UI stylesheet (R8.9 UI port; dual-theme redesign).
  *
  * HAND-AUTHORED component CSS — not a Tailwind build output (R8.9: no utility
- * framework, no CDN, no npm, no webfonts; system sans/mono only). The palette is
- * the "executive light" re-theme: cool-biased neutrals, a single brand accent,
- * and colorblind-safe Okabe-Ito status hues (R10.3/G2). Every color is a
- * --gs-* token in :root — including the badge / source-state / flash colors that
- * were previously hard-coded — so the whole surface re-keys from one block.
- * Status always keeps a text label alongside its hue (colorblind-safe is
- * additive, never the sole channel).
+ * framework, no CDN, no npm, no webfonts; system sans/mono only).
+ *
+ * Token architecture (three tiers, one --gs-* vocabulary):
+ *   1. primitives   — raw OKLCH ramp values, declared once, theme-agnostic.
+ *   2. semantic     — the ONLY tier that changes between themes: surfaces,
+ *                     borders, text, accent, severity pairs. Light lives on
+ *                     :root, dark overrides under [data-theme="dark"].
+ *   3. component    — stable names components reference (--gs-card, badge
+ *                     tints, map ramp); they resolve through tier 2.
+ *
+ * Light and dark are tuned independently, not inverted: elevation is shadow
+ * in light and a lighter surface in dark; accents raise lightness / cut
+ * chroma in dark. Severity badges follow the Radix/Primer pattern (light:
+ * solid pale tint + dark text; dark: low-alpha tint + bright text) and are
+ * always paired with a text label — color is never the sole channel
+ * (R10.3/G2). Green is reserved for OK / cleared / success states; low
+ * severity is a desaturated blue.
+ *
+ * Motion is calm and functional: @starting-style entrances, a typed
+ * @property score-ring sweep, scroll-driven topbar elevation, animated
+ * <details> expansion. Everything collapses to instant state changes under
+ * prefers-reduced-motion.
  */
+
+@property --gs-ring {
+  syntax: "<number>"; inherits: false; initial-value: 0;
+}
+
 :root {
-  /* --- core neutrals (cool-biased, chosen not default) --- */
-  --gs-bg: #f6f7f9;
-  --gs-card: #ffffff;
-  --gs-card-border: #e1e5ea;
-  --gs-text: #171c24;
-  --gs-muted: #59616e;
+  color-scheme: light;
 
-  /* --- brand accent + hover --- */
-  --gs-accent: #0072b2;
-  --gs-accent-strong: #005e93;
+  /* --- tier 1: neutral primitives (cool-biased, hue 250) --- */
+  --gs-gray-1:  oklch(0.994 0.001 250);
+  --gs-gray-3:  oklch(0.960 0.003 250);
+  --gs-gray-6:  oklch(0.900 0.005 250);
+  --gs-gray-8:  oklch(0.820 0.006 250);
+  --gs-gray-11: oklch(0.480 0.010 250);
+  --gs-gray-12: oklch(0.220 0.012 250);
+  --gs-grayd-1:  oklch(0.180 0.005 250);
+  --gs-grayd-2:  oklch(0.205 0.006 250);
+  --gs-grayd-3:  oklch(0.230 0.006 250);
+  --gs-grayd-6:  oklch(0.300 0.008 250);
+  --gs-grayd-8:  oklch(0.360 0.010 250);
+  --gs-grayd-11: oklch(0.720 0.012 250);
+  --gs-grayd-12: oklch(0.955 0.006 250);
 
-  /* --- severity ramp (Okabe-Ito): critical/high warm, moderate blue,
-         low == positive green. Used on the card score strip + severity text. --- */
-  --gs-crit: #d55e00;   /* vermilion */
-  --gs-high: #e69f00;   /* orange    */
-  --gs-mod:  #0072b2;   /* blue — notable, not hot */
-  --gs-low:  #009e73;   /* bluish green — low / positive / OK */
+  /* --- tier 2: semantic aliases — LIGHT --- */
+  --gs-bg: var(--gs-gray-1);
+  --gs-card: oklch(1 0 0);
+  --gs-card-border: var(--gs-gray-6);
+  --gs-border-strong: var(--gs-gray-8);
+  --gs-sunken: var(--gs-gray-3);
+  --gs-text: var(--gs-gray-12);
+  --gs-text-2: oklch(0.400 0.010 250);
+  --gs-muted: var(--gs-gray-11);
+  --gs-row-hover: oklch(0.965 0.003 250);
+
+  /* brand accent; hover shade DERIVED from the accent (relative color) */
+  --gs-accent: oklch(0.54 0.135 245);
+  --gs-accent-strong: oklch(from var(--gs-accent) calc(l - 0.08) c h);
+  --gs-focus-ring: oklch(0.62 0.19 250);
+
+  /* severity solids (score strip + ring; Radix step-9, constant per theme) */
+  --gs-crit: #E5484D;
+  --gs-high: #F76B15;
+  --gs-mod:  #FFBA18;
+  --gs-low:  #3B9EFF;
+
+  /* severity badge pairs — light: solid pale tint bg + dark saturated text */
+  --gs-sev-crit-bg: #FEEBEC; --gs-sev-crit-fg: #CE2C31;
+  --gs-sev-high-bg: #FFE0C2; --gs-sev-high-fg: #BD4B00;
+  --gs-sev-mod-bg:  #FFF7C2; --gs-sev-mod-fg:  #AB6400;
+  --gs-sev-low-bg:  #E6F4FE; --gs-sev-low-fg:  #0D74CE;
 
   /* --- surface accents --- */
-  --gs-chip-bg: #eef1f4;
+  --gs-chip-bg: var(--gs-sunken);
 
   /* --- warn / caution tint (gov-cloud caution, warning flash) --- */
-  --gs-warn-bg: #fbf3de;
-  --gs-warn-border: #e3c36b;
-  --gs-warn-text: #8a6a00;
+  --gs-warn-bg: #FFF7C2;
+  --gs-warn-border: #E3C36B;
+  --gs-warn-text: #8A6A00;
 
-  /* --- badge tints (promoted from former hard-coded hexes) --- */
-  --gs-np-bg: #fbf0d9;  --gs-np-border: #e0b053;  --gs-np-text: #8a5a00;   /* non-primary */
-  --gs-scope-bg: #e3f0f8; --gs-scope-border: #9dcbe6; --gs-scope-text: #0a5a85; /* scope / info */
-  --gs-cov-bg: #efeaf6; --gs-cov-border: #c4b0dc; --gs-cov-text: #6a4a8f;   /* coverage-dark */
+  /* --- badge tints --- */
+  --gs-np-bg: #FBF0D9;  --gs-np-border: #E0B053;  --gs-np-text: #8A5A00;   /* non-primary */
+  --gs-scope-bg: #E6F4FE; --gs-scope-border: #9DCBE6; --gs-scope-text: #0D74CE; /* scope / info */
+  --gs-cov-bg: #EFEAF6; --gs-cov-border: #C4B0DC; --gs-cov-text: #6A4A8F;   /* coverage-dark */
 
-  /* --- source-state pills (each state visually distinct, R10.3/G2) --- */
-  --gs-ok-bg: #e1f3ec;    --gs-ok-border: #9fd8c2;    --gs-ok-text: #00674e;
-  --gs-stale-bg: #fbf3de; --gs-stale-border: #e3c36b; --gs-stale-text: #8a6a00;
-  --gs-never-bg: #e3f0f8; --gs-never-border: #9dcbe6; --gs-never-text: #0a5a85;
-  --gs-error-bg: #fbe7e1; --gs-error-border: #e9a98f; --gs-error-text: #a83e00;
+  /* --- source-state pills (green ONLY for ok/cleared; R10.3/G2) --- */
+  --gs-ok-bg: #E6F6EB;    --gs-ok-border: #9FD8C2;    --gs-ok-text: #218358;
+  --gs-stale-bg: #FFF7C2; --gs-stale-border: #E3C36B; --gs-stale-text: #8A6A00;
+  --gs-never-bg: #E6F4FE; --gs-never-border: #9DCBE6; --gs-never-text: #0D74CE;
+  --gs-error-bg: #FEEBEC; --gs-error-border: #E9A0A3; --gs-error-text: #CE2C31;
 
-  /* --- elevation (subtle; the layout still reads if these are removed) --- */
+  /* --- watchlist map density ramp (violet, volume-only — never confidence) --- */
+  --gs-map-d0: #eceff3; --gs-map-d1: #dcd3ec; --gs-map-d2: #b9a2db;
+  --gs-map-d3: #8f66c4; --gs-map-d4: #6a2fb0;
+  --gs-map-stroke: #ffffff;
+  --gs-map-swatch-ink: #1c1330;
+  --gs-map-swatch-ink-dense: #ffffff;
+
+  /* --- elevation: shadow carries it in light --- */
   --gs-shadow-sm: 0 1px 2px rgba(23, 28, 36, 0.04);
   --gs-shadow-card: 0 1px 2px rgba(23, 28, 36, 0.04), 0 1px 3px rgba(23, 28, 36, 0.06);
+  --gs-shadow-hover: 0 4px 14px rgba(23, 28, 36, 0.10), 0 1px 3px rgba(23, 28, 36, 0.06);
 
   --gs-radius: 10px;
+  --gs-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --gs-mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* --- tier 2 semantic aliases — DARK (tuned, not inverted) --- */
+  --gs-bg: var(--gs-grayd-1);
+  --gs-card: var(--gs-grayd-2);
+  --gs-card-border: var(--gs-grayd-6);
+  --gs-border-strong: var(--gs-grayd-8);
+  --gs-sunken: oklch(0.155 0.004 250);
+  --gs-text: var(--gs-grayd-12);
+  --gs-text-2: oklch(0.820 0.010 250);
+  --gs-muted: var(--gs-grayd-11);
+  --gs-row-hover: rgb(255 255 255 / 0.045);
+
+  --gs-accent: oklch(0.72 0.120 245);
+  --gs-accent-strong: oklch(from var(--gs-accent) calc(l + 0.06) c h);  /* dark hovers go LIGHTER */
+  --gs-focus-ring: oklch(0.72 0.17 250);
+
+  /* severity badge pairs — dark: low-alpha tint bg + bright saturated text */
+  --gs-sev-crit-bg: rgb(229 72 77 / 0.12);  --gs-sev-crit-fg: #FF9592;
+  --gs-sev-high-bg: rgb(255 140 60 / 0.14); --gs-sev-high-fg: #FFA057;
+  --gs-sev-mod-bg:  rgb(255 197 61 / 0.15); --gs-sev-mod-fg:  #FFCA16;
+  --gs-sev-low-bg:  rgb(0 144 255 / 0.12);  --gs-sev-low-fg:  #70B8FF;
+
+  --gs-chip-bg: rgb(255 255 255 / 0.06);
+
+  --gs-warn-bg: rgb(255 197 61 / 0.13);
+  --gs-warn-border: rgb(255 197 61 / 0.35);
+  --gs-warn-text: #FFCA16;
+
+  --gs-np-bg: rgb(224 176 83 / 0.14);  --gs-np-border: rgb(224 176 83 / 0.35);  --gs-np-text: #E8C06A;
+  --gs-scope-bg: rgb(56 139 253 / 0.10); --gs-scope-border: rgb(56 139 253 / 0.30); --gs-scope-text: #70B8FF;
+  --gs-cov-bg: rgb(160 120 220 / 0.14); --gs-cov-border: rgb(160 120 220 / 0.35); --gs-cov-text: #C8A9EE;
+
+  --gs-ok-bg: rgb(46 160 67 / 0.15);    --gs-ok-border: rgb(46 160 67 / 0.35);    --gs-ok-text: #3DD68C;
+  --gs-stale-bg: rgb(255 197 61 / 0.13); --gs-stale-border: rgb(255 197 61 / 0.35); --gs-stale-text: #FFCA16;
+  --gs-never-bg: rgb(56 139 253 / 0.10); --gs-never-border: rgb(56 139 253 / 0.30); --gs-never-text: #70B8FF;
+  --gs-error-bg: rgb(229 72 77 / 0.12);  --gs-error-border: rgb(229 72 77 / 0.35);  --gs-error-text: #FF9592;
+
+  /* map ramp — same violet hue, lightness tuned for the dark canvas */
+  --gs-map-d0: #252a33; --gs-map-d1: #3b3352; --gs-map-d2: #584380;
+  --gs-map-d3: #7a58b3; --gs-map-d4: #a184dd;
+  --gs-map-stroke: var(--gs-grayd-1);
+  --gs-map-swatch-ink: #e8e2f4;
+  --gs-map-swatch-ink-dense: #1c1330;
+
+  /* --- elevation: a lighter surface + hairline carries it in dark --- */
+  --gs-shadow-sm: 0 0 0 1px rgb(255 255 255 / 0.03);
+  --gs-shadow-card: 0 0 0 1px rgb(255 255 255 / 0.04);
+  --gs-shadow-hover: 0 0 0 1px rgb(255 255 255 / 0.08);
 }
 
 * { box-sizing: border-box; }
+html { interpolate-size: allow-keywords; }  /* lets height:auto animate (details) */
 
 .gs-body {
   margin: 0;
   background: var(--gs-bg);
   color: var(--gs-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: var(--gs-font);
   font-size: 15px;
   line-height: 1.5;
   font-variant-numeric: tabular-nums;   /* every data figure aligns (R8.6/R8.1) */
   -webkit-font-smoothing: antialiased;
 }
 
-.gs-topbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 20px;
-  padding: 12px 24px;
-  background: var(--gs-card);
-  border-bottom: 1px solid var(--gs-card-border);
-  box-shadow: var(--gs-shadow-sm);
+:focus-visible {
+  outline: 2px solid var(--gs-focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--gs-bg);   /* two-tone ring: survives any surface */
+  border-radius: 4px;
 }
-.gs-brand { font-weight: 700; letter-spacing: 0; color: var(--gs-text); }
 
-.gs-nav { display: flex; flex-wrap: wrap; gap: 8px 16px; }
-.gs-nav a {
-  color: var(--gs-muted);
-  text-decoration: none;
-  font-size: 0.9rem;
-  padding: 2px 0;
+/* ---- app shell: grouped sidebar + content column ---- */
+.gs-shell { display: flex; min-height: 100vh; }
+
+.gs-sidebar {
+  width: 216px; flex: none;
+  border-right: 1px solid var(--gs-card-border);
+  padding: 16px 12px;
+  display: flex; flex-direction: column;
+  position: sticky; top: 0; height: 100vh;
 }
-.gs-nav a:hover { color: var(--gs-text); }
-.gs-nav a.active { color: var(--gs-accent); border-bottom: 2px solid var(--gs-accent); }
+.gs-brand {
+  font-weight: 700; font-size: 0.95rem; letter-spacing: -0.01em;
+  color: var(--gs-text); padding: 4px 10px 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.gs-brand-mark { width: 18px; height: 18px; border-radius: 5px; background: var(--gs-accent);
+  display: inline-flex; align-items: center; justify-content: center; flex: none; }
+/* bolt drawn with clip-path (no inline <svg>: the XSS tests keep a strict
+   "no raw <svg>/<img> in the DOM" invariant on non-map pages) */
+.gs-brand-bolt { width: 10px; height: 10px; background: #fff;
+  clip-path: polygon(10% 60%, 40% 60%, 30% 90%, 90% 40%, 60% 40%, 70% 10%); }
+.gs-navgroup { margin-top: 12px; }
+.gs-navgroup-label {
+  font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--gs-muted); padding: 0 10px 4px;
+}
+.gs-nav { display: contents; }
+.gs-nav a, .gs-navlink {
+  display: block;
+  padding: 5px 10px; border-radius: 6px;
+  color: var(--gs-text-2); text-decoration: none; font-size: 0.85rem;
+  transition: background 150ms cubic-bezier(0.2,0,0,1), color 150ms cubic-bezier(0.2,0,0,1);
+}
+.gs-nav a:hover { background: var(--gs-row-hover); color: var(--gs-text); }
+.gs-nav a.active { background: var(--gs-sunken); color: var(--gs-text); font-weight: 600; }
+[data-theme="dark"] .gs-nav a.active { background: rgb(255 255 255 / 0.07); }
+
+/* three-state theme toggle pinned to the sidebar foot */
+.gs-sidebar-foot { margin-top: auto; padding: 8px 4px 0; }
+.gs-theme-toggle {
+  display: flex; border: 1px solid var(--gs-card-border); border-radius: 6px;
+  overflow: hidden; background: var(--gs-card);
+}
+.gs-theme-toggle button {
+  flex: 1; border: 0; background: transparent; color: var(--gs-muted);
+  font: inherit; font-size: 0.7rem; padding: 5px 0; cursor: pointer;
+}
+.gs-theme-toggle button[aria-pressed="true"] {
+  background: var(--gs-sunken); color: var(--gs-text); font-weight: 600;
+}
+[data-theme="dark"] .gs-theme-toggle button[aria-pressed="true"] { background: rgb(255 255 255 / 0.08); }
+
+.gs-content { flex: 1; min-width: 0; }
+
+/* sticky topbar: page identity; earns its elevation only once content
+   actually scrolls beneath it (scroll-driven animation, no JS listener) */
+.gs-topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  padding: 10px 24px;
+  background: color-mix(in oklab, var(--gs-bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--gs-card-border);
+}
+.gs-topbar-title { font-size: 0.95rem; font-weight: 650; letter-spacing: -0.01em; color: var(--gs-text); }
+@supports (animation-timeline: scroll()) {
+  .gs-topbar { animation: gs-topbar-elevate linear both; animation-timeline: scroll(); animation-range: 0 90px; }
+  @keyframes gs-topbar-elevate {
+    to { box-shadow: 0 2px 10px rgb(0 0 0 / 0.07); border-bottom-color: var(--gs-border-strong); }
+  }
+}
 
 .gs-flash:empty { display: none; }
 .gs-flash {
@@ -109,7 +276,7 @@
   padding: 28px 24px;
   box-shadow: var(--gs-shadow-card);
 }
-.gs-h1 { margin: 0 0 6px; font-size: 1.4rem; font-weight: 640; letter-spacing: 0; }
+.gs-h1 { margin: 0 0 6px; font-size: 1.4rem; font-weight: 640; letter-spacing: -0.01em; }
 .gs-lead { margin: 0 0 10px; color: var(--gs-text); }
 .gs-muted-text { margin: 0; color: var(--gs-muted); font-size: 0.85rem; }
 
@@ -131,13 +298,29 @@
   margin-bottom: 14px;
   overflow: hidden;
   box-shadow: var(--gs-shadow-card);
+  /* translate = entrance channel, transform = hover channel: they compose
+     independently so the slow fade-in never lags the hover lift */
+  transition:
+    opacity 560ms cubic-bezier(0.2,0,0,1) var(--enter-delay, 0ms),
+    translate 560ms cubic-bezier(0.2,0,0,1) var(--enter-delay, 0ms),
+    transform 150ms cubic-bezier(0.2,0,0,1),
+    border-color 150ms cubic-bezier(0.2,0,0,1),
+    box-shadow 150ms cubic-bezier(0.2,0,0,1);
 }
+@starting-style { .gs-card { opacity: 0; translate: 0 10px; } }
+.gs-card:nth-of-type(2) { --enter-delay: 70ms; }
+.gs-card:nth-of-type(3) { --enter-delay: 140ms; }
+.gs-card:nth-of-type(4) { --enter-delay: 210ms; }
+.gs-card:hover { border-color: var(--gs-border-strong); transform: translateY(-1px);
+  box-shadow: var(--gs-shadow-hover); }
+.gs-card:has(:focus-visible) { border-color: var(--gs-accent); }
+
 /* severity strip (score band) down the left edge */
 .gs-card::before {
   content: "";
   position: absolute;
   left: 0; top: 0; bottom: 0;
-  width: 5px;
+  width: 4px;
   background: var(--gs-mod);
 }
 .gs-card.sev-critical::before { background: var(--gs-crit); }
@@ -146,19 +329,68 @@
 .gs-card.sev-low::before      { background: var(--gs-low); }
 .gs-card.status-superseded, .gs-card.status-decayed { opacity: 0.72; }
 
+/* card header row: severity badge + entity + score ring */
+.gs-card-top { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+.gs-card-top .gs-spacer { flex: 1; }
+.gs-entity { font-weight: 650; font-size: 0.98rem; letter-spacing: -0.01em; color: var(--gs-text); }
+
+/* severity badge: tint + drawn SVG shape + label — three redundant channels
+   (WCAG 1.4.1); the shapes are inline SVG, never text glyphs */
+.gs-sev {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+}
+.gs-sev-shape { width: 7px; height: 7px; background: currentColor; flex: none;
+  display: inline-block; }
+.gs-sev.critical .gs-sev-shape { clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%); } /* octagon */
+.gs-sev.high     .gs-sev-shape { clip-path: polygon(50% 0, 100% 100%, 0 100%); }  /* triangle */
+.gs-sev.moderate .gs-sev-shape { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); } /* diamond */
+.gs-sev.low      .gs-sev-shape { clip-path: circle(50%); }  /* circle */
+.gs-sev.critical { background: var(--gs-sev-crit-bg); color: var(--gs-sev-crit-fg); }
+.gs-sev.high     { background: var(--gs-sev-high-bg); color: var(--gs-sev-high-fg); }
+.gs-sev.moderate { background: var(--gs-sev-mod-bg);  color: var(--gs-sev-mod-fg); }
+.gs-sev.low      { background: var(--gs-sev-low-bg);  color: var(--gs-sev-low-fg); }
+
+/* score ring: conic-gradient driven by the typed --gs-ring property, so the
+   severity-colored arc SWEEPS to its value on first paint. The arc is a
+   severity gauge (score clamped onto the 0-5 band scale), distinct from the
+   decay bar (score vs fresh ceiling). */
+.gs-score-ring {
+  --gs-ring-color: var(--gs-muted);
+  width: 44px; height: 44px; flex: none; border-radius: 50%;
+  display: grid; place-items: center;
+  font-family: var(--gs-mono); font-size: 0.85rem; font-weight: 650; line-height: 1;
+  color: var(--gs-text);
+  background:
+    radial-gradient(closest-side, var(--gs-card) 78%, transparent 79% 100%),
+    conic-gradient(var(--gs-ring-color) calc(var(--gs-ring) * 1%), var(--gs-sunken) 0);
+  transition: --gs-ring 900ms cubic-bezier(0.2,0,0,1) 250ms;
+}
+@starting-style { .gs-score-ring { --gs-ring: 0; } }
+.gs-card.sev-critical .gs-score-ring { --gs-ring-color: var(--gs-crit); }
+.gs-card.sev-high     .gs-score-ring { --gs-ring-color: var(--gs-high); }
+.gs-card.sev-moderate .gs-score-ring { --gs-ring-color: var(--gs-mod); }
+.gs-card.sev-low      .gs-score-ring { --gs-ring-color: var(--gs-low); }
+.gs-score-plain { font-family: var(--gs-mono); font-size: 0.85rem; color: var(--gs-muted); }
+
 .gs-headline { font-size: 1.02rem; font-weight: 600; color: var(--gs-text);
-  margin: 0 0 4px 0; line-height: 1.35; }
+  margin: 0 0 4px 0; line-height: 1.35; text-wrap: balance; }
 .gs-meta { font-size: 0.8rem; color: var(--gs-muted); margin-bottom: 8px; }
 
-/* per-card permalink (R8.1): unobtrusive top-right deep link into /card/{key} */
-.gs-permalink { position: absolute; top: 10px; right: 12px; font-size: 0.72rem;
+/* per-card permalink (R8.1): unobtrusive deep link in the meta line */
+.gs-permalink { font-size: 0.72rem;
   color: var(--gs-muted); text-decoration: none; }
 .gs-permalink:hover { color: var(--gs-accent); text-decoration: underline; }
 
-/* decay bar: current score vs the signal's fresh base_strength x fits */
-.gs-decay-wrap { height: 6px; background: var(--gs-chip-bg); border-radius: 3px;
+/* decay bar: current score vs the signal's fresh base_strength x fits.
+   Fills on load via --fill + @starting-style. */
+.gs-decay-wrap { height: 5px; background: var(--gs-sunken); border-radius: 3px;
   overflow: hidden; margin: 8px 0; }
-.gs-decay-fill { height: 100%; background: var(--gs-accent); }
+.gs-decay-fill { height: 100%; background: var(--gs-accent); border-radius: 3px;
+  width: var(--fill, 0%);
+  transition: width 800ms cubic-bezier(0.2,0,0,1) 200ms; }
+@starting-style { .gs-decay-fill { width: 0%; } }
 
 .gs-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .gs-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px;
@@ -199,17 +431,35 @@
 .gs-retier-history { margin-top: 6px; font-size: 0.78rem; color: var(--gs-muted); }
 .gs-retier-hist-row { padding: 2px 0; }
 
-.gs-evidence { font-size: 0.82rem; color: var(--gs-text); border-left: 2px solid var(--gs-card-border);
+.gs-evidence { font-size: 0.82rem; color: var(--gs-text-2); border-left: 2px solid var(--gs-card-border);
   padding-left: 10px; margin: 6px 0; }
-.gs-locator { color: var(--gs-muted); font-size: 0.74rem; }
+.gs-locator { color: var(--gs-muted); font-size: 0.74rem; font-family: var(--gs-mono); }
+
+/* evidence expander: real height:auto animation via ::details-content +
+   interpolate-size; the chevron is a clip-path triangle, not a text glyph */
 .gs-evidence-exp { margin: 8px 0; }
-.gs-evidence-exp > summary { cursor: pointer; color: var(--gs-muted); font-size: 0.82rem; }
+.gs-evidence-exp > summary { cursor: pointer; color: var(--gs-muted); font-size: 0.82rem;
+  list-style: none; display: flex; align-items: center; gap: 6px; }
+.gs-evidence-exp > summary::-webkit-details-marker { display: none; }
+.gs-evidence-exp > summary::before {
+  content: ""; width: 7px; height: 7px; background: currentColor; flex: none;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  transition: rotate 200ms cubic-bezier(0.2,0,0,1);
+}
+.gs-evidence-exp[open] > summary::before { rotate: 90deg; }
+.gs-evidence-exp::details-content {
+  height: 0; opacity: 0; overflow: clip;
+  transition: height 300ms cubic-bezier(0.2,0,0,1), opacity 240ms linear,
+              content-visibility 300ms allow-discrete;
+}
+.gs-evidence-exp[open]::details-content { height: auto; opacity: 1; }
+
 .gs-source-link { color: var(--gs-accent); font-size: 0.8rem; text-decoration: none; }
 .gs-source-link:hover { color: var(--gs-accent-strong); text-decoration: underline; }
 
 .gs-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px 0;
   color: var(--gs-muted); font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0; }
+  letter-spacing: 0.06em; }
 .gs-divider::before, .gs-divider::after { content: ""; flex: 1; height: 1px; background: var(--gs-card-border); }
 
 .gs-empty { background: var(--gs-card); border: 1px dashed var(--gs-card-border);
@@ -217,17 +467,19 @@
 
 /* ---- feedback controls + load-more (HTMX) ---- */
 .gs-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-.gs-btn { background: var(--gs-card); color: var(--gs-text); border: 1px solid var(--gs-card-border);
-  border-radius: 6px; padding: 4px 12px; font-size: 0.8rem; cursor: pointer; }
+.gs-btn { background: transparent; color: var(--gs-text-2); border: 1px solid var(--gs-card-border);
+  border-radius: 6px; padding: 4px 12px; font-size: 0.8rem; cursor: pointer; font-family: inherit;
+  transition: border-color 150ms, color 150ms, background 150ms; }
 .gs-btn:hover { border-color: var(--gs-accent); color: var(--gs-accent); }
 .gs-fb-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .gs-fb-field { color: var(--gs-muted); font-size: 0.8rem; display: inline-flex; gap: 6px; align-items: center; }
 .gs-fb-form select, .gs-fb-note { background: var(--gs-card); color: var(--gs-text);
   border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 4px 8px; font-size: 0.8rem; }
-.gs-fb-done { color: var(--gs-low); font-size: 0.82rem; }
-.gs-fb-error { color: var(--gs-crit); font-size: 0.8rem; margin-bottom: 6px; }
+.gs-fb-done { color: var(--gs-ok-text); font-size: 0.82rem; }
+.gs-fb-error { color: var(--gs-sev-crit-fg); font-size: 0.8rem; margin-bottom: 6px; }
 .gs-loadmore { display: block; margin: 4px 0 18px; background: var(--gs-card); color: var(--gs-accent);
-  border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 6px 14px; font-size: 0.82rem; cursor: pointer; }
+  border: 1px solid var(--gs-card-border); border-radius: 6px; padding: 6px 14px; font-size: 0.82rem;
+  cursor: pointer; font-family: inherit; }
 .gs-loadmore:hover { border-color: var(--gs-accent); }
 
 /* ---- Account 360 header + tabs (Chunk 2) ----
@@ -240,7 +492,8 @@
 .gs-tab-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .gs-tablist { display: flex; gap: 4px; border-bottom: 1px solid var(--gs-card-border); margin-bottom: 14px; }
 .gs-tab { padding: 8px 16px; color: var(--gs-muted); font-size: 0.85rem; cursor: pointer;
-  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 150ms cubic-bezier(0.2,0,0,1); }
 .gs-tab:hover { color: var(--gs-text); }
 .gs-tabpanel { display: none; }
 #gs-tab-timeline:checked ~ .gs-tablist label[for="gs-tab-timeline"],
@@ -249,15 +502,12 @@
 #gs-tab-timeline:checked ~ .gs-tabpanel-timeline { display: block; }
 #gs-tab-signals:checked ~ .gs-tabpanel-signals { display: block; }
 
-/* ---- Review Queue (Chunk 3) ----
- * Source / stale rows reuse card tokens; the state badge is a per-state colored
- * pill so error / never-run / stale / disabled / ok are each visually distinct
- * (R10.3/G2) — color AND the word carry the state. */
+/* ---- Review Queue (Chunk 3) ---- */
 .gs-review-row .gs-feedback { margin-top: 10px; }
 
 .gs-source-row { padding: 8px 0; border-bottom: 1px solid var(--gs-card-border); }
 .gs-source-row:last-child { border-bottom: none; }
-.gs-source-row code { color: var(--gs-muted); }
+.gs-source-row code { color: var(--gs-muted); font-family: var(--gs-mono); }
 
 .gs-state-badge { display: inline-block; font-size: 0.7rem; font-weight: 600;
   padding: 1px 8px; border-radius: 10px; letter-spacing: 0;
@@ -268,20 +518,21 @@
 .gs-state-badge.state-error    { background: var(--gs-error-bg); border-color: var(--gs-error-border); color: var(--gs-error-text); }
 .gs-state-badge.state-disabled { background: var(--gs-chip-bg); border-color: var(--gs-card-border); color: var(--gs-muted); }
 
-/* ---- Precision (Chunk 4) ----
- * Metric/table-heavy. Trust invariant lives in render.py (a rate always ships
- * with its n); the CSS only lays it out. gs-metric-na keeps an "n/a" gauge
- * muted so a low-n state never reads like a confident zero. */
-.gs-h2 { margin: 6px 0 4px; font-size: 1.1rem; font-weight: 620; color: var(--gs-text); }
+/* ---- Precision (Chunk 4) ---- */
+.gs-h2 { margin: 6px 0 4px; font-size: 1.1rem; font-weight: 620; color: var(--gs-text);
+  letter-spacing: -0.01em; }
 .gs-h3 { margin: 12px 0 4px; font-size: 0.92rem; font-weight: 600; color: var(--gs-text); }
 
 .gs-metric-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 4px; }
 .gs-metric { flex: 1 1 240px; min-width: 220px; background: var(--gs-card);
   border: 1px solid var(--gs-card-border); border-radius: var(--gs-radius); padding: 14px 16px;
-  box-shadow: var(--gs-shadow-card); }
+  box-shadow: var(--gs-shadow-card);
+  transition: opacity 560ms cubic-bezier(0.2,0,0,1), translate 560ms cubic-bezier(0.2,0,0,1); }
+@starting-style { .gs-metric { opacity: 0; translate: 0 8px; } }
 .gs-metric-label { color: var(--gs-muted); font-size: 0.72rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0; margin-bottom: 4px; }
-.gs-metric-value { font-size: 1.8rem; font-weight: 640; color: var(--gs-text); line-height: 1.2; }
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+.gs-metric-value { font-size: 1.8rem; font-weight: 640; color: var(--gs-text); line-height: 1.2;
+  font-family: var(--gs-mono); }
 .gs-metric-value.gs-metric-na { color: var(--gs-muted); font-weight: 500; }
 .gs-metric .gs-empty { margin-top: 8px; text-align: left; padding: 10px 12px; box-shadow: none; }
 
@@ -290,10 +541,12 @@
 .gs-table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 0.82rem;
   display: block; overflow-x: auto; }
 .gs-table thead th { text-align: left; color: var(--gs-muted); font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0; font-size: 0.72rem;
-  border-bottom: 1px solid var(--gs-card-border); padding: 6px 12px 6px 0; white-space: nowrap; }
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.7rem;
+  border-bottom: 1px solid var(--gs-border-strong); padding: 6px 12px 6px 0; white-space: nowrap; }
 .gs-table tbody td { color: var(--gs-text); border-bottom: 1px solid var(--gs-card-border);
-  padding: 6px 12px 6px 0; vertical-align: top; }
+  padding: 7px 12px 7px 0; vertical-align: top; }
+.gs-table tbody tr { transition: background 150ms; }
+.gs-table tbody tr:hover { background: var(--gs-row-hover); }
 .gs-table tbody tr:last-child td { border-bottom: none; }
 
 /* ---- Regulatory Monitor (Chunk 5) ---- */
@@ -305,7 +558,7 @@
   padding: 14px 16px 12px 20px; margin-bottom: 14px; overflow: hidden;
   box-shadow: var(--gs-shadow-card); }
 .gs-record::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
-  width: 5px; background: var(--gs-muted); }
+  width: 4px; background: var(--gs-muted); }
 .gs-record .gs-source-link { display: inline-block; margin-top: 6px; }
 
 /* gs-info: the honest low-signal framing banner. Neutral informational tone,
@@ -314,10 +567,7 @@
   border-left: 3px solid var(--gs-accent); border-radius: 8px; padding: 12px 14px;
   margin-bottom: 16px; color: var(--gs-text); font-size: 0.85rem; line-height: 1.5; }
 
-/* ---- Admin (Chunk 6) ----
- * Form-heavy (a Save button per config row) plus a provenance table and a flash
- * region that carries success / info / warning / error levels via an OOB swap.
- * Reuses --gs-* tokens and the existing primitives. */
+/* ---- Admin (Chunk 6) ---- */
 .gs-admin-head { margin-bottom: 18px; }
 .gs-admin-head .gs-h1 { margin-bottom: 6px; }
 
@@ -345,7 +595,7 @@
   border: 1px solid var(--gs-card-border); border-radius: 6px;
   padding: 4px 8px; font-size: 0.85rem;
 }
-.gs-btn-danger:hover { border-color: var(--gs-crit); color: var(--gs-crit); }
+.gs-btn-danger:hover { border-color: var(--gs-sev-crit-fg); color: var(--gs-sev-crit-fg); }
 
 .gs-admin-item { background: var(--gs-card); border: 1px solid var(--gs-card-border);
   border-radius: 8px; padding: 12px 14px; margin: 10px 0; box-shadow: var(--gs-shadow-card); }
@@ -361,7 +611,7 @@
   color: var(--gs-text); white-space: nowrap;
 }
 .gs-admin-table th { color: var(--gs-muted); font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0; font-size: 0.72rem; }
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.7rem; }
 
 /* Flash levels: base .gs-flash is warning-toned; success/info/error recolor it. */
 .gs-flash-success { background: var(--gs-ok-bg); border-color: var(--gs-ok-border); color: var(--gs-ok-text); }
@@ -369,8 +619,58 @@
 .gs-flash-warning { background: var(--gs-warn-bg); border-color: var(--gs-warn-border); color: var(--gs-warn-text); }
 .gs-flash-error { background: var(--gs-error-bg); border-color: var(--gs-error-border); color: var(--gs-error-text); }
 
-@media (max-width: 560px) {
-  .gs-topbar { gap: 8px 14px; padding: 12px 16px; }
+/* ---- Explore: Trigger Analytics + Watchlist Map (PR3, R8.5) ----
+ * The choropleth density ramp is a DELIBERATELY DISTINCT violet scale — not
+ * the blue accent, not the ok/stale/error badge hues — so signal VOLUME on
+ * the map is never misread as evidence confidence (D5). Fills resolve
+ * through per-theme --gs-map-* tokens so the ramp reads on both canvases. */
+#gs-tab-analytics:checked ~ .gs-tablist label[for="gs-tab-analytics"],
+#gs-tab-map:checked ~ .gs-tablist label[for="gs-tab-map"] {
+  color: var(--gs-accent); border-bottom-color: var(--gs-accent); }
+#gs-tab-analytics:checked ~ .gs-tabpanel-analytics { display: block; }
+#gs-tab-map:checked ~ .gs-tabpanel-map { display: block; }
+
+.gs-analytics-table { margin-bottom: 18px; }
+.gs-table .gs-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
+  font-family: var(--gs-mono); }
+
+/* Fixed density ramp (violet). d0 = an empty/quiet state (never "broken"). */
+.gs-map-d0 { fill: var(--gs-map-d0); }
+.gs-map-d1 { fill: var(--gs-map-d1); }
+.gs-map-d2 { fill: var(--gs-map-d2); }
+.gs-map-d3 { fill: var(--gs-map-d3); }
+.gs-map-d4 { fill: var(--gs-map-d4); }
+
+.gs-map-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.gs-map-legend-label { color: var(--gs-muted); font-size: 0.72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em; margin-right: 4px; }
+.gs-map-swatch { display: inline-block; font-size: 0.7rem; color: var(--gs-map-swatch-ink);
+  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--gs-card-border); }
+/* Legend swatches share the density fills as backgrounds (via a parallel set of
+   background rules so the SVG fill classes stay fill-only). */
+.gs-map-swatch.gs-map-d0 { background: var(--gs-map-d0); }
+.gs-map-swatch.gs-map-d1 { background: var(--gs-map-d1); }
+.gs-map-swatch.gs-map-d2 { background: var(--gs-map-d2); }
+.gs-map-swatch.gs-map-d3 { background: var(--gs-map-d3); color: var(--gs-map-swatch-ink-dense); }
+.gs-map-swatch.gs-map-d4 { background: var(--gs-map-d4); color: var(--gs-map-swatch-ink-dense); }
+
+.gs-map-caption { margin: 4px 0 10px; }
+.gs-map-wrap { width: 100%; overflow-x: auto; background: var(--gs-card);
+  border: 1px solid var(--gs-card-border); border-radius: var(--gs-radius); padding: 8px; }
+.gs-map { display: block; width: 100%; height: auto; max-width: 960px; margin: 0 auto; }
+.gs-map-state { stroke: var(--gs-map-stroke); stroke-width: 0.6; }
+.gs-map-facility { fill: var(--gs-crit); stroke: var(--gs-map-stroke); stroke-width: 1; }
+
+/* ---- responsive ---- */
+@media (max-width: 860px) {
+  .gs-sidebar { position: static; height: auto; width: 100%; flex-direction: row;
+    flex-wrap: wrap; align-items: center; gap: 2px 10px; padding: 10px 14px;
+    border-right: none; border-bottom: 1px solid var(--gs-card-border); }
+  .gs-shell { flex-direction: column; }
+  .gs-navgroup { margin-top: 0; display: flex; align-items: center; gap: 2px; }
+  .gs-navgroup-label { display: none; }
+  .gs-sidebar-foot { margin: 0 0 0 auto; padding: 0; }
+  .gs-theme-toggle button { padding: 4px 8px; }
   .gs-main { padding: 16px; }
   .gs-admin-label { width: 100%; min-width: 0; }
   .gs-admin-label input[type="text"], .gs-admin-label input[type="number"],
@@ -380,43 +680,12 @@
   }
 }
 
-/* ---- Explore: Trigger Analytics + Watchlist Map (PR3, R8.5) ----
- * Reuses the CSS-only radio tab toggle (same mechanism as Account 360). The
- * choropleth density ramp is a DELIBERATELY DISTINCT violet scale — not the
- * blue accent, not the ok/stale/error badge hues — so signal VOLUME on the map
- * is never misread as evidence confidence (D5). */
-#gs-tab-analytics:checked ~ .gs-tablist label[for="gs-tab-analytics"],
-#gs-tab-map:checked ~ .gs-tablist label[for="gs-tab-map"] {
-  color: var(--gs-accent); border-bottom-color: var(--gs-accent); }
-#gs-tab-analytics:checked ~ .gs-tabpanel-analytics { display: block; }
-#gs-tab-map:checked ~ .gs-tabpanel-map { display: block; }
-
-.gs-analytics-table { margin-bottom: 18px; }
-.gs-table .gs-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-
-/* Fixed density ramp (violet). d0 = an empty/quiet state (never "broken"). */
-.gs-map-d0 { fill: #eceff3; }
-.gs-map-d1 { fill: #dcd3ec; }
-.gs-map-d2 { fill: #b9a2db; }
-.gs-map-d3 { fill: #8f66c4; }
-.gs-map-d4 { fill: #6a2fb0; }
-
-.gs-map-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
-.gs-map-legend-label { color: var(--gs-muted); font-size: 0.72rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0; margin-right: 4px; }
-.gs-map-swatch { display: inline-block; font-size: 0.7rem; color: #1c1330;
-  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--gs-card-border); }
-/* Legend swatches share the density fills as backgrounds (via a parallel set of
-   background rules so the SVG fill classes stay fill-only). */
-.gs-map-swatch.gs-map-d0 { background: #eceff3; }
-.gs-map-swatch.gs-map-d1 { background: #dcd3ec; }
-.gs-map-swatch.gs-map-d2 { background: #b9a2db; }
-.gs-map-swatch.gs-map-d3 { background: #8f66c4; color: #fff; }
-.gs-map-swatch.gs-map-d4 { background: #6a2fb0; color: #fff; }
-
-.gs-map-caption { margin: 4px 0 10px; }
-.gs-map-wrap { width: 100%; overflow-x: auto; background: var(--gs-card);
-  border: 1px solid var(--gs-card-border); border-radius: var(--gs-radius); padding: 8px; }
-.gs-map { display: block; width: 100%; height: auto; max-width: 960px; margin: 0 auto; }
-.gs-map-state { stroke: #ffffff; stroke-width: 0.6; }
-.gs-map-facility { fill: #d55e00; stroke: #ffffff; stroke-width: 1; }
+/* Motion kill switch: every entrance, sweep, and transition collapses to an
+   instant state change. */
+@media (prefers-reduced-motion: reduce) {
+  *, ::details-content, ::before, ::after {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    animation: none !important;
+  }
+}

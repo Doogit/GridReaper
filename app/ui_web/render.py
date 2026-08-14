@@ -813,12 +813,13 @@ def card_view(detail, legend):
     if unconfirmed:
         classes.append("tier-unconfirmed")
 
+    # who + score moved out of the meta line into the card header row (the
+    # entity name and the severity-colored score ring); the meta keeps the
+    # trigger, date, and any non-active status.
     who = signal["entity_name"] or scope_label(signal["signal_scope"])
     meta_bits = [b for b in (
         signal["trigger_name"] or "",
         str(signal["event_date"] or ""),
-        who or "",
-        f"score {fmt_score(signal['score'])}",
     ) if b]
     if status != "active":
         meta_bits.append(status)
@@ -853,6 +854,17 @@ def card_view(detail, legend):
         "card_class": " ".join(classes),
         "headline": signal["headline"] or "",
         "meta_bits": meta_bits,
+        # card header row: severity badge (band class + label) + entity/scope
+        # identity + score ring. The ring arc is a severity gauge — the score
+        # clamped onto the 0-5 band scale (bands at 1.5/2.75/4) — distinct
+        # from the decay bar (score vs fresh ceiling). None stays None so an
+        # unscored signal renders plain text, never a fake-full ring.
+        "who": who,
+        "severity_band": band,
+        "severity_label": band.capitalize(),
+        "score_display": fmt_score(signal["score"]),
+        "ring_pct": (round(min(max(float(signal["score"]), 0.0) / 5.0, 1.0) * 100)
+                     if signal["score"] is not None else None),
         "decay": decay,
         "breakdown": score_breakdown(signal),
         "badges": _badges(signal, snapshots, legend),
