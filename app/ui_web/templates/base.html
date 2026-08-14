@@ -1,30 +1,102 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}GridSignals{% endblock %}</title>
+  <script data-gs="theme-boot">
+  /* No-FOUC: resolve the persisted theme before first paint. Default is
+     light; "system" tracks the OS preference. */
+  (function(){try{
+    var t = localStorage.getItem('gs-theme') || 'light';
+    if (t === 'system') { t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+    document.documentElement.style.colorScheme = t;
+  }catch(e){}})();
+  </script>
   <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
   <script src="{{ url_for('static', path='htmx.min.js') }}" defer></script>
 </head>
 <body class="gs-body">
-  <header class="gs-topbar">
-    <span class="gs-brand">GridSignals</span>
-    <nav class="gs-nav">
-      <a href="/explore" class="{{ 'active' if nav_active == 'explore' else '' }}">Explore</a>
-      <a href="/" class="{{ 'active' if nav_active == 'home' else '' }}">Home</a>
-      <a href="/account" class="{{ 'active' if nav_active == 'account' else '' }}">Account 360</a>
-      <a href="/review" class="{{ 'active' if nav_active == 'review' else '' }}">Review</a>
-      <a href="/precision" class="{{ 'active' if nav_active == 'precision' else '' }}">Precision</a>
-      <a href="/retiers" class="{{ 'active' if nav_active == 'retiers' else '' }}">Re-tiers</a>
-      <a href="/regulatory" class="{{ 'active' if nav_active == 'regulatory' else '' }}">Regulatory</a>
-      <a href="/digest" class="{{ 'active' if nav_active == 'digest' else '' }}">Digest</a>
-      <a href="/admin" class="{{ 'active' if nav_active == 'admin' else '' }}">Admin</a>
-    </nav>
-  </header>
-  <div id="flash" class="gs-flash" aria-live="polite">{% block flash %}{% endblock %}</div>
-  <main class="gs-main">
-    {% block content %}{% endblock %}
-  </main>
+<div class="gs-shell">
+  <nav class="gs-sidebar" aria-label="Primary">
+    <div class="gs-brand">
+      <span class="gs-brand-mark" aria-hidden="true"><span class="gs-brand-bolt"></span></span>
+      GridSignals
+    </div>
+    <div class="gs-navgroup">
+      <div class="gs-navgroup-label">Monitor</div>
+      <div class="gs-nav">
+        <a href="/" class="{{ 'active' if nav_active == 'home' else '' }}">Signal Feed</a>
+        <a href="/explore" class="{{ 'active' if nav_active == 'explore' else '' }}">Explore</a>
+        <a href="/digest" class="{{ 'active' if nav_active == 'digest' else '' }}">Digest</a>
+      </div>
+    </div>
+    <div class="gs-navgroup">
+      <div class="gs-navgroup-label">Accounts</div>
+      <div class="gs-nav">
+        <a href="/account" class="{{ 'active' if nav_active == 'account' else '' }}">Account 360</a>
+        <a href="/review" class="{{ 'active' if nav_active == 'review' else '' }}">Review</a>
+      </div>
+    </div>
+    <div class="gs-navgroup">
+      <div class="gs-navgroup-label">Quality</div>
+      <div class="gs-nav">
+        <a href="/precision" class="{{ 'active' if nav_active == 'precision' else '' }}">Precision</a>
+        <a href="/retiers" class="{{ 'active' if nav_active == 'retiers' else '' }}">Re-tiers</a>
+        <a href="/regulatory" class="{{ 'active' if nav_active == 'regulatory' else '' }}">Regulatory</a>
+      </div>
+    </div>
+    <div class="gs-navgroup">
+      <div class="gs-navgroup-label">System</div>
+      <div class="gs-nav">
+        <a href="/admin" class="{{ 'active' if nav_active == 'admin' else '' }}">Admin</a>
+      </div>
+    </div>
+    <div class="gs-sidebar-foot">
+      <div class="gs-theme-toggle" role="group" aria-label="Theme">
+        <button type="button" data-set-theme="light">Light</button>
+        <button type="button" data-set-theme="dark">Dark</button>
+        <button type="button" data-set-theme="system">System</button>
+      </div>
+    </div>
+  </nav>
+  <div class="gs-content">
+    <header class="gs-topbar">
+      <span class="gs-topbar-title">{% block pagetitle %}GridSignals{% endblock %}</span>
+    </header>
+    <div id="flash" class="gs-flash" aria-live="polite">{% block flash %}{% endblock %}</div>
+    <main class="gs-main">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+<script data-gs="theme-toggle">
+/* Three-state theme toggle: persists 'light' | 'dark' | 'system'; system
+   tracks OS changes live; switches crossfade via View Transitions. */
+(function(){
+  var mq = matchMedia('(prefers-color-scheme: dark)');
+  function stored(){ return localStorage.getItem('gs-theme') || 'light'; }
+  function apply(){
+    var pref = stored();
+    var t = pref === 'system' ? (mq.matches ? 'dark' : 'light') : pref;
+    document.documentElement.setAttribute('data-theme', t);
+    document.documentElement.style.colorScheme = t;
+    document.querySelectorAll('[data-set-theme]').forEach(function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.setTheme === pref));
+    });
+  }
+  document.querySelectorAll('[data-set-theme]').forEach(function(b){
+    b.addEventListener('click', function(){
+      localStorage.setItem('gs-theme', b.dataset.setTheme);
+      if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        document.startViewTransition(apply);
+      } else { apply(); }
+    });
+  });
+  mq.addEventListener('change', apply);
+  apply();
+})();
+</script>
 </body>
 </html>

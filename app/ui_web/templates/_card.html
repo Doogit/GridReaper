@@ -3,16 +3,29 @@
    omits price_note and card_view never reintroduces it (R4.3/R7.11). Outreach
    renders only from the cleared safe text (card_view gates it). #}
 <article class="{{ c.card_class }}" id="card-{{ c.card_key }}">
-  <a class="gs-permalink" href="/card/{{ c.card_key }}" title="Permalink to this card">Permalink</a>
+  {# header row: severity badge (tint + drawn SVG shape + label — redundant
+     channels, WCAG 1.4.1), entity/scope identity, severity-gauge score ring #}
+  <div class="gs-card-top">
+    {# shape is a clip-path span, not an <svg>: keeps the "no raw <svg>/<img>
+       in the DOM" XSS invariant strict on non-map pages #}
+    <span class="gs-sev {{ c.severity_band }}"><span class="gs-sev-shape" aria-hidden="true"></span>{{ c.severity_label }}</span>
+    {% if c.who %}<span class="gs-entity">{{ c.who }}</span>{% endif %}
+    <span class="gs-spacer"></span>
+    {% if c.ring_pct is not none %}
+    <div class="gs-score-ring" style="--gs-ring:{{ c.ring_pct }}" role="img" aria-label="Score {{ c.score_display }}">{{ c.score_display }}</div>
+    {% else %}
+    <span class="gs-score-plain">unscored</span>
+    {% endif %}
+  </div>
   <div class="gs-headline">{{ c.headline }}</div>
-  <div class="gs-meta">{{ c.meta_bits | join(" · ") }}</div>
+  <div class="gs-meta">{{ c.meta_bits | join(" · ") }}{% if c.meta_bits %} · {% endif %}<a class="gs-permalink" href="/card/{{ c.card_key }}" title="Permalink to this card">permalink</a></div>
 
   {% if c.unconfirmed_warning %}
   <div class="gs-unconfirmed-warning" role="note">{{ c.unconfirmed_warning }}</div>
   {% endif %}
 
   {% if c.decay %}
-  <div class="gs-decay-wrap"><div class="gs-decay-fill" style="width:{{ c.decay.fill_pct }}%"></div></div>
+  <div class="gs-decay-wrap"><div class="gs-decay-fill" style="--fill:{{ c.decay.fill_pct }}%"></div></div>
   <div class="gs-meta">strength {{ c.decay.strength }} of {{ c.decay.ceiling }} fresh ceiling</div>
   {% endif %}
 
