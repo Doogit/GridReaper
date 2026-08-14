@@ -1,5 +1,5 @@
 #!/bin/sh
-# Canonical GridSignals data pipeline: licensing -> ingest (8 live feeds) ->
+# Canonical GridSignals data pipeline: licensing -> ingest (9 live feeds) ->
 # classify -> score -> plays -> digest. ONE ordered list, shared by the runtime
 # first-load entrypoint (deploy/entrypoint.sh) and any future in-container
 # scheduler (the cron decision). The ordering invariants below are contract-
@@ -24,14 +24,21 @@ python -m app.ingest.presswire --source prnewswire    || echo "WARN: prnewswire 
 python -m app.ingest.presswire --source globenewswire || echo "WARN: globenewswire ingest failed, continuing"
 python -m app.ingest.nerc_pages        || echo "WARN: nerc_pages ingest failed, continuing"
 python -m app.ingest.cisa_kev          || echo "WARN: cisa_kev ingest failed, continuing"
+python -m app.ingest.ransomware        || echo "WARN: ransomware ingest failed, continuing"
 python -m app.ingest.security_rss --source therecord        || echo "WARN: the_record ingest failed, continuing"
 python -m app.ingest.security_rss --source bleepingcomputer || echo "WARN: bleepingcomputer ingest failed, continuing"
 
 # Classify -> score -> plays -> digest. Classifiers run before scoring; digest
 # is last (reads the freshest scored cards + play snapshots, R8.8).
+# incident (8-K 1.05) reads EDGAR submissions; ransomware reads ransomware.live —
+# both are Stage-2 incident classifiers that were merged but previously unwired
+# here, so they never fired (they mint account/peer incident cards when a real
+# 1.05 filing or resolvable ransomware victim appears).
 python -m app.classify.regulatory
 python -m app.classify.leadership
 python -m app.classify.company_statement
+python -m app.classify.incident
+python -m app.classify.ransomware
 python -m app.classify.security_rss
 python -m app.scoring
 python -m app.plays

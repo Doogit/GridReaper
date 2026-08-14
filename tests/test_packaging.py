@@ -65,7 +65,10 @@ class PackagingContractTest(unittest.TestCase):
             "app/classify/regulatory.py",
             "app/classify/leadership.py",
             "app/classify/company_statement.py",
+            "app/classify/incident.py",
+            "app/classify/ransomware.py",
             "app/classify/security_rss.py",
+            "app/ingest/ransomware.py",
             "app/ingest/security_rss.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
@@ -96,6 +99,38 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             p.index("app.classify.security_rss"), p.index("app.scoring"),
             "security RSS classification must run before scoring",
+        )
+
+    def test_pipeline_runs_incident_classifier_before_scoring(self):
+        # The 8-K Item 1.05 incident classifier reads EDGAR submissions and mints
+        # the product's core account-scoped confirmed-incident cards. It was
+        # merged but previously unwired here (never fired); pin it so it can't be
+        # dropped again, ordered after EDGAR ingest and before scoring.
+        p = self._pipeline()
+        self.assertIn("app.classify.incident", p, "pipeline dropped the 8-K 1.05 incident classifier")
+        self.assertLess(
+            p.index("app.ingest.edgar"), p.index("app.classify.incident"),
+            "EDGAR ingest must run before the incident classifier",
+        )
+        self.assertLess(
+            p.index("app.classify.incident"), p.index("app.scoring"),
+            "incident classification must run before scoring",
+        )
+
+    def test_pipeline_runs_ransomware_ingest_and_classifier_before_scoring(self):
+        # The ransomware.live feed + classifier mint operator early-warning cards.
+        # Both were merged but previously unwired here; pin the ingest -> classify
+        # -> score ordering so a resolvable victim actually surfaces.
+        p = self._pipeline()
+        self.assertIn("app.ingest.ransomware", p, "pipeline dropped the ransomware.live feed")
+        self.assertIn("app.classify.ransomware", p, "pipeline dropped the ransomware classifier")
+        self.assertLess(
+            p.index("app.ingest.ransomware"), p.index("app.classify.ransomware"),
+            "ransomware ingest must run before its classifier",
+        )
+        self.assertLess(
+            p.index("app.classify.ransomware"), p.index("app.scoring"),
+            "ransomware classification must run before scoring",
         )
 
     def test_pipeline_runs_digest_after_scoring_and_plays(self):
