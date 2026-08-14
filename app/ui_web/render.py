@@ -1075,13 +1075,17 @@ def ransomware_activity_view(activity):
     withheld_listings = activity.get("crews_withheld_listings") or 0
     crew_note = ""
     if withheld:
+        # States the gate as it actually is — a distinct-VICTIM floor, not a
+        # listing floor. One victim can appear as several listings when the
+        # tracker revises a record, and such a crew is still withheld.
         crew_note = (
             f"{withheld} further "
             f"{'crew is' if withheld == 1 else 'crews are'} not named here: "
-            f"{'it claims' if withheld == 1 else 'each claims'} a single "
-            f"listing ({withheld_listings} in total), and a crew that has named "
-            "itself after its one victim would identify that company (R4.1). "
-            "They are still counted in the total.")
+            f"{'it is' if withheld == 1 else 'each is'} tied to a single victim "
+            f"({withheld_listings} "
+            f"{'listing' if withheld_listings == 1 else 'listings'} in total), "
+            "and a crew that has named itself after its one victim would "
+            "identify that company (R4.1). They are still counted in the total.")
 
     unclassified = activity.get("unclassified") or 0
     industry_note = ""

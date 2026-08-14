@@ -256,9 +256,27 @@ class TestRansomwareActivityView(unittest.TestCase):
     def test_crew_note_explains_what_is_withheld_and_why(self):
         note = self.view["crew_note"]
         self.assertIn("1 further crew is not named", note)
-        self.assertIn("single listing", note)
+        # The note must state the gate as it actually is — a distinct-VICTIM
+        # floor, not a listing floor (a revised record makes a second listing
+        # for the same company, and that crew is still withheld).
+        self.assertIn("tied to a single victim", note)
         self.assertIn("still counted in the total", note)
         self.assertNotIn("lonewolfcrew", note)
+
+    def test_crew_note_counts_listings_for_a_multi_listing_withheld_crew(self):
+        # One victim, two listings: the note says one victim, two listings.
+        conn = fixture_conn((
+            victim("Alpha Mfg", "Alpha Mfg", "Manufacturing",
+                   event_date="2026-08-10", domain="alpha.example"),
+            victim("Alpha Mfg", "Alpha Mfg", "Manufacturing",
+                   event_date="2026-08-11", domain="alpha.example"),
+        ))
+        note = render.ransomware_activity_view(
+            data.ransomware_activity(conn))["crew_note"]
+        conn.close()
+        self.assertIn("tied to a single victim", note)
+        self.assertIn("2 listings in total", note)
+        self.assertNotIn("Alpha Mfg", note)
 
     def test_industry_note_states_the_unclassified_share(self):
         self.assertIn("1 of 10", self.view["industry_note"])
