@@ -4,9 +4,10 @@
 # The image is built INSIDE Azure with `az acr build`, so you do NOT need Docker
 # installed locally — only the Azure CLI.
 #
-# NOTE: GridSignals bakes its demo data by running the ingest pipeline against
-# live public feeds during the image build, so `az acr build` is slower and
-# network-dependent for this repo (by design — see deploy/README.md).
+# NOTE: GridSignals builds fetch-free. The container seeds config at startup and
+# runs the live ingest pipeline in the background on first load, so `az acr
+# build` is deterministic while runtime population is network-dependent (see
+# deploy/README.md).
 #
 # Prerequisites:
 #   1. Azure CLI installed            (https://aka.ms/azcli)
@@ -49,7 +50,7 @@ az acr create -g $ResourceGroup -n $AcrName --sku Basic -o none
 # keeps the script working in subscriptions with stricter registry policy.
 az acr config authentication-as-arm update -r $AcrName --status enabled -o none
 
-Write-Host "Building image in Azure (az acr build) — runs the live ingest pipeline, may take several minutes..."
+Write-Host "Building image in Azure (az acr build) - fetch-free; runtime first load ingests in the background..."
 az acr build -r $AcrName -t $Image "$RepoRoot" -o none
 
 # 3. Linux App Service plan. B1 keeps the container Always On so the first
@@ -81,5 +82,5 @@ az webapp restart -g $ResourceGroup -n $AppName -o none
 $AppHost = az webapp show -g $ResourceGroup -n $AppName --query defaultHostName -o tsv
 Write-Host ""
 Write-Host "Deployed: https://$AppHost"
-Write-Host "First load can take ~30-60s while the container starts and warms up."
+Write-Host "First load serves immediately; the signal feed may take ~1-2 minutes to populate in the background."
 Write-Host "To tear it all down:  az group delete -n $ResourceGroup --yes --no-wait"

@@ -67,12 +67,13 @@ az webapp auth update -g rg-gridsignals -n <app-name> `
 
 ## Notes / limitations
 
-- **Untested against a live subscription from this repo checkout.** The build
-  pipeline is verified end-to-end locally (produces signals + license plays); the
-  `az` deploy commands assume a recent Azure CLI.
-- **State is ephemeral and demo-only.** The SQLite store is baked into the image;
-  feedback written through the running app persists only until the container
-  restarts. For a real deployment, point `GRIDSIGNALS_DB` at durable storage
-  (Azure Files) and run ingestion as a scheduled job.
+- **Untested against a live subscription from this repo checkout.** The runtime
+  ingest pipeline's ordering is covered by local packaging tests; the `az`
+  deploy commands assume a recent Azure CLI.
+- **State is ephemeral and demo-only by default.** The SQLite store is created at
+  container startup inside the container filesystem; first-load signals and
+  feedback persist only until the container is replaced. For a real deployment,
+  point `GRIDSIGNALS_DB` at durable storage (Azure Files) and run ingestion as a
+  scheduled job.
 - **Single container, always-on B1 plan.** For a rarely-used demo you can switch
   the plan SKU to `F1` (free, but no Always On → cold starts).

@@ -20,6 +20,8 @@ ENTRYPOINT = REPO / "deploy" / "entrypoint.sh"
 PIPELINE = REPO / "deploy" / "ingest_pipeline.sh"
 DEPLOY_README = REPO / "deploy" / "README.md"
 PACKAGE_WORKFLOW = REPO / ".github" / "workflows" / "package.yml"
+AZURE_DEPLOY = REPO / "deploy" / "azure-deploy.ps1"
+DOCKERIGNORE = REPO / ".dockerignore"
 
 
 class PackagingContractTest(unittest.TestCase):
@@ -169,6 +171,19 @@ class PackagingContractTest(unittest.TestCase):
             "the image build must not run ingestion (data is populated at runtime)",
         )
 
+    def test_docker_context_excludes_runtime_data(self):
+        # COPY . . must not bake ignored local runtime state into the image.
+        ignore = DOCKERIGNORE.read_text(encoding="utf-8")
+        for pattern in (
+            "data/*.db",
+            "data/*.db-wal",
+            "data/*.db-shm",
+            "data/digests/",
+            "data/backups/",
+            "data/.ingest.lock",
+        ):
+            self.assertIn(pattern, ignore)
+
     def test_package_workflow_probes_fastapi_health(self):
         workflow = PACKAGE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("/healthz", workflow)
@@ -196,6 +211,16 @@ class PackagingContractTest(unittest.TestCase):
         self.assertIn("az extension add --name authV2", readme)
         self.assertIn("--unauthenticated-client-action RedirectToLoginPage", readme)
         self.assertNotIn("--action RequireAuthentication", readme)
+
+    def test_deploy_docs_match_runtime_first_load_model(self):
+        readme = DEPLOY_README.read_text(encoding="utf-8")
+        deploy = AZURE_DEPLOY.read_text(encoding="utf-8")
+        for text in (readme, deploy):
+            self.assertIn("first load", text.lower())
+            self.assertNotIn("SQLite store is baked into the image", text)
+            self.assertNotIn("build pipeline", text.lower())
+            self.assertNotIn("runs the live ingest pipeline, may take", text)
+            self.assertNotIn("live public feeds during the image build", text)
 
 
 if __name__ == "__main__":

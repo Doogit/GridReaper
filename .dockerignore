@@ -1,12 +1,14 @@
-# Keep the build context small. NOTE: seeds/ is NOT ignored — the build loads
-# config from seeds/*.csv. Only the generated database is excluded so the build
-# creates its own.
+# Keep the build context small. NOTE: seeds/ is NOT ignored - the runtime seed
+# loader reads config from seeds/*.csv. Generated runtime data is excluded so the
+# image ships code + config only.
 .git
 tests
 docs
-data/gridsignals.db
-data/gridsignals.db-wal
-data/gridsignals.db-shm
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/digests/
+data/backups/
 data/.ingest.lock
 **/__pycache__
 *.pyc
