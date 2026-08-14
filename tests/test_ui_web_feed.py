@@ -189,6 +189,16 @@ class TestCardsRender(FeedTestBase):
         self.assertIn("app.css", dom)
         self.assertIn("htmx.min.js", dom)
 
+    def test_feed_body_auto_refreshes_every_120s(self):
+        # R8.1: the feed body polls every 120s so a background first-load ingest
+        # (and later scored cards) surface without a manual reload. hx-include
+        # carries the current status filter through the poll.
+        dom = self.home()
+        self.assertIn('id="gs-feed-body"', dom)
+        self.assertIn('hx-trigger="every 120s"', dom)
+        self.assertIn('hx-get="/feed"', dom)
+        self.assertIn("hx-include=\"[name='status']\"", dom)
+
     def test_non_primary_chip_badged_and_no_price_in_dom(self):
         dom = self.home()
         self.assertIn("gs-badge nonprimary", dom)   # R4.3 chip rendered

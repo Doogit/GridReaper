@@ -14,7 +14,16 @@
   </label>
 </div>
 
-<div id="gs-feed-body">
+{# R8.1: poll the feed body every 120s so a background first-load ingest (and
+   later scored cards) surface without a manual reload. hx-include carries the
+   current status filter, and swapping innerHTML leaves this div (with its poll
+   attrs) in place across status re-renders. #}
+<div id="gs-feed-body"
+     hx-get="/feed"
+     hx-trigger="every 120s"
+     hx-target="#gs-feed-body"
+     hx-swap="innerHTML"
+     hx-include="[name='status']">
   {% include "_feed_body.html" %}
 </div>
 {% endblock %}
