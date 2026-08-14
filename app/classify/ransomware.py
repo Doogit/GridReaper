@@ -32,11 +32,26 @@ committing a concrete entity_id, no leak-site text ever feeds resolution.
   review   -> ambiguous / collision / below-threshold (R6.2/R6.3). Enqueued for
              a human and NO card is minted (Kevin's queue-only rule). Enqueued
              here so the framework never gets a chance to re-resolve it.
-  none     -> peer_incident (sector). Off-list victim read as a class signal to
+  none     -> peer_incident (sector), but ONLY for an energy-industry victim
+             (see PEER_ACTIVITIES). Off-list victim read as a class signal to
              sector peers, and NAME-FREE in the strong sense: neither the
              victim name NOR the attacker-controlled group string is printed
              (a crew can name itself after its victim), so the sector card
              leaks no company identity (R4.1).
+
+A peer card asserts the victim is a *sector peer* of the watchlist, so that
+claim is checked rather than assumed (R4.1: never template a claim the source
+does not support). ransomware.live tracks victims across every industry - in a
+100-record sample only 2 were "Energy & Utilities", against 15 Manufacturing,
+15 Professional Services, 13 Technology and 11 Healthcare - so classifying the
+whole feed as peers made 97 of 104 stored signals a sector claim the source
+never made. The tracker's own ``activity`` tag is the check.
+
+Industry only: geography is deliberately NOT filtered (Kevin's ruling). A
+utility in another country is still an industry peer of a US utility; the
+sector lesson travels, the jurisdiction does not have to. Size/revenue would
+be a defensible second axis but the record carries no size field, so it is
+not attempted.
 
 R4.1 discipline: the evidence is the tracker listing itself, quoted as a claim
 ("listed on ... leak site ... unverified"); it never templates a verb the
@@ -55,6 +70,11 @@ KNOWN LIMITATIONS (accepted, documented):
     enough from its stored name/aliases resolves to ``none`` and mints a PEER
     card instead of an OWN one (it under-attributes, but never leaks identity).
     Seeding common leak-site abbreviations as aliases mitigates.
+  * The industry gate trusts the tracker's ``activity`` tag. An energy victim
+    tagged with another industry (or "Not Found" - 17 of 100 in the sample)
+    mints no peer card. That under-fires by design: an unknown industry is not
+    evidence of a match. The own path is unaffected, so a watchlist victim
+    still fires whatever its tag says.
 
 Data credit: ransomware.live (https://www.ransomware.live), CC-BY-4.0 (R10.4).
 
@@ -67,14 +87,35 @@ from app.classify import runner as classify_runner
 from app.resolve import EntityResolver, enqueue_review, record_decision
 
 CLASSIFIER_ID = "incident_ransomware"
-PARSER_VERSION = "incident_ransomware/1.0"
+PARSER_VERSION = "incident_ransomware/1.1"
 SOURCE_ID = "ransomware_live"
+
+# ransomware.live ``activity`` values that make an off-list victim an industry
+# peer of the watchlist. Matched on a normalized form ("&" -> "and", casefolded)
+# so upstream punctuation/case drift does not silently drop a real peer. The
+# watchlist spans electric utilities AND oil & gas / midstream / refining
+# (see the subsector weights), so both bands count. Anything else - including
+# an absent or "Not Found" tag - mints no peer card.
+PEER_ACTIVITIES = frozenset({
+    "energy",
+    "energy and utilities",
+    "utilities",
+    "oil and gas",
+})
 
 # Unconfirmed early warning: intentionally low confidence, and outreach is
 # suppressed by the tier regardless (R7.12).
 OWN_CONFIDENCE = 0.5
 PEER_CONFIDENCE = 0.45
 TIER = "unconfirmed_early_warning"
+
+
+def _is_peer_industry(activity):
+    """True when the tracker's ``activity`` tag places the victim in the
+    watchlist's industry. Normalizes "&" to "and" and casefolds so
+    "Energy & Utilities" / "energy and utilities" both match."""
+    normalized = " ".join((activity or "").replace("&", "and").split()).lower()
+    return normalized in PEER_ACTIVITIES
 
 
 def _record_decision_once(conn, raw_event_id, res):
@@ -143,9 +184,15 @@ def classify_ransomware(conn, raw):
             "incident_evidence_level": TIER,
         }]
 
-    # status == "none": off-list victim -> class-level sector card. Name-free in
-    # the strong sense - neither victim NOR the attacker-controlled group string
-    # is printed, so the card leaks no company identity (R4.1).
+    # status == "none": off-list victim -> class-level sector card, but only if
+    # the tracker places the victim in the watchlist's industry. A peer card
+    # asserts "sector peer"; an off-industry victim would make that a claim the
+    # source never supports (R4.1), so it mints nothing.
+    if not _is_peer_industry(payload.get("activity")):
+        return []
+
+    # Name-free in the strong sense - neither victim NOR the attacker-controlled
+    # group string is printed, so the card leaks no company identity (R4.1).
     evidence = [{
         "text": f"ransomware.live lists an organization on a ransomware leak site{seen}.",
         "locator": "source"}]
