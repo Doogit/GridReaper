@@ -25,12 +25,17 @@ router = APIRouter()
 PAGE_SIZE = 25
 
 # Status filter options (mirrors app/ui/Home.py). Feed defaults to active.
+# 'retracted' (R3.7) is a card a corrected classifier no longer emits. It is
+# listed here, and included in "all", deliberately: the filter set is an
+# allow-list, so leaving it out would hide those cards behind an "all" that is
+# not all - the pipeline correcting itself should be inspectable, not silent.
 STATUS_FILTERS = {
     "active": ("active",),
     "decayed": ("decayed",),
     "superseded": ("superseded",),
     "dismissed": ("dismissed",),
-    "all": ("active", "decayed", "superseded", "dismissed"),
+    "retracted": ("retracted",),
+    "all": ("active", "decayed", "superseded", "dismissed", "retracted"),
 }
 
 
