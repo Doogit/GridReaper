@@ -1873,7 +1873,12 @@ def explore_state_density(conn, statuses=("active",)):
 
 RANSOMWARE_SOURCE_ID = ransomware_classifier.SOURCE_ID
 
-# A named crew must cover at least this many listings (see R4.1 note above).
+# A named crew must cover at least this many DISTINCT VICTIMS (see R4.1 above).
+# Distinct victims, not listings: ransomware.live exposes no stable per-victim
+# id, so an upstream record revision mints a second raw_event for the same
+# company (see the KNOWN LIMITATIONS in app/classify/ransomware.py). Counting
+# listings would let a self-named crew with two revisions of ONE victim clear
+# the floor and name that company — precisely what the floor exists to prevent.
 CREW_MIN_VICTIMS = 2
 
 # The tracker's own "no industry determined" markers. Counted as unclassified
@@ -1915,6 +1920,7 @@ def ransomware_activity(conn):
         (RANSOMWARE_SOURCE_ID,)).fetchall()
 
     crew_counts = {}
+    crew_victims = {}
     industry_counts = {}
     dates = []
     unclassified = 0
@@ -1933,6 +1939,9 @@ def ransomware_activity(conn):
         crew = " ".join((payload.get("group") or "").split())
         if crew:
             crew_counts[crew] = crew_counts.get(crew, 0) + 1
+            victim = " ".join((payload.get("victim") or "").split()).lower()
+            if victim:
+                crew_victims.setdefault(crew, set()).add(victim)
 
         activity = " ".join((payload.get("activity") or "").split())
         if _is_unclassified_activity(activity):
@@ -1941,10 +1950,14 @@ def ransomware_activity(conn):
             industry_counts[activity] = industry_counts.get(activity, 0) + 1
 
     # Descending by count, then label, so equal counts render deterministically.
+    # The naming gate is distinct victims, not raw listings: upstream revisions
+    # can create more than one raw_event for one real victim, and naming a
+    # self-named crew in that case would still identify the company.
     named = [{"label": k, "count": n}
              for k, n in sorted(crew_counts.items(), key=lambda kv: (-kv[1], kv[0]))
-             if n >= CREW_MIN_VICTIMS]
-    withheld = [n for n in crew_counts.values() if n < CREW_MIN_VICTIMS]
+             if len(crew_victims.get(k, set())) >= CREW_MIN_VICTIMS]
+    withheld = [n for k, n in crew_counts.items()
+                if len(crew_victims.get(k, set())) < CREW_MIN_VICTIMS]
 
     industries = [
         {"label": k, "count": n,

@@ -1035,7 +1035,7 @@ RANSOMWARE_CAPTION = (
     "Situational awareness only — leak-site listings are unverified claims by "
     "ransomware crews (R10.5), counted here as threat activity. Nothing on this "
     "tab is scored, attributed to a watchlist account, or implies an account is "
-    "affected. Only the energy rows below mint sector-peer cards.")
+    "affected. Only the watchlist-industry rows below mint sector-peer cards.")
 
 
 def _bar_pct(count, top):

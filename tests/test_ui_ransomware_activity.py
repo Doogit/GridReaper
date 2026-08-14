@@ -163,6 +163,24 @@ class TestAggregatePrivacy(unittest.TestCase):
         # say how much it is holding back rather than implying completeness.
         self.assertEqual(self.activity["crew_total"], 4)
 
+    def test_crew_requires_multiple_distinct_victims_to_be_named(self):
+        # The ingest path can store more than one raw listing for one real
+        # victim when the upstream record changes. Two listings for a self-named
+        # crew still map back to one company, so raw listing count is not enough
+        # to clear the privacy gate.
+        conn = fixture_conn((
+            victim("Alpha Mfg", "Alpha Mfg", "Manufacturing",
+                   event_date="2026-08-10", domain="alpha.example"),
+            victim("Alpha Mfg", "Alpha Mfg", "Manufacturing",
+                   event_date="2026-08-11", domain="alpha.example"),
+        ))
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        self.assertEqual(activity["total"], 2)
+        self.assertEqual(activity["crews"], [])
+        self.assertEqual(activity["crews_withheld"], 1)
+        self.assertEqual(activity["crews_withheld_listings"], 2)
+
     def test_no_victim_domain_or_url_anywhere_in_the_result(self):
         blob = json.dumps(self.activity).lower()
         for leak in ("alpha mfg", "zeta power", "alphamfg.com", "zetapower.com",
@@ -254,6 +272,7 @@ class TestRansomwareActivityView(unittest.TestCase):
         self.assertIn("unverified", caption)
         self.assertIn("nothing on this tab is scored", caption)
         self.assertIn("attributed to a watchlist account", caption)
+        self.assertIn("watchlist-industry rows", caption)
 
     def test_bars_are_relative_within_their_own_list(self):
         # Top row is full width; every row gets a visible minimum.
