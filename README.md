@@ -119,9 +119,14 @@ python -m app.ingest.nerc_pages                     # NERC page snapshots
 python -m app.ingest.cisa_kev                       # CISA KEV (store-only)
 
 python -m app.ingest.gdelt                          # GDELT energy news (store-only, ~90d window)
-python -m app.ingest.nvd                            # NVD CVE API (store-only; NVD_API_KEY optional)
+python -m app.ingest.nvd --window-days 14           # NVD CVE API (store-only; NVD_API_KEY optional).
+                                                    #   Pages oldest-first, so bound it: a stopped
+                                                    #   unbounded run leaves the newest CVEs unfetched.
 python -m app.ingest.ransomware                     # ransomware.live victims (raw feed)
-python -m app.ingest.eia                            # EIA plant capacity (store-only; needs EIA_API_KEY)
+python -m app.ingest.eia --limit 5000               # EIA plant capacity (store-only; needs EIA_API_KEY).
+                                                    #   --limit is required in practice: the route is the
+                                                    #   whole US generator fleet, monthly, paged 5000 at a
+                                                    #   time, and runs for hours unbounded.
 python -m app.ingest.security_rss --source therecord        # The Record RSS (raw feed)
 python -m app.ingest.security_rss --source bleepingcomputer # BleepingComputer RSS (raw feed)
 
