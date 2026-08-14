@@ -100,6 +100,8 @@ def seed(conn):
                 "Old decayed exec note", cfa=1, score=0.8, status="decayed")
     _add_signal(conn, "S_SUP", None, "regulatory_calendar", "t_reg", days_ago(20),
                 "Superseded NOPR", cfa=1, score=2.0, status="superseded")
+    _add_signal(conn, "S_RET", "E_ACME", "account", "t_lead", days_ago(12),
+                "Retracted stale peer card", cfa=1, score=2.1, status="retracted")
 
     conn.execute(
         "INSERT INTO signal_evidence (signal_id, raw_event_id, evidence_text, "
@@ -226,11 +228,19 @@ class TestStatusFilter(FeedTestBase):
         dom = self.home()
         self.assertNotIn("Old decayed exec note", dom)
         self.assertNotIn("Superseded NOPR", dom)
+        self.assertNotIn("Retracted stale peer card", dom)
 
     def test_widen_status_to_all_reveals_them(self):
         dom = self.home(status="all")
         self.assertIn("Old decayed exec note", dom)
         self.assertIn("Superseded NOPR", dom)
+        self.assertIn("Retracted stale peer card", dom)
+
+    def test_retracted_status_filter_reveals_only_retracted_cards(self):
+        dom = self.home(status="retracted")
+        self.assertIn("Retracted stale peer card", dom)
+        self.assertNotIn("Acme names new CISO", dom)
+        self.assertNotIn("Old decayed exec note", dom)
 
     def test_feed_body_partial_honors_status(self):
         # the HTMX status-filter swap path (/feed) returns just the body
