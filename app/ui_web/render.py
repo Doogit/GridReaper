@@ -300,6 +300,15 @@ REVIEW_UNCONFIRMED_BADGE = {
     "text": "unconfirmed candidate",
 }
 
+# ``review_queue.candidate_entity_id`` is nullable, and a NULL means a different
+# question. A resolver near-match asks "is this the right company?"; a row with
+# no candidate was routed to triage for another reason entirely (e.g. the R10.6
+# provenance quarantine) and asks "read the reason". Rendering them identically
+# is the same defect the badge exists to fix, so the label is explicit and the
+# accept/reject controls — which would write an entity_match_decisions row for
+# an entity that does not exist — are withheld.
+REVIEW_NO_CANDIDATE_LABEL = "No candidate entity — flagged for review"
+
 
 def review_pending_view(item):
     """Shape one review_pending() row for _review_pending_row.html (R8.2).
@@ -309,6 +318,10 @@ def review_pending_view(item):
     fabricated matched/rejected terms), formatted confidence, evidence snippet,
     and an http(s)-only source link. Raw ids ride in POST data, never the DOM id.
     The template autoescapes every string here.
+
+    ``candidate_entity_id`` is nullable: a row with no candidate is labelled as
+    such (never a blank name) and offers no accept/reject, because there is no
+    match to accept — see REVIEW_NO_CANDIDATE_LABEL.
 
     Three trust guards (R10.5, R4.1): a constant unconfirmed badge so a named
     candidate cannot read as confirmed; a labelled truncation so a cut-off
@@ -329,7 +342,9 @@ def review_pending_view(item):
         "dom_id": review_row_dom_id(raw_event_id, candidate_entity_id),
         "raw_event_id": raw_event_id,
         "candidate_entity_id": candidate_entity_id,
-        "candidate": item.get("candidate_name") or candidate_entity_id,
+        "has_candidate": bool(candidate_entity_id),
+        "candidate": (item.get("candidate_name") or candidate_entity_id
+                      if candidate_entity_id else REVIEW_NO_CANDIDATE_LABEL),
         "subsector": subsector or "",
         "reason": item.get("reason") or "unknown",
         "confidence": conf_txt,

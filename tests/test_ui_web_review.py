@@ -166,6 +166,18 @@ def seed_long_title(conn):
                               + ("x" * 300)}),))
 
 
+def seed_no_candidate(conn):
+    """A pending row with candidate_entity_id NULL — the shape a non-resolver
+    triage route (e.g. the R10.6 provenance quarantine) inserts."""
+    _base(conn)
+    _facts(conn)
+    conn.execute(
+        "INSERT INTO review_queue (raw_event_id, candidate_entity_id, reason, "
+        "confidence, created_at, disposition) VALUES "
+        "('re_rev', NULL, 'provenance_violation:headline', NULL, ?, 'pending')",
+        (iso(NOW),))
+
+
 def make_db(seed):
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -363,6 +375,37 @@ class TestLongTitleTruncation(ReviewTestBase):
         self.assertIn("not the whole record", dom)
         # the overrun tail never reaches the DOM
         self.assertNotIn("x" * 300, dom)
+
+
+class TestNoCandidateRow(ReviewTestBase):
+    """review_queue.candidate_entity_id is nullable; a NULL asks a different
+    question than a resolver near-match and must not render as a blank name."""
+    seed = staticmethod(seed_no_candidate)
+
+    def test_null_candidate_is_labelled_not_blank(self):
+        dom = self.page()
+        self.assertIn(render.REVIEW_NO_CANDIDATE_LABEL, dom)
+        self.assertNotIn("None", dom)
+        # the reason still carries why the row is here
+        self.assertIn("provenance_violation:headline", dom)
+
+    def test_no_accept_reject_offered_without_a_candidate(self):
+        dom = self.page()
+        self.assertIn("No entity match to accept or reject", dom)
+        self.assertNotIn(">Accept<", dom)
+        self.assertNotIn(">Reject<", dom)
+
+    def test_named_candidate_still_gets_the_controls(self):
+        # the ordinary resolver row is unchanged
+        self.path2 = make_db(seed_full)
+        os.environ["GRIDSIGNALS_DB"] = self.path2
+        try:
+            dom = TestClient(app).get("/review").text
+            self.assertIn(">Accept<", dom)
+            self.assertNotIn(render.REVIEW_NO_CANDIDATE_LABEL, dom)
+        finally:
+            os.environ["GRIDSIGNALS_DB"] = self.path
+            os.remove(self.path2)
 
 
 class TestHtmlEscaping(ReviewTestBase):
