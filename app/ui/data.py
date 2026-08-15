@@ -19,6 +19,7 @@ import contextlib
 import json
 import math
 import sqlite3
+import time
 from datetime import date, datetime, timezone
 
 from app.classify import ransomware as ransomware_classifier
@@ -480,44 +481,105 @@ def badge_legend(conn):
 
 
 # -- writes (the only two) ---------------------------------------------------
+#
+# Bounded exponential backoff (R3.2). These two are the operator writes that do
+# NOT take the ingestion lock - they must land while a run is in flight - so
+# they are the only UI writes exposed to SQLite's writer lock. The connection's
+# passive 5s busy_timeout (connection.py) covers a short overlap; a longer one
+# used to surface a raw "database is locked" to the operator. The config /
+# re-tier writes are NOT wrapped: they hold the single-writer lock and already
+# fail with "Ingestion in progress" instead. This is deliberately not a retry
+# wrapper for arbitrary SQL - nothing outside this section calls it.
+WRITE_RETRY_DELAYS_S = (0.05, 0.15, 0.45)
+
+
+class WriteBusyError(RuntimeError):
+    """A sanctioned UI write could not get the SQLite writer lock (R3.2)."""
+
+
+def _is_locked(exc):
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+def _commit_with_backoff(conn, write, what, sleep=None):
+    """Run ``write()`` and commit, retrying a busy database with bounded
+    exponential backoff (R3.2). The success path never sleeps.
+
+    Retries only a locked/busy database; any other OperationalError is a real
+    SQL error and is re-raised on the first attempt. Each retry rolls back
+    first, so a multi-statement write (triage_decision) can never half-apply.
+    Once the ``WRITE_RETRY_DELAYS_S`` waits are spent the failure is raised as
+    WriteBusyError naming ``what`` and what to do about it, rather than as a
+    bare sqlite3 message. ``sleep`` is injectable so tests stay fast.
+    """
+    sleeper = sleep or time.sleep
+    for delay in WRITE_RETRY_DELAYS_S + (None,):
+        try:
+            write()
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            if not _is_locked(exc):
+                raise
+            conn.rollback()
+            if delay is None:
+                waited = sum(WRITE_RETRY_DELAYS_S)
+                raise WriteBusyError(
+                    f"could not save {what}: the database stayed busy across "
+                    f"{len(WRITE_RETRY_DELAYS_S) + 1} attempts over {waited:.2f}s. "
+                    f"An ingestion or scoring run is probably writing - nothing "
+                    f"was saved; try again in a moment."
+                ) from exc
+            sleeper(delay)
+
 
 def record_feedback(conn, signal_id, verdict, reason_code=None, note="",
-                    now=None):
+                    now=None, sleep=None):
     """Insert a feedback row (R9.1). A not_useful verdict MUST carry a
     reason_code from R9.2; any provided reason_code must be a known code.
-    Raises ValueError on invalid input (the page surfaces it, never writes)."""
+    Raises ValueError on invalid input (the page surfaces it, never writes).
+    A busy database is retried with bounded backoff (R3.2)."""
     if verdict not in VERDICTS:
         raise ValueError(f"unknown verdict {verdict!r}")
     if verdict == "not_useful" and not reason_code:
         raise ValueError("reason_code is required when verdict is not_useful (R9.1)")
     if reason_code and reason_code not in REASON_CODES:
         raise ValueError(f"unknown reason_code {reason_code!r}")
-    conn.execute(
-        "INSERT INTO feedback (signal_id, verdict, reason_code, ts, note) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (signal_id, verdict, reason_code or None, _utcnow_iso(now), note or ""))
-    conn.commit()
+
+    def write():
+        conn.execute(
+            "INSERT INTO feedback (signal_id, verdict, reason_code, ts, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (signal_id, verdict, reason_code or None, _utcnow_iso(now),
+             note or ""))
+
+    _commit_with_backoff(conn, write, "your feedback", sleep)
 
 
-def triage_decision(conn, raw_event_id, entity_id, accept, now=None):
+def triage_decision(conn, raw_event_id, entity_id, accept, now=None, sleep=None):
     """Record a human review decision (R8.2): log an entity_match_decisions row
     (decided_by='human') and update the matching review_queue row's disposition
     - both in one transaction. Accepting records the decision only; creating a
-    signal from an accepted match is deferred (documented on the page)."""
+    signal from an accepted match is deferred (documented on the page).
+    A busy database is retried with bounded backoff (R3.2)."""
     ts = _utcnow_iso(now)
     decision = "reviewed" if accept else "rejected"
     disposition = "accepted" if accept else "rejected"
-    conn.execute(
-        "INSERT INTO entity_match_decisions (raw_event_id, entity_id, method, "
-        " confidence, matched_terms, rejected_terms, decision, decided_by, ts, "
-        " parser_version) VALUES (?, ?, 'human_review', 1.0, '[]', '[]', ?, "
-        " 'human', ?, ?)",
-        (raw_event_id, entity_id, decision, ts, TRIAGE_PARSER_VERSION))
-    conn.execute(
-        "UPDATE review_queue SET disposition = ?, disposed_at = ? "
-        "WHERE raw_event_id = ? AND candidate_entity_id = ?",
-        (disposition, ts, raw_event_id, entity_id))
-    conn.commit()
+
+    def write():
+        conn.execute(
+            "INSERT INTO entity_match_decisions (raw_event_id, entity_id, method, "
+            " confidence, matched_terms, rejected_terms, decision, decided_by, ts, "
+            " parser_version) VALUES (?, ?, 'human_review', 1.0, '[]', '[]', ?, "
+            " 'human', ?, ?)",
+            (raw_event_id, entity_id, decision, ts, TRIAGE_PARSER_VERSION))
+        conn.execute(
+            "UPDATE review_queue SET disposition = ?, disposed_at = ? "
+            "WHERE raw_event_id = ? AND candidate_entity_id = ?",
+            (disposition, ts, raw_event_id, entity_id))
+
+    _commit_with_backoff(conn, write, "this triage decision", sleep)
 
 
 # -- config writes (R8.7 Admin/Config) ---------------------------------------
