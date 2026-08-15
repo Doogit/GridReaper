@@ -251,7 +251,10 @@ def review_pending(conn):
     out = []
     for r in rows:
         d = dict(r)
-        d["snippet"], d["snippet_truncated"] = _payload_snippet_parts(r["payload"])
+        snippet, truncated, omitted = _payload_snippet_parts(r["payload"])
+        d["snippet"] = snippet
+        d["snippet_truncated"] = truncated
+        d["snippet_omitted_fields"] = omitted
         d["snippet_limit"] = _PAYLOAD_SNIPPET_LIMIT
         d.pop("payload", None)
         out.append(d)
@@ -266,23 +269,28 @@ def _payload_snippet(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
 
 
 def _payload_snippet_parts(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
-    """``(snippet, truncated)`` for one raw payload (R8.2, R10.5).
+    """``(snippet, truncated, omitted_fields)`` for one raw payload (R8.2, R10.5).
 
-    The review queue shows a fragment of a raw record; the caller labels the
-    cut so a truncated payload cannot be read as the whole record. Pure.
+    The review queue shows a fragment of a raw record, and there are TWO ways
+    the fragment is smaller than the record: the character cut (``truncated``)
+    and the field selection — a title lifted out of a JSON payload that also
+    carried a body, an activity tag and a group name. ``omitted_fields`` counts
+    the top-level keys not shown, so the caller can disclose both. Without it a
+    short title extracted from a 1 KB record renders as an apparently complete
+    line with no cut to label. Pure.
     """
     if not payload:
-        return "", False
+        return "", False, 0
     try:
         obj = json.loads(payload)
         for key in ("title", "headline", "name", "summary"):
             if isinstance(obj, dict) and (obj.get(key) or "").strip():
                 text = obj[key].strip()
-                return text[:limit], len(text) > limit
+                return text[:limit], len(text) > limit, max(len(obj) - 1, 0)
     except (ValueError, TypeError):
         pass
     text = str(payload)
-    return text[:limit], len(text) > limit
+    return text[:limit], len(text) > limit, 0
 
 
 def source_health(conn):

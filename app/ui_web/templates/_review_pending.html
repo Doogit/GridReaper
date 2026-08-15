@@ -4,7 +4,7 @@
    confirmation via hx-swap outerHTML on the row container. Empty = the honest
    positive state: the resolver needed no human help. #}
 <h2 class="gs-account-name">Pending entity matches</h2>
-<p class="gs-muted-text">Every row below is an unconfirmed candidate — the resolver could not settle the match and no human has ruled on it yet. Approving records the human decision only — creating a signal from an approved match is deferred this chunk (R8.2).</p>
+<p class="gs-muted-text">Approving records the human decision only — creating a signal from an approved match is deferred this chunk (R8.2).</p>
 
 {% if pending %}
 {% for p in pending %}
@@ -14,7 +14,7 @@
   <div class="gs-meta">reason: <code>{{ p.reason }}</code> · confidence {{ p.confidence }} · event {{ p.event_date }}</div>
   {% if p.snippet %}<div class="gs-evidence">{{ p.snippet }}{% if p.snippet_truncated %}…{% endif %}</div>{% endif %}
   {% if p.snippet_note %}<div class="gs-meta">{{ p.snippet_note }}</div>{% endif %}
-  {% if p.source_url %}<a class="gs-source-link" href="{{ p.source_url }}" target="_blank" rel="noopener">Source</a>{% endif %}
+  {% if p.source_url %}<a class="gs-source-link" href="{{ p.source_url }}" target="_blank" rel="noopener">Source</a>{% if p.source_note %}<span class="gs-meta"> — {{ p.source_note }}</span>{% endif %}{% endif %}
   <div class="gs-feedback">
     <button type="button" class="gs-btn"
             hx-post="/review/triage"

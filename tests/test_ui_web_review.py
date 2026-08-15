@@ -137,16 +137,33 @@ def seed_hostile_html(conn):
 # base64 of "Baxter International, Inc.@shinyhunters" (R4.1).
 VICTIM_PERMALINK = ("https://www.ransomware.live/id/"
                     "QmF4dGVyIEludGVybmF0aW9uYWwsIEluYy5Ac2hpbnlodW50ZXJz")
-LONG_TITLE = "Ambiguous Utility Co filing " + ("x" * 300)
+# The victim name the permalink encodes, in the payload title the tracker
+# actually ships. Pairing them is the point: a fixture whose title did NOT
+# contain the encoded name would let the URL assertions below look like a
+# closed identity leak when only one channel is closed.
+VICTIM_NAME = "Baxter International, Inc."
+VICTIM_TITLE = f"{VICTIM_NAME} listed by shinyhunters"
+LONG_DESCRIPTION = "Leak-site listing body text. " * 30
 
 
 def seed_victim_permalink(conn):
-    """A pending row whose source URL is a per-victim leak-site permalink and
-    whose payload title overruns the snippet limit (R4.1, R10.5)."""
+    """A pending row shaped like the real ransomware_live rows: a per-victim
+    leak-site permalink, and a multi-field payload whose shown title is a small
+    slice of the record (R4.1, R10.5)."""
     seed_full(conn)
+    payload = json.dumps({"title": VICTIM_TITLE, "activity": "Healthcare",
+                          "group": "shinyhunters",
+                          "description": LONG_DESCRIPTION})
     conn.execute("UPDATE raw_events SET url=?, payload=? "
-                 "WHERE raw_event_id='re_rev'",
-                 (VICTIM_PERMALINK, '{"title": %s}' % json.dumps(LONG_TITLE)))
+                 "WHERE raw_event_id='re_rev'", (VICTIM_PERMALINK, payload))
+
+
+def seed_long_title(conn):
+    """A pending row whose single payload field overruns the snippet limit."""
+    seed_full(conn)
+    conn.execute("UPDATE raw_events SET payload=? WHERE raw_event_id='re_rev'",
+                 (json.dumps({"title": "Ambiguous Utility Co filing "
+                              + ("x" * 300)}),))
 
 
 def make_db(seed):
@@ -246,7 +263,10 @@ class TestPendingMatches(ReviewTestBase):
         dom = self.page()
         self.assertIn("unconfirmed candidate", dom)
         self.assertIn("gs-badge unconfirmed", dom)
-        self.assertIn("no human has ruled on it yet", dom)
+        # the tooltip states it once; the section copy does not repeat it
+        self.assertIn("no human has adjudicated it yet", dom)
+        self.assertEqual(dom.count("unconfirmed candidate"), 1)  # badge text
+        self.assertEqual(dom.count("Unconfirmed candidate"), 1)  # its tooltip
 
     def test_short_snippet_is_not_labelled_truncated(self):
         dom = self.page()
@@ -298,7 +318,7 @@ class TestEmptyState(ReviewTestBase):
 
 class TestPendingRowTrust(ReviewTestBase):
     """R4.1 / R10.5: the named candidate must not be shown beside a live
-    per-victim permalink, an unlabelled cut-off payload, or no tier at all."""
+    per-victim permalink, an undisclosed record extract, or no tier at all."""
     seed = staticmethod(seed_victim_permalink)
 
     def test_victim_permalink_is_replaced_by_the_tracker_index(self):
@@ -307,15 +327,42 @@ class TestPendingRowTrust(ReviewTestBase):
         self.assertNotIn("QmF4dGVyIEludGVybmF0aW9uYWws", dom)
         self.assertIn('href="https://www.ransomware.live"', dom)
 
+    def test_the_substitution_is_disclosed_not_silent(self):
+        # a swapped link must not read as a working citation for the claim
+        # beside it (R10.4)
+        self.assertIn("per-victim permalink withheld", self.page())
+
+    def test_field_selection_is_disclosed_even_when_nothing_is_cut(self):
+        # the title is 48 chars — under the limit — but three more fields of
+        # the record are not shown, and the reader is told so
+        dom = self.page()
+        self.assertIn("Extract: 1 of 4 fields in the raw record", dom)
+        self.assertIn("not the whole record", dom)
+        self.assertNotIn("Leak-site listing body text.", dom)
+
+    def test_url_channel_only_documented_gap(self):
+        """The permalink is withheld; the payload TITLE still names the victim.
+
+        Asserted deliberately so the guarantee is not read as broader than it
+        is: this row closes the URL channel, not the snippet channel. If the
+        snippet channel is closed later, this test fails and whoever closes it
+        must restate the claim rather than inherit a stale one.
+        """
+        self.assertIn(VICTIM_NAME, self.page())
+
+    def test_unconfirmed_badge_present(self):
+        self.assertIn("unconfirmed candidate", self.page())
+
+
+class TestLongTitleTruncation(ReviewTestBase):
+    seed = staticmethod(seed_long_title)
+
     def test_truncated_snippet_is_labelled(self):
         dom = self.page()
         self.assertIn("Extract truncated at 200 characters", dom)
         self.assertIn("not the whole record", dom)
         # the overrun tail never reaches the DOM
         self.assertNotIn("x" * 300, dom)
-
-    def test_unconfirmed_badge_present(self):
-        self.assertIn("unconfirmed candidate", self.page())
 
 
 class TestHtmlEscaping(ReviewTestBase):

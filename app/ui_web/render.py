@@ -322,8 +322,9 @@ def review_pending_view(item):
     conf = item.get("confidence")
     conf_txt = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
     subsector = item.get("subsector")
-    truncated = bool(item.get("snippet_truncated"))
-    limit = item.get("snippet_limit")
+    raw_url = item.get("source_url")
+    safe_url = data.identity_safe_source_url(raw_url)
+    substituted = bool(raw_url) and safe_url != (raw_url or "").strip()
     return {
         "dom_id": review_row_dom_id(raw_event_id, candidate_entity_id),
         "raw_event_id": raw_event_id,
@@ -334,14 +335,39 @@ def review_pending_view(item):
         "confidence": conf_txt,
         "event_date": item.get("event_date") or "n/a",
         "snippet": item.get("snippet") or "",
-        "snippet_truncated": truncated,
-        "snippet_note": (
-            f"Extract truncated at {limit} characters — not the whole record."
-            if truncated else ""),
+        "snippet_truncated": bool(item.get("snippet_truncated")),
+        "snippet_note": review_snippet_note(item),
         "badges": [REVIEW_UNCONFIRMED_BADGE],
-        "source_url": safe_source_url(
-            data.identity_safe_source_url(item.get("source_url"))),
+        "source_url": safe_source_url(safe_url),
+        # R10.4: a substituted link must not read as a working citation for the
+        # claim beside it — say that the permalink was withheld.
+        "source_note": ("tracker index — per-victim permalink withheld (R4.1)"
+                        if substituted else ""),
     }
+
+
+def review_snippet_note(item):
+    """Disclose how much smaller the shown snippet is than the raw record.
+
+    Two independent shortfalls, either of which lets a fragment read as the
+    whole record (R10.5): the character cut, and the field selection — one
+    title lifted out of a payload that also carried a body and metadata. A
+    short title extracted from a 1 KB record has no cut to label, so counting
+    the unshown fields is what makes that case honest. Empty string when the
+    snippet IS the record. Pure.
+    """
+    truncated = bool(item.get("snippet_truncated"))
+    omitted = item.get("snippet_omitted_fields") or 0
+    limit = item.get("snippet_limit")
+    if truncated and omitted:
+        return (f"Extract: 1 of {omitted + 1} fields in the raw record, cut at "
+                f"{limit} characters — not the whole record.")
+    if truncated:
+        return f"Extract truncated at {limit} characters — not the whole record."
+    if omitted:
+        return (f"Extract: 1 of {omitted + 1} fields in the raw record — not "
+                "the whole record.")
+    return ""
 
 
 def source_health_view(row, state):

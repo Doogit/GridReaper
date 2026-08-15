@@ -288,8 +288,8 @@ class TestReviewPendingView(unittest.TestCase):
                 "candidate_name": "Dark Muni Co", "subsector": "muni_public",
                 "reason": "fuzzy_below_threshold", "confidence": 0.82,
                 "event_date": "2026-08-01", "snippet": "Some filing",
-                "snippet_truncated": False, "snippet_limit": 200,
-                "source_url": "http://rev/doc"}
+                "snippet_truncated": False, "snippet_omitted_fields": 0,
+                "snippet_limit": 200, "source_url": "http://rev/doc"}
         base.update(over)
         return base
 
@@ -299,25 +299,35 @@ class TestReviewPendingView(unittest.TestCase):
         self.assertEqual(render.REVIEW_UNCONFIRMED_BADGE["cls"],
                          "gs-badge unconfirmed")
 
-    def test_victim_permalink_swapped_for_the_tracker_index(self):
+    def test_victim_permalink_swapped_for_the_tracker_index_and_disclosed(self):
         url = ("https://www.ransomware.live/id/"
                "QmF4dGVyIEludGVybmF0aW9uYWwsIEluYy5Ac2hpbnlodW50ZXJz")
         view = render.review_pending_view(self.row(source_url=url))
         self.assertEqual(view["source_url"], "https://www.ransomware.live")
+        self.assertIn("permalink withheld", view["source_note"])
 
-    def test_ordinary_url_survives_and_non_http_is_dropped(self):
-        self.assertEqual(
-            render.review_pending_view(self.row())["source_url"],
-            "http://rev/doc")
+    def test_ordinary_url_survives_undisclosed_and_non_http_is_dropped(self):
+        view = render.review_pending_view(self.row())
+        self.assertEqual(view["source_url"], "http://rev/doc")
+        self.assertEqual(view["source_note"], "")
         self.assertIsNone(render.review_pending_view(
             self.row(source_url="javascript:alert(1)"))["source_url"])
 
-    def test_truncation_note_only_when_cut(self):
+    def test_snippet_note_covers_both_shortfalls(self):
+        # the snippet IS the record -> no claim to qualify
         self.assertEqual(render.review_pending_view(self.row())["snippet_note"],
                          "")
-        note = render.review_pending_view(
+        cut = render.review_pending_view(
             self.row(snippet_truncated=True))["snippet_note"]
-        self.assertIn("truncated at 200 characters", note)
+        self.assertIn("truncated at 200 characters", cut)
+        # a short title lifted out of a 4-field record is still a fragment
+        picked = render.review_pending_view(
+            self.row(snippet_omitted_fields=3))["snippet_note"]
+        self.assertIn("1 of 4 fields in the raw record", picked)
+        both = render.review_pending_view(self.row(
+            snippet_truncated=True, snippet_omitted_fields=3))["snippet_note"]
+        self.assertIn("1 of 4 fields", both)
+        self.assertIn("cut at 200 characters", both)
 
 
 if __name__ == "__main__":
