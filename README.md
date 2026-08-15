@@ -26,11 +26,17 @@ The FastAPI + HTMX interface in its default light theme (a dark and a system the
 
 ![Signal Feed](assets/screenshots/signal-feed.png)
 
-**Explore** — trigger, scope, and incident-tier analytics over all sourced signals, plus an evidence-safe watchlist map. The map plots a facility only with a stored owner match at ≥0.85 confidence; with nothing over that bar it shades signal volume by state and says so, rather than inferring points.
+**Explore** — trigger, scope, and incident-tier analytics over all sourced signals, an evidence-safe watchlist map, and aggregate ransomware leak-site activity. The map plots a facility only with a stored owner match at ≥0.85 confidence; with nothing over that bar it shades signal volume by state and says so, rather than inferring points.
 
 ![Explore — Trigger Analytics](assets/screenshots/explore-analytics.png)
 
 ![Explore — Watchlist Map](assets/screenshots/explore-map.png)
+
+The Ransomware Activity tab counts raw leak-site listings rather than signals, over the window the stored data actually spans (ransomware.live is a rolling recent feed, so that window is days, not months). These are ransomware victims worldwide — not watchlist companies, which are energy-only; the watchlist appears as the single highlighted row. Only an energy-industry victim supports the "sector peer" claim a card would make, so the other listings never mint a card, and this tab is where they stay visible as threat context: unscored, attributed to no account, credited to the source.
+
+A crew is named only if it is tied to two or more distinct victims. One victim can appear as several listings when the tracker revises a record, so counting listings would let a crew that named itself after its single victim identify that company. Withheld crews are still counted in the total, and the page says how many it is holding back.
+
+![Explore — Ransomware Activity](assets/screenshots/explore-ransomware.png)
 
 **Digest** — the in-app mirror of the standalone daily HTML digest the pipeline writes to disk for a human to send, shown as a timestamped point-in-time snapshot and framed as a buy-likelihood heuristic, not validated sales lift.
 
@@ -195,7 +201,7 @@ The MVP classifies regulatory actions, leadership changes, and precision-first c
 | Classification & scoring (rule-based; decay half-lives; account fit) | Implemented |
 | Stage-2 incident classification — framework evidence-tiering/outreach gating (R10.5/R7.12) + SEC 8-K Item 1.05 own/peer classifier + ransomware.live unconfirmed early-warning classifier with operator-only verification-first UI (R8.6 separate precision) + company-statement press-release classifier + security-press RSS own/peer classifier (per-source tier: The Record corroborated, BleepingComputer leak-adjacent down-tiered to unconfirmed) | Implemented (combos next; regulator incident notices fold into existing FERC/NERC enforcement) |
 | License-play snapshots + gov-cloud gating | Implemented |
-| FastAPI + HTMX + Tailwind UI (nine pages behind a grouped sidebar; light / dark / system theming; signal feed, explore analytics + watchlist map, digest, account 360, review queue, precision, recent re-tiers, regulatory, admin) | Implemented (replaced Streamlit at R8.9 cutover) |
+| FastAPI + HTMX + Tailwind UI (nine pages behind a grouped sidebar; light / dark / system theming; signal feed, explore analytics + watchlist map + ransomware activity, digest, account 360, review queue, precision, recent re-tiers, regulatory, admin) | Implemented (replaced Streamlit at R8.9 cutover) |
 | Regulatory Monitor page (read-only view of non-graduated regulatory chatter) | Implemented |
 | Feedback loop + automated accuracy audit (Claude judge) + precision reporting | Implemented |
 | Admin / Config (weight + half-life tuning, source registry with add/enable/disable/guarded-remove, license-fact editor + add, staleness, config audit trail, watchlist entity manager + alias/collision editor + reset/remove) + incident evidence-tier re-tier editor on incident cards (audited `incident_tier_edits` trail) | Implemented |

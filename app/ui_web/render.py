@@ -20,6 +20,7 @@ from hashlib import sha256
 from urllib.parse import urlsplit
 
 from app.classify.runner import INCIDENT_TIERS
+from app.ui import data
 from app.ui_web import us_geometry
 
 
@@ -880,7 +881,11 @@ def card_view(detail, legend):
         "evidence": [{"text": ev["evidence_text"] or "",
                       "locator": ev["evidence_locator"] or ""}
                      for ev in evidence],
-        "source_url": safe_source_url(signal["source_url"]),
+        # R4.1: a name-free sector card must not link a per-victim leak-site
+        # permalink — ransomware.live's /id/ path base64-encodes the victim
+        # name. The gate lives in data.py so no template change can reopen it.
+        "source_url": safe_source_url(data.identity_safe_source_url(
+            signal["source_url"], signal["signal_scope"])),
         # R10.5: an unverified early warning leads with a verification-first
         # warning; no confirmation exists yet from any authoritative source.
         "unconfirmed_warning": (
@@ -1018,6 +1023,158 @@ def explore_analytics_view(counts):
                       "count": r["count"]} for r in rows],
         })
     return tables
+
+
+# -- Explore: Ransomware Activity (R8.5, R4.1, R6.6) -------------------------
+#
+# Display shaping ONLY. Every privacy decision in this panel was already made in
+# data.ransomware_activity (singleton crews withheld there, marginals never
+# cross-tabbed); this shaper adds no data and re-derives nothing, so there is no
+# second place a leak could be introduced. Bar widths are percentages of the
+# largest row in the SAME list — a relative bar for reading rank at a glance,
+# never compared across the two lists.
+
+# Kept out of the template so the framing is reviewable in one place with the
+# rest of the trust copy, matching the route-level empty-state constants.
+RANSOMWARE_CAPTION = (
+    "Situational awareness only — leak-site listings are unverified claims by "
+    "ransomware crews (R10.5), counted here as threat activity. Nothing on this "
+    "tab is scored, attributed to a watchlist account, or implies an account is "
+    "affected. Only the watchlist-industry rows below mint sector-peer cards.")
+
+# The single most-misread thing on this panel: "Industries hit" counts the
+# industries of leak-site victims WORLDWIDE, not the composition of our own
+# watchlist (which is energy-only, by construction). Kevin himself read the
+# table as the watchlist during the persona pass, so the subject is stated on
+# the page rather than left to inference.
+RANSOMWARE_SUBJECT_NOTE = (
+    "These are ransomware victims worldwide, not GridSignals watchlist "
+    "companies — the watchlist is energy-only, and appears here solely as the "
+    "highlighted row. Industry is the tracker's own tag on each victim.")
+
+
+def _bar_pct(count, top):
+    """Row width as a whole percent of the largest row in its own list."""
+    if not top or count <= 0:
+        return 0
+    return max(2, round(100 * count / top))
+
+
+def _ransomware_rows(rows):
+    """Attach a relative bar width to a count list, largest row first."""
+    top = max((r["count"] for r in rows), default=0)
+    return [dict(r, bar=_bar_pct(r["count"], top)) for r in rows]
+
+
+def ransomware_activity_view(activity):
+    """Shape data.ransomware_activity into a template view dict (R8.5, R4.1).
+
+    Adds the derived window label, the relative bar widths, and the honest notes
+    for what is deliberately NOT shown — the crews withheld under the
+    single-listing privacy floor and the listings the tracker never classified.
+    ``empty`` drives the R6.6 empty state; ``peer_note`` states the peer count in
+    the same breath as the total so the panel never reads as if the whole feed
+    were peer activity.
+    """
+    total = activity.get("total") or 0
+    start = activity.get("window_start") or ""
+    end = activity.get("window_end") or ""
+    days = activity.get("window_days") or 0
+
+    window = ""
+    if start and end:
+        span = f"{days} day" if days == 1 else f"{days} days"
+        window = f"{start} → {end} · {span}"
+
+    withheld = activity.get("crews_withheld") or 0
+    withheld_listings = activity.get("crews_withheld_listings") or 0
+    crew_note = ""
+    if withheld:
+        # States the gate as it actually is — a distinct-VICTIM floor, not a
+        # listing floor. One victim can appear as several listings when the
+        # tracker revises a record, and such a crew is still withheld.
+        crew_note = (
+            f"{withheld} further "
+            f"{'crew is' if withheld == 1 else 'crews are'} not named here: "
+            f"{'it is' if withheld == 1 else 'each is'} tied to a single victim "
+            f"({withheld_listings} "
+            f"{'listing' if withheld_listings == 1 else 'listings'} in total), "
+            "and a crew that has named itself after its one victim would "
+            "identify that company (R4.1). They are still counted in the total.")
+
+    unclassified = activity.get("unclassified") or 0
+    industry_note = ""
+    if unclassified:
+        industry_note = (
+            f"{unclassified} of {total} listings carry no industry from the "
+            "tracker and are counted as unclassified rather than dropped — an "
+            "unknown industry is not evidence of a match, so none of them mint "
+            "a peer card.")
+
+    peers = activity.get("peer_listings") or 0
+    peer_note = (
+        f"{peers} of {total} listings are in the watchlist's own industry"
+        f"{' — the only rows that mint sector-peer cards.' if peers else '.'}")
+
+    # The unclassified bucket gets a BAR, not just a footnote. It is routinely
+    # the largest bucket in the corpus (17 of 100 today, against 15 for the
+    # biggest named industry), and a chart that omits its largest bar while
+    # showing the tracker's own catch-all "Other" tells a skimmer — or a
+    # screenshot — that the top named industry is the most-targeted one. It is
+    # never flagged is_peer: an unknown industry is not evidence of a match.
+    industries = list(activity.get("industries") or [])
+    if unclassified:
+        industries.append({"label": "No industry given", "count": unclassified,
+                           "is_peer": False, "unclassified": True})
+        industries.sort(key=lambda r: (-r["count"], r["label"]))
+
+    return {
+        "total": total,
+        "window": window,
+        "source_name": activity.get("source_name") or "",
+        "source_url": safe_source_url(activity.get("source_url")),
+        "source_line": _ransomware_source_line(activity),
+        "stale": activity.get("source_state") in ("stale", "error",
+                                                  "never_run"),
+        "crews": _ransomware_rows(activity.get("crews") or []),
+        "crew_total": activity.get("crew_total") or 0,
+        "crew_note": crew_note,
+        "industries": _ransomware_rows(industries),
+        "industry_note": industry_note,
+        "unclassified": unclassified,
+        "peer_listings": peers,
+        "peer_note": peer_note,
+        "caption": RANSOMWARE_CAPTION,
+        "subject_note": RANSOMWARE_SUBJECT_NOTE,
+        "empty": total == 0,
+    }
+
+
+# How a source's run state reads on this panel. 'ok' still states the ingest
+# time — the window is derived from event dates alone, so without this a feed
+# that stalled a month ago renders exactly like a live one.
+_RANSOMWARE_FRESHNESS = {
+    "ok": "last ingested",
+    "stale": "STALE — last ingested",
+    "error": "INGEST ERROR — last succeeded",
+    "never_run": "never ingested",
+    "disabled": "source disabled — last ingested",
+}
+
+
+def _ransomware_source_line(activity):
+    """Attribution + freshness for the panel byline (R10.4, R6.6).
+
+    Credit is a licence condition here (ransomware.live is CC-BY-4.0), so the
+    source is named on the populated panel and not only in its empty state.
+    """
+    name = activity.get("source_name") or ""
+    state = activity.get("source_state") or "never_run"
+    last = activity.get("last_success_at") or ""
+    prefix = _RANSOMWARE_FRESHNESS.get(state, "last ingested")
+    if state == "never_run" or not last:
+        return f"Source: {name} · never ingested".strip()
+    return f"Source: {name} · {prefix} {last}"
 
 
 def _state_density(state_rows):

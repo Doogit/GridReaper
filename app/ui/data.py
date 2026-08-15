@@ -21,6 +21,7 @@ import math
 import sqlite3
 from datetime import date, datetime, timezone
 
+from app.classify import ransomware as ransomware_classifier
 from app.classify import regulatory as regulatory_classifier
 from app.classify.runner import INCIDENT_TIERS, customer_facing_for_tier
 from app.db.connection import get_connection
@@ -86,6 +87,43 @@ def _parse_date(value):
         return date.fromisoformat((value or "")[:10])
     except ValueError:
         return None
+
+
+# -- name-free peer cards must not link a per-victim leak-site URL (R4.1) ----
+#
+# ransomware.live's permalink path is literally base64("<Victim>@<crew>"), so
+# https://www.ransomware.live/id/Q29tbXVuaXR5IENvbm5lY3Rpb25zQHRoZWdlbnRsZW1lbg==
+# decodes to "Community Connections@thegentlemen". A sector peer card is
+# name-free by construction — its evidence says "an organization" — and then
+# the framework attaches the raw event's URL, which names that organization one
+# line below. The card body honoured R4.1; its own Source link defeated it.
+#
+# The Explore Ransomware Activity panel makes this materially worse, which is
+# why it is fixed here rather than deferred: that panel states the peer set's
+# exact cardinality ("2 of 100 listings are in the watchlist's own industry —
+# the only rows that mint sector-peer cards"), so a reader who can see the peer
+# cards can map the highlighted row onto specific companies with certainty.
+#
+# Sector cards therefore link the tracker's index instead of the per-victim
+# permalink: attribution survives (R10.4) and the identity does not. ACCOUNT
+# cards are untouched — an own_incident card already names its entity, so its
+# permalink discloses nothing the card does not.
+_RANSOMWARE_VICTIM_PATH = "ransomware.live/id/"
+
+
+def identity_safe_source_url(url, signal_scope=None):
+    """Strip a per-victim leak-site permalink from a name-free card (R4.1).
+
+    Returns ``url`` unchanged unless it is a ransomware.live per-victim
+    permalink on a non-account-scoped signal, in which case the tracker's index
+    is returned in its place. Pure — no I/O — so the view layer can call it.
+    """
+    value = (url or "").strip()
+    if not value or signal_scope in ("account", "parent"):
+        return value
+    if _RANSOMWARE_VICTIM_PATH in value.lower():
+        return RANSOMWARE_SOURCE_URL
+    return value
 
 
 def _placeholders(n):
@@ -1836,3 +1874,182 @@ def explore_state_density(conn, statuses=("active",)):
         "ORDER BY fa.facility_id",
         list(statuses) + [FACILITY_OWNER_CONFIDENCE_FLOOR]).fetchall()
     return [dict(r) for r in rows]
+
+
+# -- Explore: Ransomware Activity (R8.5, R4.1, R10.5, R6.6) ------------------
+#
+# The AGGREGATE counterpart to the peer-card gate in app/classify/ransomware.py.
+# That gate is deliberately narrow — only an energy-industry victim supports the
+# "sector peer" claim a peer card makes — which leaves the other ~98 leak-site
+# listings per pull classified but unsurfaced. They are still real threat
+# activity; they are just not evidence about any watchlist account. This read
+# gives them the only honest home: counts, over a stated window, with no score,
+# no entity, and no account implication (the R8.4 Regulatory Monitor's framing).
+#
+# R4.1 IN AGGREGATE. The per-card rule forbids printing the victim name OR the
+# attacker-chosen group string, because a crew can name itself after its victim.
+# An N:1 aggregate has no single identifiable victim, so counts are safe — but
+# that protection is only real while N > 1. A crew with exactly ONE listing is a
+# 1:1 mapping back to one company, so a self-named crew would leak that
+# company's identity through the crew column. CREW_MIN_VICTIMS is therefore a
+# PRIVACY GATE, not display truncation, and it lives here rather than in
+# render.py: a singleton crew name is never returned to the view layer at all,
+# so no template change can leak it. The withheld crews are still COUNTED (the
+# total is honest) and reported as a number, so the panel never implies it is
+# showing everything (R6.6).
+#
+# Marginals only, never a cross-tab. Crew-by-industry would re-identify: with
+# two energy listings in the current corpus, a single populated cell names the
+# crew that hit one specific company. The two distributions are returned
+# independently and must stay that way.
+#
+# Window: DERIVED from the data, never assumed. ransomware.live is a rolling
+# recent feed — the stored corpus spans days, not the year a "trailing 12
+# months" label would imply — so the caller gets the real first/last event_date
+# and states them.
+
+RANSOMWARE_SOURCE_ID = ransomware_classifier.SOURCE_ID
+
+# Attribution is a LICENSE CONDITION, not decoration: the source policy carries
+# tos_status 'approved_cc_by_4.0', and CC-BY-4.0 requires crediting the source
+# wherever its data is presented (R10.4). The populated panel must therefore
+# name and link ransomware.live, not just the empty state.
+RANSOMWARE_SOURCE_URL = "https://www.ransomware.live"
+
+# A named crew must cover at least this many DISTINCT VICTIMS (see R4.1 above).
+# Distinct victims, not listings: ransomware.live exposes no stable per-victim
+# id, so an upstream record revision mints a second raw_event for the same
+# company (see the KNOWN LIMITATIONS in app/classify/ransomware.py). Counting
+# listings would let a self-named crew with two revisions of ONE victim clear
+# the floor and name that company — precisely what the floor exists to prevent.
+CREW_MIN_VICTIMS = 2
+
+# The tracker's own "no industry determined" markers. Counted as unclassified
+# rather than dropped: 17 of 100 in the current corpus carry no industry, and
+# hiding them would overstate how much of the feed is actually categorized.
+UNCLASSIFIED_ACTIVITIES = frozenset({"", "not found", "unknown", "n/a"})
+
+
+def _is_unclassified_activity(activity):
+    """True when the tracker gave no usable industry for this listing."""
+    return " ".join((activity or "").split()).lower() in UNCLASSIFIED_ACTIVITIES
+
+
+def ransomware_activity(conn, now=None):
+    """Aggregate leak-site activity for the Explore Ransomware tab (R8.5, R4.1).
+
+    Counts the stored ``ransomware_live`` raw_events two independent ways —
+    crews by volume and industries by volume — over the window the data itself
+    spans. Returns a plain dict::
+
+        {'total', 'window_start', 'window_end', 'window_days',
+         'source_name', 'source_url', 'last_success_at', 'source_state',
+         'crews': [{'label','count'}],        # >= CREW_MIN_VICTIMS only
+         'crews_withheld', 'crews_withheld_listings', 'crew_total',
+         'industries': [{'label','count','is_peer'}],
+         'peer_listings', 'unclassified'}
+
+    ``now`` is injectable so the freshness classification is deterministic in
+    tests (R10.2 UTC ISO-8601 throughout).
+
+    Never returns a victim name, a domain, a URL, or a singleton crew name
+    (R4.1 — see the module note above); never returns a score, an entity or a
+    signal id (this is not a card surface). ``is_peer`` is computed with the
+    classifier's OWN ``is_peer_industry`` predicate, so the row the panel
+    highlights is exactly the row that mints peer cards and the two cannot
+    drift. An empty/absent source yields zeroed counts and empty lists, which
+    the view renders as an honest empty state rather than a broken panel
+    (R6.6).
+    """
+    rows = conn.execute(
+        "SELECT re.event_date, re.payload FROM raw_events re "
+        "WHERE re.source_id = ? ORDER BY re.raw_event_id",
+        (RANSOMWARE_SOURCE_ID,)).fetchall()
+
+    # Freshness: the window below is derived from event_date alone, so a feed
+    # that stopped updating a month ago still renders a confident-looking
+    # report. Carry the source's own run state so the panel can say when it
+    # last actually ingested — "quiet" must stay distinguishable from "broken"
+    # (R6.6), and this is the one surface where it otherwise would not be.
+    source_row = None
+    for candidate in source_health(conn):
+        if candidate["source_id"] == RANSOMWARE_SOURCE_ID:
+            source_row = candidate
+            break
+
+    crew_counts = {}
+    crew_victims = {}
+    industry_counts = {}
+    dates = []
+    unclassified = 0
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        event_date = (row["event_date"] or "")[:10]
+        if event_date:
+            dates.append(event_date)
+
+        crew = " ".join((payload.get("group") or "").split())
+        if crew:
+            crew_counts[crew] = crew_counts.get(crew, 0) + 1
+            victim = " ".join((payload.get("victim") or "").split()).lower()
+            if victim:
+                crew_victims.setdefault(crew, set()).add(victim)
+
+        activity = " ".join((payload.get("activity") or "").split())
+        if _is_unclassified_activity(activity):
+            unclassified += 1
+        else:
+            industry_counts[activity] = industry_counts.get(activity, 0) + 1
+
+    # Descending by count, then label, so equal counts render deterministically.
+    # The naming gate is distinct victims, not raw listings: upstream revisions
+    # can create more than one raw_event for one real victim, and naming a
+    # self-named crew in that case would still identify the company.
+    named = [{"label": k, "count": n}
+             for k, n in sorted(crew_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+             if len(crew_victims.get(k, set())) >= CREW_MIN_VICTIMS]
+    withheld = [n for k, n in crew_counts.items()
+                if len(crew_victims.get(k, set())) < CREW_MIN_VICTIMS]
+
+    industries = [
+        {"label": k, "count": n,
+         "is_peer": ransomware_classifier.is_peer_industry(k)}
+        for k, n in sorted(industry_counts.items(),
+                           key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+    return {
+        "total": len(rows),
+        "window_start": min(dates) if dates else "",
+        "window_end": max(dates) if dates else "",
+        "window_days": _window_days(dates),
+        "source_name": (source_row["name"] if source_row
+                        else RANSOMWARE_SOURCE_ID),
+        "source_url": RANSOMWARE_SOURCE_URL,
+        "last_success_at": (source_row["last_success_at"] if source_row
+                            else None),
+        "source_state": (source_state(source_row, now=now) if source_row
+                         else "never_run"),
+        "crews": named,
+        "crew_total": len(crew_counts),
+        "crews_withheld": len(withheld),
+        "crews_withheld_listings": sum(withheld),
+        "industries": industries,
+        "peer_listings": sum(r["count"] for r in industries if r["is_peer"]),
+        "unclassified": unclassified,
+    }
+
+
+def _window_days(dates):
+    """Inclusive day span covered by ``dates`` (ISO YYYY-MM-DD), 0 when empty.
+    A single-day corpus spans 1 day, not 0 — the panel states a real window."""
+    parsed = [d for d in (_parse_date(v) for v in dates) if d is not None]
+    if not parsed:
+        return 0
+    return (max(parsed) - min(parsed)).days + 1
