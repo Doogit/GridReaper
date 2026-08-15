@@ -179,14 +179,14 @@ class TestClient(unittest.TestCase):
         self.assertGreater(cost, 0)
 
     def test_estimate_cost_sonnet_5_uses_rate_in_force(self):
-        # Sonnet 5 is promotional $2/$10 through 2026-08-31, standard $3/$15
-        # from 2026-09-01. Pin the date so this does not silently flip.
+        # Sonnet 5 launched with $2/$10 promotional pricing through 2026-08-31,
+        # but Anthropic made that price permanent on 2026-08-10.
         before = cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000,
                                        at="2026-08-15T00:00:00+00:00")
         self.assertAlmostEqual(before, 12.0, places=6)
         after = cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000,
                                       at="2026-09-01T00:00:00+00:00")
-        self.assertAlmostEqual(after, 18.0, places=6)
+        self.assertAlmostEqual(after, 12.0, places=6)
 
 
 if __name__ == "__main__":

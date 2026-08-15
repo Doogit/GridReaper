@@ -412,20 +412,20 @@ class TestReapStrandedRuns(unittest.TestCase):
 
 
 class TestPriceSchedule(unittest.TestCase):
-    """B8 / R10.1: claude-sonnet-5 is on a promotional $2/$10 through
-    2026-08-31 and reverts to $3/$15 on 2026-09-01. A flat constant is wrong on
-    one side of that boundary whichever value it holds, so the rate is resolved
-    against the run's UTC timestamp."""
+    """B8 / R10.1: claude-sonnet-5 launched with promotional $2/$10 through
+    2026-08-31, but Anthropic made that price permanent on 2026-08-10. The rate
+    still resolves through a schedule so a future announced change can be pinned
+    to the run's UTC timestamp."""
 
-    def test_sonnet_5_promotional_rate_before_the_boundary(self):
+    def test_sonnet_5_rate_before_the_original_boundary(self):
         self.assertEqual(
             cfg.price_per_mtok("claude-sonnet-5", "2026-08-31T23:59:59+00:00"),
             (2.00, 10.00))
 
-    def test_sonnet_5_standard_rate_from_the_boundary(self):
+    def test_sonnet_5_rate_stays_flat_after_the_original_boundary(self):
         self.assertEqual(
             cfg.price_per_mtok("claude-sonnet-5", "2026-09-01T00:00:00+00:00"),
-            (3.00, 15.00))
+            (2.00, 10.00))
 
     def test_cost_estimate_follows_the_schedule(self):
         self.assertAlmostEqual(
@@ -435,7 +435,7 @@ class TestPriceSchedule(unittest.TestCase):
         self.assertAlmostEqual(
             cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000,
                                   at="2026-09-15T00:00:00+00:00"),
-            18.0, places=6)
+            12.0, places=6)
 
     def test_models_without_a_scheduled_change_are_flat(self):
         for at in ("2026-08-15T00:00:00+00:00", "2026-09-15T00:00:00+00:00"):
