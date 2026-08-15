@@ -1,0 +1,23 @@
+{# Duplicate CANDIDATES (R8.2), driven by render.duplicate_candidate_view() rows.
+   Proposals only: no merge, no dismiss, no auto-anything. A duplicate ruling is
+   the operator's, so the row states its basis and links both cards. Cards are
+   linked by card_key (sha256), never by raw signal_id (KTD2). All text
+   autoescaped. Empty = nothing in the store looks duplicated under either
+   lineage. #}
+<h2 class="gs-account-name">Duplicate candidates ({{ duplicates|length }})</h2>
+<p class="gs-muted-text">Pairs that <em>may</em> be the same event, by shared entity + trigger within {{ duplicate_near_days }} days, or an identical raw <code>content_hash</code>. Proposals only — nothing is merged or dismissed here; open both cards and judge.</p>
+
+{% if duplicates %}
+{% for d in duplicates %}
+<div class="gs-card sev-moderate">
+  <div class="gs-meta">{{ d.entity }} · {{ d.trigger }}</div>
+  <div class="gs-headline"><a href="/card/{{ d.key_a }}">{{ d.headline_a }}</a></div>
+  <div class="gs-meta">{{ d.event_date_a }} · {{ d.scope_a }}</div>
+  <div class="gs-headline"><a href="/card/{{ d.key_b }}">{{ d.headline_b }}</a></div>
+  <div class="gs-meta">{{ d.event_date_b }} · {{ d.scope_b }}</div>
+  <div class="gs-meta">matched on: {% for b in d.bases %}<code>{{ b }}</code>{% if not loop.last %} · {% endif %}{% endfor %}</div>
+</div>
+{% endfor %}
+{% else %}
+<div class="gs-empty">0 duplicate candidates — no two active signals share an entity + trigger within {{ duplicate_near_days }} days, and no raw <code>content_hash</code> appears on two raw events with signals.</div>
+{% endif %}

@@ -9,6 +9,10 @@
 
 {% include "_review_pending.html" %}
 {% with label = "" %}{% include "_divider.html" %}{% endwith %}
+{% include "_review_duplicates.html" %}
+{% with label = "" %}{% include "_divider.html" %}{% endwith %}
+{% include "_review_disagreements.html" %}
+{% with label = "" %}{% include "_divider.html" %}{% endwith %}
 <h2 class="gs-account-name">Source health</h2>
 {% include "_review_sources.html" %}
 {% with label = "" %}{% include "_divider.html" %}{% endwith %}
