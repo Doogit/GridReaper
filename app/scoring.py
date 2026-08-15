@@ -46,17 +46,30 @@ can render "2.34 = 5 x 0.85 x 1.00 x 0.55". Only status='active' rows are
 rescored; superseded/decayed/dismissed rows keep their frozen score and
 components.
 
+Score reproducibility (R3.7): rescore() also stamps signals.scoring_config_version
+(0011) with scoring_config_version(conn) - a digest of the tuning in force. See
+that function for why it hashes two tables, and 0011 for why the column is
+nullable and never backfilled. Because rescore() only touches status='active'
+rows, a decayed/dismissed/retracted signal keeps the token it had when it was
+last active (or NULL if it was never scored under this build) - its frozen score
+belongs to that frozen tuning, and re-stamping it would be a false claim.
+
 CLI: python -m app.scoring - takes the single-writer ingestion lock (R3.2),
 rescores data/gridsignals.db, prints a one-line summary.
 """
 import sys
 from collections import namedtuple
 from datetime import date, datetime, timezone
+from hashlib import sha256
 
 from app.db.connection import get_connection
 
 DECAY_THRESHOLD = 1.0
 NEUTRAL_WEIGHT = 1.0
+
+# Length of the scoring-config token. 16 hex chars (64 bits) is the same digest
+# width the UI's id helpers use and is collision-safe for a tuning history.
+CONFIG_VERSION_LEN = 16
 
 # The four multiplicative factors behind a score (R8.1 explainability):
 # score == base * decay * account_fit * scope_fit.
@@ -67,6 +80,45 @@ def load_weights(conn):
     """scoring_weights -> {(weight_kind, key): weight} lookup dict."""
     return {(r["weight_kind"], r["key"]): r["weight"] for r in conn.execute(
         "SELECT weight_kind, key, weight FROM scoring_weights")}
+
+
+def _num(value):
+    """Canonical text for a numeric tuning value, so an INTEGER 4 and a REAL
+    4.0 hash identically (SQLite affinity lets either land in these columns)."""
+    if value is None:
+        return ""
+    try:
+        return repr(float(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def scoring_config_version(conn):
+    """Digest of the operator tuning currently in force (R3.7).
+
+    Covers BOTH tables compute_score reads:
+      * scoring_weights(weight_kind, key, weight) - account_fit and scope_fit
+      * triggers(trigger_id, base_strength, decay_half_life_days) - the base
+        strength and the decay divisor
+    Hashing scoring_weights alone would not move when an operator changes a
+    half-life or a base strength through Admin (data.update_half_life /
+    update_tuning), and a score that silently changed under an unmoving version
+    token is exactly the R3.7 failure this closes.
+
+    Rows are sorted by primary key and numbers canonicalised, so the token is a
+    pure function of the tuning - same tuning, same token, on any machine.
+    """
+    lines = []
+    for r in conn.execute(
+            "SELECT weight_kind, key, weight FROM scoring_weights "
+            "ORDER BY weight_kind, key"):
+        lines.append(f"weight|{r['weight_kind']}|{r['key']}|{_num(r['weight'])}")
+    for r in conn.execute(
+            "SELECT trigger_id, base_strength, decay_half_life_days "
+            "FROM triggers ORDER BY trigger_id"):
+        lines.append(f"trigger|{r['trigger_id']}|{_num(r['base_strength'])}"
+                     f"|{_num(r['decay_half_life_days'])}")
+    return sha256("\n".join(lines).encode("utf-8")).hexdigest()[:CONFIG_VERSION_LEN]
 
 
 def _weight(weights, kind, key):
@@ -119,12 +171,14 @@ def compute_score(weights, row, now):
 
 def rescore(conn, now=None):
     """Recompute score for every status='active' signal; flip to 'decayed'
-    below DECAY_THRESHOLD. Dismissed/decayed rows are untouched. Returns
-    {'scored': n, 'decayed': n}."""
+    below DECAY_THRESHOLD. Dismissed/decayed rows are untouched. Stamps
+    scoring_config_version alongside the components so each stored score names
+    the tuning that produced it (R3.7). Returns {'scored': n, 'decayed': n}."""
     if now is None:
         now = datetime.now(timezone.utc)
     scored_at = now.astimezone(timezone.utc).isoformat() if now.tzinfo \
         else now.replace(tzinfo=timezone.utc).isoformat()
+    config_version = scoring_config_version(conn)
     weights = load_weights(conn)
     rows = conn.execute(
         "SELECT s.signal_id, s.signal_scope, s.entity_id, s.event_date, "
@@ -141,9 +195,9 @@ def rescore(conn, now=None):
         conn.execute(
             "UPDATE signals SET score = ?, status = ?, score_base = ?, "
             " score_decay = ?, score_account_fit = ?, score_scope_fit = ?, "
-            " scored_at = ? WHERE signal_id = ?",
+            " scored_at = ?, scoring_config_version = ? WHERE signal_id = ?",
             (sc.score, status, sc.base, sc.decay, sc.account_fit,
-             sc.scope_fit, scored_at, row["signal_id"]))
+             sc.scope_fit, scored_at, config_version, row["signal_id"]))
         scored += 1
         if status == "decayed":
             decayed += 1

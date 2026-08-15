@@ -20,6 +20,7 @@ import json
 import math
 import sqlite3
 from datetime import date, datetime, timezone
+from hashlib import sha256
 
 from app.classify import ransomware as ransomware_classifier
 from app.classify import regulatory as regulatory_classifier
@@ -55,7 +56,7 @@ _SIGNAL_COLUMNS = """
   s.evidence_quality, s.incident_evidence_level, s.customer_facing_allowed,
   s.score, s.status,
   s.score_base, s.score_decay, s.score_account_fit, s.score_scope_fit,
-  s.scored_at,
+  s.scored_at, s.scoring_config_version,
   t.name AS trigger_name, t.base_strength, t.decay_half_life_days,
   e.name AS entity_name, e.subsector, e.richness, e.coverage_flag,
   e.gov_cloud_likelihood, e.tenant_cloud_environment
@@ -124,6 +125,41 @@ def identity_safe_source_url(url, signal_scope=None):
     if _RANSOMWARE_VICTIM_PATH in value.lower():
         return RANSOMWARE_SOURCE_URL
     return value
+
+
+# -- reproducing a card must not name the victim (R3.7 + R4.1) ---------------
+#
+# A raw_event_id is "{source_id}:{native_id}" (ingest/runner.py) and an RSS
+# classifier's native_id is the feed item's guid - which is the article link, so
+# on this corpus a raw_event_id literally reads
+# "bleepingcomputer:https://.../trezor-discloses-data-breach-affecting-.../".
+# The R3.7 provenance line renders on the feed, Account 360 and /card/ alike, so
+# printing the stored value would undo the name-free peer card the classifier
+# went to trouble to build.
+#
+# Account/parent cards already name their entity, so their id discloses nothing
+# new and is shown verbatim - reproducing an account card needs the real key.
+# Every other scope gets a sha256 digest: two cards from one raw event still
+# match, the operator can still grep the store for the digest, and the identity
+# stays out of the DOM. Same discipline as render.card_key / review_row_dom_id.
+RAW_EVENT_REF_LEN = 16
+
+
+def identity_safe_raw_event_ref(raw_event_id, signal_scope=None):
+    """Name-free reproducibility reference for a signal's raw event (R3.7/R4.1).
+
+    Returns ``{"ref": str, "hashed": bool}``. Account/parent scopes pass the
+    raw_event_id through; every other scope gets a sha256 digest of it. Pure -
+    no I/O - so the view layer can call it, and the gate lives here rather than
+    in a template so no markup change can reopen it.
+    """
+    value = (raw_event_id or "").strip()
+    if not value:
+        return {"ref": "", "hashed": False}
+    if signal_scope in ("account", "parent"):
+        return {"ref": value, "hashed": False}
+    digest = sha256(value.encode("utf-8")).hexdigest()[:RAW_EVENT_REF_LEN]
+    return {"ref": digest, "hashed": True}
 
 
 def _placeholders(n):
@@ -216,7 +252,60 @@ def signal_detail(conn, signal_id):
             "generation_version": sn["generation_version"],
             "facts": facts,
         })
-    return {"signal": signal, "evidence": evidence, "snapshots": snapshots}
+    return {"signal": signal, "evidence": evidence, "snapshots": snapshots,
+            "provenance": signal_provenance(conn, signal, evidence)}
+
+
+def signal_provenance(conn, signal, evidence_rows):
+    """The two parser versions behind one card (R3.7), as a dict.
+
+    ``classifier_parser_version`` is the load-bearing one for "reproduce this
+    card": the version of the rule that read the raw event. classified_events is
+    keyed (raw_event_id, classifier_id, parser_version), and signals carry no
+    classifier column, so the classifier is recovered from the signal's own
+    ``signal_evidence.extraction_version`` - which the runner writes as the
+    classifier's parser_version, "{classifier_id}/{n}". Matching on the
+    classifier id as well as the raw event matters because one source can feed
+    several classifiers (sec_edgar_submissions feeds both `incident` and
+    `leadership`); joining on raw_event_id alone would report a co-tenant's
+    version. Where several versions have processed the event, the newest wins;
+    ``extraction_version`` (the version that actually minted this signal) is
+    returned beside it, so a drift between the two is visible rather than hidden.
+
+    ``fetch_parser_version`` is the FETCHER's version, from the source_run that
+    pulled the event. It is a second line, never a substitute: it says how the
+    bytes were retrieved, not how they were interpreted.
+
+    Any of them may be None - a signal inserted by a fixture or an older build
+    has no bookkeeping row, and the card renders that honestly.
+    """
+    raw_event_id = signal["raw_event_id"]
+    minted = sorted({(r["extraction_version"] or "").strip()
+                     for r in evidence_rows} - {""})
+    classifier_ids = sorted({v.split("/", 1)[0] for v in minted if "/" in v})
+    out = {"classifier_id": classifier_ids[0] if classifier_ids else None,
+           "classifier_parser_version": None,
+           "extraction_version": minted[0] if minted else None,
+           "fetch_parser_version": None}
+    if not raw_event_id:
+        return out
+    if classifier_ids:
+        row = conn.execute(
+            "SELECT classifier_id, parser_version FROM classified_events "
+            f"WHERE raw_event_id = ? AND classifier_id IN "
+            f"({_placeholders(len(classifier_ids))}) "
+            "ORDER BY processed_at DESC, parser_version DESC LIMIT 1",
+            [raw_event_id] + classifier_ids).fetchone()
+        if row is not None:
+            out["classifier_id"] = row["classifier_id"]
+            out["classifier_parser_version"] = row["parser_version"]
+    row = conn.execute(
+        "SELECT sr.parser_version FROM raw_events re "
+        "JOIN source_runs sr ON sr.run_id = re.run_id "
+        "WHERE re.raw_event_id = ?", (raw_event_id,)).fetchone()
+    if row is not None:
+        out["fetch_parser_version"] = row["parser_version"]
+    return out
 
 
 def account_signals(conn, entity_id, statuses=("active",)):
