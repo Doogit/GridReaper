@@ -11,6 +11,7 @@ classifier gate. The view shaper's notes are covered alongside, since the honest
 import json
 import sqlite3
 import unittest
+from datetime import datetime, timezone
 
 from app.classify import ransomware as ransomware_classifier
 from app.db.migrate import apply_migrations
@@ -241,6 +242,131 @@ class TestRansomwareActivityEdges(unittest.TestCase):
         conn.close()
         self.assertEqual(activity["unclassified"], 3)
         self.assertEqual(activity["industries"], [])
+
+
+class TestSourceAttributionAndFreshness(unittest.TestCase):
+    """R10.4 credit is a licence condition; R6.6 stale must not read as quiet."""
+
+    NOW = datetime(2026, 8, 14, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _with_run(self, finished_at, status="success"):
+        conn = fixture_conn(CORPUS)
+        conn.execute(
+            "INSERT INTO source_runs (run_id, source_id, started_at, "
+            "finished_at, status, error_state) VALUES "
+            "('r1','ransomware_live',?,?,?,'')",
+            (finished_at, finished_at, status))
+        conn.commit()
+        return conn
+
+    def test_source_is_named_and_linked_on_the_populated_panel(self):
+        conn = self._with_run("2026-08-14T11:00:00+00:00")
+        view = render.ransomware_activity_view(
+            data.ransomware_activity(conn, now=self.NOW))
+        conn.close()
+        # CC-BY-4.0 requires credit wherever the data is presented, so naming
+        # the source only in the empty state is not enough.
+        self.assertIn("ransomware.live", view["source_name"])
+        self.assertEqual(view["source_url"], "https://www.ransomware.live")
+        self.assertIn("Source:", view["source_line"])
+
+    def test_fresh_run_states_the_ingest_time_and_is_not_stale(self):
+        conn = self._with_run("2026-08-14T11:00:00+00:00")
+        view = render.ransomware_activity_view(
+            data.ransomware_activity(conn, now=self.NOW))
+        conn.close()
+        self.assertFalse(view["stale"])
+        self.assertIn("last ingested", view["source_line"])
+        self.assertIn("2026-08-14T11:00:00+00:00", view["source_line"])
+
+    def test_stalled_feed_is_flagged_rather_than_reading_as_a_quiet_week(self):
+        # ttl is 3600s in the fixture; a run 5 days old is well past it. The
+        # derived window is unchanged, which is exactly the trap.
+        conn = self._with_run("2026-08-09T11:00:00+00:00")
+        activity = data.ransomware_activity(conn, now=self.NOW)
+        view = render.ransomware_activity_view(activity)
+        conn.close()
+        self.assertEqual(activity["source_state"], "stale")
+        self.assertTrue(view["stale"])
+        self.assertIn("STALE", view["source_line"])
+        # The counts themselves are untouched — only the framing changes.
+        self.assertEqual(view["total"], 10)
+
+    def test_never_ingested_says_so_instead_of_showing_a_bare_timestamp(self):
+        conn = fixture_conn(CORPUS)
+        view = render.ransomware_activity_view(
+            data.ransomware_activity(conn, now=self.NOW))
+        conn.close()
+        self.assertIn("never ingested", view["source_line"])
+
+
+class TestUnclassifiedIsCharted(unittest.TestCase):
+    """The largest bucket must not be footnote-only (it out-counts the top
+    named industry on the real corpus)."""
+
+    def test_unclassified_gets_its_own_row_ranked_by_count(self):
+        # 3 unclassified vs 2 Manufacturing: unclassified must sort FIRST, so a
+        # skimmer cannot read Manufacturing as the most-targeted industry.
+        conn = fixture_conn((
+            victim("A Co", "crewx", "Not Found"),
+            victim("B Co", "crewx", "Not Found"),
+            victim("C Co", "crewx", ""),
+            victim("D Co", "crewy", "Manufacturing"),
+            victim("E Co", "crewy", "Manufacturing"),
+        ))
+        view = render.ransomware_activity_view(data.ransomware_activity(conn))
+        conn.close()
+        rows = view["industries"]
+        self.assertEqual(rows[0]["label"], "No industry given")
+        self.assertEqual(rows[0]["count"], 3)
+        self.assertTrue(rows[0]["unclassified"])
+        # It is an absence of evidence, never a peer match.
+        self.assertFalse(rows[0]["is_peer"])
+
+    def test_no_unclassified_row_when_every_listing_is_classified(self):
+        conn = fixture_conn((victim("A Co", "crewx", "Manufacturing"),))
+        view = render.ransomware_activity_view(data.ransomware_activity(conn))
+        conn.close()
+        self.assertEqual([r["label"] for r in view["industries"]],
+                         ["Manufacturing"])
+
+
+class TestPeerCardSourceUrlIsIdentitySafe(unittest.TestCase):
+    """R4.1: ransomware.live's /id/ path is base64("<Victim>@<crew>"), so a
+    name-free sector card that links its own permalink names the company it
+    just refused to name. The Explore panel states the peer set's exact size,
+    which turns that link into a certain re-identification."""
+
+    VICTIM_URL = ("https://www.ransomware.live/id/"
+                  "Q29tbXVuaXR5IENvbm5lY3Rpb25zQHRoZWdlbnRsZW1lbg==")
+
+    def test_sector_card_does_not_link_the_per_victim_permalink(self):
+        safe = data.identity_safe_source_url(self.VICTIM_URL, "sector")
+        self.assertEqual(safe, "https://www.ransomware.live")
+        # The decodable victim segment is gone entirely, not merely hidden.
+        self.assertNotIn("Q29tbXVuaXR5", safe)
+
+    def test_attribution_survives_the_strip(self):
+        # R10.4 credit must not be collateral damage: still a ransomware.live
+        # link, just not a per-victim one.
+        safe = data.identity_safe_source_url(self.VICTIM_URL, "subsector")
+        self.assertIn("ransomware.live", safe)
+
+    def test_account_card_keeps_its_permalink(self):
+        # An own_incident card already names its entity, so the permalink
+        # discloses nothing the card does not.
+        for scope in ("account", "parent"):
+            self.assertEqual(
+                data.identity_safe_source_url(self.VICTIM_URL, scope),
+                self.VICTIM_URL)
+
+    def test_non_ransomware_urls_are_untouched(self):
+        other = "https://www.sec.gov/Archives/edgar/data/1234/0001.htm"
+        self.assertEqual(data.identity_safe_source_url(other, "sector"), other)
+
+    def test_empty_url_stays_empty(self):
+        self.assertEqual(data.identity_safe_source_url("", "sector"), "")
+        self.assertEqual(data.identity_safe_source_url(None, "sector"), "")
 
 
 class TestRansomwareActivityView(unittest.TestCase):

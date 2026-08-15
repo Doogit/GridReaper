@@ -32,7 +32,9 @@ The FastAPI + HTMX interface in its default light theme (a dark and a system the
 
 ![Explore — Watchlist Map](assets/screenshots/explore-map.png)
 
-The Ransomware Activity tab counts raw leak-site listings rather than signals, over the window the stored data actually spans. Only an energy-industry victim supports the "sector peer" claim a card would make, so the other listings never mint a card — this tab is where they stay visible as threat context, unscored and attributed to no account. Crews claiming a single listing are counted but not named: a crew that has named itself after its one victim would identify that company.
+The Ransomware Activity tab counts raw leak-site listings rather than signals, over the window the stored data actually spans (ransomware.live is a rolling recent feed, so that window is days, not months). These are ransomware victims worldwide — not watchlist companies, which are energy-only; the watchlist appears as the single highlighted row. Only an energy-industry victim supports the "sector peer" claim a card would make, so the other listings never mint a card, and this tab is where they stay visible as threat context: unscored, attributed to no account, credited to the source.
+
+A crew is named only if it is tied to two or more distinct victims. One victim can appear as several listings when the tracker revises a record, so counting listings would let a crew that named itself after its single victim identify that company. Withheld crews are still counted in the total, and the page says how many it is holding back.
 
 ![Explore — Ransomware Activity](assets/screenshots/explore-ransomware.png)
 

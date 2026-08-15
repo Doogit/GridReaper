@@ -89,6 +89,43 @@ def _parse_date(value):
         return None
 
 
+# -- name-free peer cards must not link a per-victim leak-site URL (R4.1) ----
+#
+# ransomware.live's permalink path is literally base64("<Victim>@<crew>"), so
+# https://www.ransomware.live/id/Q29tbXVuaXR5IENvbm5lY3Rpb25zQHRoZWdlbnRsZW1lbg==
+# decodes to "Community Connections@thegentlemen". A sector peer card is
+# name-free by construction — its evidence says "an organization" — and then
+# the framework attaches the raw event's URL, which names that organization one
+# line below. The card body honoured R4.1; its own Source link defeated it.
+#
+# The Explore Ransomware Activity panel makes this materially worse, which is
+# why it is fixed here rather than deferred: that panel states the peer set's
+# exact cardinality ("2 of 100 listings are in the watchlist's own industry —
+# the only rows that mint sector-peer cards"), so a reader who can see the peer
+# cards can map the highlighted row onto specific companies with certainty.
+#
+# Sector cards therefore link the tracker's index instead of the per-victim
+# permalink: attribution survives (R10.4) and the identity does not. ACCOUNT
+# cards are untouched — an own_incident card already names its entity, so its
+# permalink discloses nothing the card does not.
+_RANSOMWARE_VICTIM_PATH = "ransomware.live/id/"
+
+
+def identity_safe_source_url(url, signal_scope=None):
+    """Strip a per-victim leak-site permalink from a name-free card (R4.1).
+
+    Returns ``url`` unchanged unless it is a ransomware.live per-victim
+    permalink on a non-account-scoped signal, in which case the tracker's index
+    is returned in its place. Pure — no I/O — so the view layer can call it.
+    """
+    value = (url or "").strip()
+    if not value or signal_scope in ("account", "parent"):
+        return value
+    if _RANSOMWARE_VICTIM_PATH in value.lower():
+        return RANSOMWARE_SOURCE_URL
+    return value
+
+
 def _placeholders(n):
     return ",".join("?" * n)
 
@@ -1873,6 +1910,12 @@ def explore_state_density(conn, statuses=("active",)):
 
 RANSOMWARE_SOURCE_ID = ransomware_classifier.SOURCE_ID
 
+# Attribution is a LICENSE CONDITION, not decoration: the source policy carries
+# tos_status 'approved_cc_by_4.0', and CC-BY-4.0 requires crediting the source
+# wherever its data is presented (R10.4). The populated panel must therefore
+# name and link ransomware.live, not just the empty state.
+RANSOMWARE_SOURCE_URL = "https://www.ransomware.live"
+
 # A named crew must cover at least this many DISTINCT VICTIMS (see R4.1 above).
 # Distinct victims, not listings: ransomware.live exposes no stable per-victim
 # id, so an upstream record revision mints a second raw_event for the same
@@ -1892,7 +1935,7 @@ def _is_unclassified_activity(activity):
     return " ".join((activity or "").split()).lower() in UNCLASSIFIED_ACTIVITIES
 
 
-def ransomware_activity(conn):
+def ransomware_activity(conn, now=None):
     """Aggregate leak-site activity for the Explore Ransomware tab (R8.5, R4.1).
 
     Counts the stored ``ransomware_live`` raw_events two independent ways —
@@ -1900,10 +1943,14 @@ def ransomware_activity(conn):
     spans. Returns a plain dict::
 
         {'total', 'window_start', 'window_end', 'window_days',
+         'source_name', 'source_url', 'last_success_at', 'source_state',
          'crews': [{'label','count'}],        # >= CREW_MIN_VICTIMS only
          'crews_withheld', 'crews_withheld_listings', 'crew_total',
          'industries': [{'label','count','is_peer'}],
          'peer_listings', 'unclassified'}
+
+    ``now`` is injectable so the freshness classification is deterministic in
+    tests (R10.2 UTC ISO-8601 throughout).
 
     Never returns a victim name, a domain, a URL, or a singleton crew name
     (R4.1 — see the module note above); never returns a score, an entity or a
@@ -1918,6 +1965,17 @@ def ransomware_activity(conn):
         "SELECT re.event_date, re.payload FROM raw_events re "
         "WHERE re.source_id = ? ORDER BY re.raw_event_id",
         (RANSOMWARE_SOURCE_ID,)).fetchall()
+
+    # Freshness: the window below is derived from event_date alone, so a feed
+    # that stopped updating a month ago still renders a confident-looking
+    # report. Carry the source's own run state so the panel can say when it
+    # last actually ingested — "quiet" must stay distinguishable from "broken"
+    # (R6.6), and this is the one surface where it otherwise would not be.
+    source_row = None
+    for candidate in source_health(conn):
+        if candidate["source_id"] == RANSOMWARE_SOURCE_ID:
+            source_row = candidate
+            break
 
     crew_counts = {}
     crew_victims = {}
@@ -1971,6 +2029,13 @@ def ransomware_activity(conn):
         "window_start": min(dates) if dates else "",
         "window_end": max(dates) if dates else "",
         "window_days": _window_days(dates),
+        "source_name": (source_row["name"] if source_row
+                        else RANSOMWARE_SOURCE_ID),
+        "source_url": RANSOMWARE_SOURCE_URL,
+        "last_success_at": (source_row["last_success_at"] if source_row
+                            else None),
+        "source_state": (source_state(source_row, now=now) if source_row
+                         else "never_run"),
         "crews": named,
         "crew_total": len(crew_counts),
         "crews_withheld": len(withheld),

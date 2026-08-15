@@ -706,6 +706,23 @@ html { interpolate-size: allow-keywords; }  /* lets height:auto animate (details
   border-radius: 2px; width: var(--fill, 0%);
   transition: width 700ms cubic-bezier(0.2,0,0,1) 150ms; }
 @starting-style { .gs-rw-fill { width: 0%; } }
+/* States whose industries these are (victims worldwide, not the watchlist). */
+.gs-rw-subject { font-size: 0.78rem; color: var(--gs-text); margin: 0 0 12px;
+  padding: 8px 10px; background: var(--gs-sunken);
+  border-left: 3px solid var(--gs-card-border); border-radius: 4px;
+  line-height: 1.45; }
+/* Source byline: attribution (CC-BY-4.0, R10.4) + ingest freshness. */
+.gs-rw-source { font-size: 0.76rem; color: var(--gs-muted); margin: 0 0 8px; }
+.gs-rw-source a { color: inherit; text-decoration: underline;
+  text-underline-offset: 2px; }
+.gs-rw-source a:hover { color: var(--gs-accent); }
+.gs-rw-source.stale, .gs-rw-source.stale a { color: var(--gs-warn-text);
+  font-weight: 600; }
+/* The unclassified bar: present so the chart's largest bucket is visible, but
+   deliberately faint and dashed — it is an absence of data, not a category. */
+.gs-rw-row.unclassified .gs-rw-label { color: var(--gs-muted); font-style: italic; }
+.gs-rw-row.unclassified .gs-rw-fill { background: transparent;
+  border: 1px dashed var(--gs-muted); }
 /* The peer band: same warn hue as the unconfirmed-tier badge (R10.5). */
 .gs-rw-row.peer .gs-rw-label { color: var(--gs-warn-text); font-weight: 600; }
 .gs-rw-row.peer .gs-rw-fill { background: var(--gs-warn-border); }

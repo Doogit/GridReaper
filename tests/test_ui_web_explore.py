@@ -153,6 +153,34 @@ class TestExploreRansomwareTab(ExploreTestBase):
         dom = self.client.get("/explore?tab=ransomware").text
         self.assertIn('id="gs-tab-ransomware" class="gs-tab-input" checked', dom)
 
+    def test_deeplink_is_case_insensitive(self):
+        # A shared link landing silently on Analytics reads as broken.
+        dom = self.client.get("/explore?tab=Ransomware").text
+        self.assertIn('id="gs-tab-ransomware" class="gs-tab-input" checked', dom)
+
+    def test_unknown_tab_still_falls_back_to_analytics(self):
+        dom = self.client.get("/explore?tab=bogus").text
+        self.assertIn('id="gs-tab-analytics" class="gs-tab-input" checked', dom)
+
+    def test_source_is_credited_and_linked_on_the_page(self):
+        # ransomware.live is CC-BY-4.0 (tos_status approved_cc_by_4.0), so
+        # crediting it where the data renders is a licence condition (R10.4).
+        dom = self.client.get("/explore").text
+        self.assertIn("https://www.ransomware.live", dom)
+        self.assertIn("Source:", dom)
+
+    def test_unclassified_listings_are_charted_not_only_footnoted(self):
+        dom = self.client.get("/explore").text
+        self.assertIn("No industry given", dom)
+
+    def test_page_states_these_are_worldwide_victims_not_the_watchlist(self):
+        # The panel's most-misread element: "Industries hit" counts leak-site
+        # victims worldwide, NOT the (energy-only) watchlist. Read the wrong
+        # way round during the persona pass, so the subject is stated on-page.
+        dom = self.client.get("/explore").text
+        self.assertIn("victims worldwide", dom)
+        self.assertIn("not GridSignals watchlist", dom)
+
     def test_nameable_crew_and_industries_reach_the_dom(self):
         dom = self.client.get("/explore").text
         self.assertIn("qilin", dom)              # 3 listings -> nameable

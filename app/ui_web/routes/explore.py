@@ -52,7 +52,10 @@ RANSOMWARE_EMPTY = (
 
 @router.get("/explore", response_class=HTMLResponse)
 def explore(request: Request, tab: str = "analytics", conn=Depends(get_db)):
-    active_tab = tab if tab in TABS else "analytics"
+    # Casefolded: a shared '?tab=Ransomware' link silently landing the reader on
+    # Analytics reads as a broken link, not as a fallback.
+    requested = (tab or "").strip().lower()
+    active_tab = requested if requested in TABS else "analytics"
 
     analytics_tables = render.explore_analytics_view(
         data.explore_analytics_counts(conn))

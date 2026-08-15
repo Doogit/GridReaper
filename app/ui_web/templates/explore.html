@@ -73,7 +73,17 @@
       <span class="gs-rw-total">{{ ransomware.total }} leak-site listings</span>
       <span class="gs-rw-window">{{ ransomware.window }}</span>
     </div>
+    {# Attribution is a licence condition (CC-BY-4.0, R10.4), and the ingest
+       time is what keeps a stalled feed from reading like a quiet week — the
+       window above is derived from event dates alone. #}
+    <p class="gs-rw-source{% if ransomware.stale %} stale{% endif %}">
+      {% if ransomware.source_url %}<a href="{{ ransomware.source_url }}" target="_blank" rel="noopener noreferrer">{{ ransomware.source_line }}</a>{% else %}{{ ransomware.source_line }}{% endif %}
+    </p>
     <p class="gs-muted-text gs-map-caption">{{ ransomware.caption }}</p>
+    {# Stated, not inferred: the industry table counts victims worldwide, never
+       the (energy-only) watchlist. Misread by the operator himself in the
+       persona pass, so it is on the page rather than left to the column head. #}
+    <p class="gs-rw-subject">{{ ransomware.subject_note }}</p>
 
     <div class="gs-rw-cols">
       <section class="gs-rw-col">
@@ -91,9 +101,9 @@
       </section>
 
       <section class="gs-rw-col">
-        <h2>Industries hit</h2>
+        <h2>Industries hit — victims worldwide</h2>
         {% for row in ransomware.industries %}
-        <div class="gs-rw-row{% if row.is_peer %} peer{% endif %}">
+        <div class="gs-rw-row{% if row.is_peer %} peer{% endif %}{% if row.unclassified %} unclassified{% endif %}">
           <span class="gs-rw-label">{{ row.label }}{% if row.is_peer %} <span class="gs-rw-peer-tag">peer</span>{% endif %}</span>
           <span class="gs-rw-count">{{ row.count }}</span>
           <span class="gs-rw-rail"><span class="gs-rw-fill" style="--fill: {{ row.bar }}%"></span></span>
