@@ -280,5 +280,45 @@ class TestExploreMapSvg(unittest.TestCase):
         self.assertIn("&lt;script&gt;", view["svg"])
 
 
+class TestReviewPendingView(unittest.TestCase):
+    """R8.2 / R10.5 / R4.1: the pending-row shaping carries three trust guards."""
+
+    def row(self, **over):
+        base = {"raw_event_id": "re_1", "candidate_entity_id": "E_1",
+                "candidate_name": "Dark Muni Co", "subsector": "muni_public",
+                "reason": "fuzzy_below_threshold", "confidence": 0.82,
+                "event_date": "2026-08-01", "snippet": "Some filing",
+                "snippet_truncated": False, "snippet_limit": 200,
+                "source_url": "http://rev/doc"}
+        base.update(over)
+        return base
+
+    def test_constant_unconfirmed_badge_on_every_row(self):
+        view = render.review_pending_view(self.row())
+        self.assertEqual(view["badges"], [render.REVIEW_UNCONFIRMED_BADGE])
+        self.assertEqual(render.REVIEW_UNCONFIRMED_BADGE["cls"],
+                         "gs-badge unconfirmed")
+
+    def test_victim_permalink_swapped_for_the_tracker_index(self):
+        url = ("https://www.ransomware.live/id/"
+               "QmF4dGVyIEludGVybmF0aW9uYWwsIEluYy5Ac2hpbnlodW50ZXJz")
+        view = render.review_pending_view(self.row(source_url=url))
+        self.assertEqual(view["source_url"], "https://www.ransomware.live")
+
+    def test_ordinary_url_survives_and_non_http_is_dropped(self):
+        self.assertEqual(
+            render.review_pending_view(self.row())["source_url"],
+            "http://rev/doc")
+        self.assertIsNone(render.review_pending_view(
+            self.row(source_url="javascript:alert(1)"))["source_url"])
+
+    def test_truncation_note_only_when_cut(self):
+        self.assertEqual(render.review_pending_view(self.row())["snippet_note"],
+                         "")
+        note = render.review_pending_view(
+            self.row(snippet_truncated=True))["snippet_note"]
+        self.assertIn("truncated at 200 characters", note)
+
+
 if __name__ == "__main__":
     unittest.main()

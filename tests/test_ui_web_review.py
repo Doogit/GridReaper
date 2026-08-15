@@ -11,6 +11,7 @@ source's error text verbatim; stale facts list shows the fixture stale fact +
 header count while the fresh fact is excluded; an empty review queue renders the
 honest positive empty state; hostile upstream HTML is escaped, never markup.
 """
+import json
 import os
 import sqlite3
 import tempfile
@@ -132,6 +133,22 @@ def seed_hostile_html(conn):
         (iso(NOW),))
 
 
+# A real ransomware.live per-victim permalink shape: the /id/ path segment is
+# base64 of "Baxter International, Inc.@shinyhunters" (R4.1).
+VICTIM_PERMALINK = ("https://www.ransomware.live/id/"
+                    "QmF4dGVyIEludGVybmF0aW9uYWwsIEluYy5Ac2hpbnlodW50ZXJz")
+LONG_TITLE = "Ambiguous Utility Co filing " + ("x" * 300)
+
+
+def seed_victim_permalink(conn):
+    """A pending row whose source URL is a per-victim leak-site permalink and
+    whose payload title overruns the snippet limit (R4.1, R10.5)."""
+    seed_full(conn)
+    conn.execute("UPDATE raw_events SET url=?, payload=? "
+                 "WHERE raw_event_id='re_rev'",
+                 (VICTIM_PERMALINK, '{"title": %s}' % json.dumps(LONG_TITLE)))
+
+
 def make_db(seed):
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -224,6 +241,18 @@ class TestPendingMatches(ReviewTestBase):
         self.assertEqual(rq["disposition"], "rejected")
         conn.close()
 
+    def test_pending_row_carries_the_unconfirmed_badge(self):
+        # a queue item is by definition unadjudicated (R10.5)
+        dom = self.page()
+        self.assertIn("unconfirmed candidate", dom)
+        self.assertIn("gs-badge unconfirmed", dom)
+        self.assertIn("no human has ruled on it yet", dom)
+
+    def test_short_snippet_is_not_labelled_truncated(self):
+        dom = self.page()
+        self.assertIn("Ambiguous Utility Co filing", dom)
+        self.assertNotIn("Extract truncated", dom)
+
     def test_triage_row_dom_id_is_hashed_not_raw(self):
         # the raw ids never appear as a DOM id / selector fragment
         dom = self.page()
@@ -265,6 +294,28 @@ class TestEmptyState(ReviewTestBase):
         self.assertIn("needed no human help", dom)
         # page still renders the other sections without error
         self.assertIn("Source health", dom)
+
+
+class TestPendingRowTrust(ReviewTestBase):
+    """R4.1 / R10.5: the named candidate must not be shown beside a live
+    per-victim permalink, an unlabelled cut-off payload, or no tier at all."""
+    seed = staticmethod(seed_victim_permalink)
+
+    def test_victim_permalink_is_replaced_by_the_tracker_index(self):
+        dom = self.page()
+        self.assertNotIn(VICTIM_PERMALINK, dom)
+        self.assertNotIn("QmF4dGVyIEludGVybmF0aW9uYWws", dom)
+        self.assertIn('href="https://www.ransomware.live"', dom)
+
+    def test_truncated_snippet_is_labelled(self):
+        dom = self.page()
+        self.assertIn("Extract truncated at 200 characters", dom)
+        self.assertIn("not the whole record", dom)
+        # the overrun tail never reaches the DOM
+        self.assertNotIn("x" * 300, dom)
+
+    def test_unconfirmed_badge_present(self):
+        self.assertIn("unconfirmed candidate", self.page())
 
 
 class TestHtmlEscaping(ReviewTestBase):

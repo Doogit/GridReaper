@@ -290,6 +290,17 @@ def review_row_dom_id(raw_event_id, candidate_entity_id):
     return f"gs-rq-{digest}"
 
 
+# A review row is BY DEFINITION unadjudicated — the resolver could not settle
+# the match and no human has ruled yet — so the badge is a constant, not a tier
+# joined from review_queue (which carries no tier column) (R8.2, R10.5).
+REVIEW_UNCONFIRMED_BADGE = {
+    "cls": "gs-badge unconfirmed",
+    "title": ("Unconfirmed candidate — the resolver could not settle this "
+              "match and no human has adjudicated it yet (R10.5)"),
+    "text": "unconfirmed candidate",
+}
+
+
 def review_pending_view(item):
     """Shape one review_pending() row for _review_pending_row.html (R8.2).
 
@@ -298,12 +309,21 @@ def review_pending_view(item):
     fabricated matched/rejected terms), formatted confidence, evidence snippet,
     and an http(s)-only source link. Raw ids ride in POST data, never the DOM id.
     The template autoescapes every string here.
+
+    Three trust guards (R10.5, R4.1): a constant unconfirmed badge so a named
+    candidate cannot read as confirmed; a labelled truncation so a cut-off
+    payload cannot read as the whole record; and the source link routed through
+    ``data.identity_safe_source_url`` — a review row has no signal scope, so a
+    ransomware.live per-victim permalink (base64 victim name) is replaced by the
+    tracker index the same way a name-free sector card's is.
     """
     raw_event_id = item["raw_event_id"]
     candidate_entity_id = item["candidate_entity_id"]
     conf = item.get("confidence")
     conf_txt = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
     subsector = item.get("subsector")
+    truncated = bool(item.get("snippet_truncated"))
+    limit = item.get("snippet_limit")
     return {
         "dom_id": review_row_dom_id(raw_event_id, candidate_entity_id),
         "raw_event_id": raw_event_id,
@@ -314,7 +334,13 @@ def review_pending_view(item):
         "confidence": conf_txt,
         "event_date": item.get("event_date") or "n/a",
         "snippet": item.get("snippet") or "",
-        "source_url": safe_source_url(item.get("source_url")),
+        "snippet_truncated": truncated,
+        "snippet_note": (
+            f"Extract truncated at {limit} characters — not the whole record."
+            if truncated else ""),
+        "badges": [REVIEW_UNCONFIRMED_BADGE],
+        "source_url": safe_source_url(
+            data.identity_safe_source_url(item.get("source_url"))),
     }
 
 

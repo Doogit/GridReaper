@@ -251,23 +251,38 @@ def review_pending(conn):
     out = []
     for r in rows:
         d = dict(r)
-        d["snippet"] = _payload_snippet(r["payload"])
+        d["snippet"], d["snippet_truncated"] = _payload_snippet_parts(r["payload"])
+        d["snippet_limit"] = _PAYLOAD_SNIPPET_LIMIT
         d.pop("payload", None)
         out.append(d)
     return out
 
 
-def _payload_snippet(payload, limit=200):
+_PAYLOAD_SNIPPET_LIMIT = 200
+
+
+def _payload_snippet(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
+    return _payload_snippet_parts(payload, limit)[0]
+
+
+def _payload_snippet_parts(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
+    """``(snippet, truncated)`` for one raw payload (R8.2, R10.5).
+
+    The review queue shows a fragment of a raw record; the caller labels the
+    cut so a truncated payload cannot be read as the whole record. Pure.
+    """
     if not payload:
-        return ""
+        return "", False
     try:
         obj = json.loads(payload)
         for key in ("title", "headline", "name", "summary"):
             if isinstance(obj, dict) and (obj.get(key) or "").strip():
-                return obj[key].strip()[:limit]
+                text = obj[key].strip()
+                return text[:limit], len(text) > limit
     except (ValueError, TypeError):
         pass
-    return str(payload)[:limit]
+    text = str(payload)
+    return text[:limit], len(text) > limit
 
 
 def source_health(conn):
