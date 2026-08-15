@@ -503,19 +503,27 @@ def triage_decision(conn, raw_event_id, entity_id, accept, now=None):
     """Record a human review decision (R8.2): log an entity_match_decisions row
     (decided_by='human') and update the matching review_queue row's disposition
     - both in one transaction. Accepting records the decision only; creating a
-    signal from an accepted match is deferred (documented on the page)."""
+    signal from an accepted match is deferred (documented on the page).
+
+    Some review rows are not entity candidates: the R10.6 provenance guard
+    quarantines a raw event with ``candidate_entity_id`` NULL when the text needs
+    operator review. Those rows still need to be disposable, but they must not
+    fabricate an entity_match_decisions row for a nonexistent entity.
+    """
     ts = _utcnow_iso(now)
     decision = "reviewed" if accept else "rejected"
     disposition = "accepted" if accept else "rejected"
-    conn.execute(
-        "INSERT INTO entity_match_decisions (raw_event_id, entity_id, method, "
-        " confidence, matched_terms, rejected_terms, decision, decided_by, ts, "
-        " parser_version) VALUES (?, ?, 'human_review', 1.0, '[]', '[]', ?, "
-        " 'human', ?, ?)",
-        (raw_event_id, entity_id, decision, ts, TRIAGE_PARSER_VERSION))
+    entity_id = (entity_id or "").strip() or None
+    if entity_id is not None:
+        conn.execute(
+            "INSERT INTO entity_match_decisions (raw_event_id, entity_id, "
+            " method, confidence, matched_terms, rejected_terms, decision, "
+            " decided_by, ts, parser_version) VALUES (?, ?, 'human_review', "
+            " 1.0, '[]', '[]', ?, 'human', ?, ?)",
+            (raw_event_id, entity_id, decision, ts, TRIAGE_PARSER_VERSION))
     conn.execute(
         "UPDATE review_queue SET disposition = ?, disposed_at = ? "
-        "WHERE raw_event_id = ? AND candidate_entity_id = ?",
+        "WHERE raw_event_id = ? AND candidate_entity_id IS ?",
         (disposition, ts, raw_event_id, entity_id))
     conn.commit()
 
