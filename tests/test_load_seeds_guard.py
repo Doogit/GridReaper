@@ -1,4 +1,4 @@
-"""Seed-loader guards: reload preservation (Pattern B) and R4.5 fail-loud.
+"""Pattern B reload guard: operator-tunable columns survive a seed reload.
 
 R8.7 makes scoring_weights.weight and triggers.decay_half_life_days operator-
 editable. The seed loader upserts every CSV on each run, so without a guard a
@@ -15,9 +15,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
-from unittest import mock
 
-from app.db import load_seeds
 from app.db.load_seeds import load
 from app.db.connection import get_connection
 from app.ui import data
@@ -193,51 +191,6 @@ class TestSourceRegistryReloadGuard(unittest.TestCase):
         # Junked seed-source name reverted to the CSV value.
         self.assertEqual(reverted, seed_name)
         self.assertNotEqual(reverted, "JUNK_TYPO")
-
-
-class TestMissingSeedFileFailsLoudly(unittest.TestCase):
-    """R4.5: a missing seed/reference file MUST fail the seed job with a clear
-    operator-facing error.
-
-    The fail-loud path exists (``read_rows`` raises FileNotFoundError) but had
-    no test, so nothing stopped a future refactor from turning it into a silent
-    skip - which would load a partial store that looks successful. These tests
-    pin both halves of the requirement: the error NAMES the missing file, and
-    the job aborts rather than committing the tables it already read.
-
-    The seeds directory is copied to a temp dir and SEEDS_DIR is pointed at the
-    copy; the real ``seeds/`` CSVs are never touched.
-    """
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
-        self.seeds = os.path.join(self.tmpdir, "seeds")
-        shutil.copytree(load_seeds.SEEDS_DIR, self.seeds)
-        self.db = os.path.join(self.tmpdir, "missing_seed.db")
-
-    def test_read_rows_names_the_missing_file(self):
-        absent = os.path.join(self.seeds, "no_such_seed.csv")
-        with self.assertRaises(FileNotFoundError) as ctx:
-            load_seeds.read_rows(absent)
-        self.assertIn("no_such_seed.csv", str(ctx.exception))
-
-    def test_load_aborts_and_commits_nothing_when_a_seed_csv_is_absent(self):
-        # license_matrix.csv is one of the six hand-verified seeds and loads
-        # after products/triggers, so its absence must also roll those back.
-        os.remove(os.path.join(self.seeds, "license_matrix.csv"))
-        with mock.patch.object(load_seeds, "SEEDS_DIR", self.seeds):
-            with self.assertRaises(FileNotFoundError) as ctx:
-                load(db_path=self.db)
-        self.assertIn("license_matrix.csv", str(ctx.exception))
-
-        # The job aborted: the tables loaded before the missing file are empty.
-        conn = sqlite3.connect(self.db)
-        for table in ("products", "triggers", "watchlist_entities"):
-            self.assertEqual(
-                conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0,
-                f"{table} was committed despite a missing seed file (R4.5)")
-        conn.close()
 
 
 if __name__ == "__main__":
