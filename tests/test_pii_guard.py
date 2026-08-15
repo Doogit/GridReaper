@@ -19,10 +19,12 @@ Hermetic: real migrations against in-memory SQLite, FK on, no network.
 import json
 import sqlite3
 import unittest
+from datetime import datetime, timezone
 
 from app.classify import leadership, runner
 from app.classify.runner import run_classifier
 from app.db.migrate import apply_migrations
+from app.ui import data
 
 SOURCE = "test_source"
 PRN = "presswire_prnewswire"
@@ -158,6 +160,25 @@ class TestQuarantine(GuardTestCase):
         self.run_fake(cands)
         self.run_fake(cands, force=True)
         self.assertEqual(len(self.quarantine_rows()), 1)
+
+    def test_quarantine_row_can_be_disposed_without_an_entity_id(self):
+        cands = {f"{SOURCE}:1": [peer_candidate(
+            "Sector peer filed a corrected outage report",
+            f"{SYNTHESIZED} described the incident.")]}
+        self.run_fake(cands)
+
+        data.triage_decision(
+            self.conn, f"{SOURCE}:1", None, accept=False,
+            now=datetime(2026, 8, 2, tzinfo=timezone.utc))
+
+        self.assertEqual(self.quarantine_rows(), [])
+        row = self.conn.execute(
+            "SELECT disposition, disposed_at FROM review_queue "
+            "WHERE raw_event_id = ?", (f"{SOURCE}:1",)).fetchone()
+        self.assertEqual(row["disposition"], "rejected")
+        self.assertEqual(row["disposed_at"], "2026-08-02T00:00:00+00:00")
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM entity_match_decisions").fetchone()[0], 0)
 
 
 class TestProvenancedTextPasses(GuardTestCase):
