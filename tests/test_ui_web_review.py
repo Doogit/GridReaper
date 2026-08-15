@@ -394,6 +394,25 @@ class TestNoCandidateRow(ReviewTestBase):
         self.assertIn("No entity match to accept or reject", dom)
         self.assertNotIn(">Accept<", dom)
         self.assertNotIn(">Reject<", dom)
+        self.assertIn(">Dismiss<", dom)
+
+    def test_dismiss_clears_the_candidate_less_row(self):
+        resp = self.client.post(
+            "/review/triage",
+            data={"raw_event_id": "re_rev", "candidate_entity_id": "",
+                  "accept": "false"})
+        self.assertEqual(resp.status_code, 200)
+        conn = sqlite3.connect(self.path)
+        try:
+            disposition = conn.execute(
+                "SELECT disposition FROM review_queue "
+                "WHERE raw_event_id = 're_rev'").fetchone()[0]
+            decisions = conn.execute(
+                "SELECT COUNT(*) FROM entity_match_decisions").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(disposition, "rejected")
+        self.assertEqual(decisions, 0)
 
     def test_named_candidate_still_gets_the_controls(self):
         # the ordinary resolver row is unchanged

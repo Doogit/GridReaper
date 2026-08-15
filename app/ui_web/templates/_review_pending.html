@@ -17,6 +17,12 @@
   {% if p.source_url %}<a class="gs-source-link" href="{{ p.source_url }}" target="_blank" rel="noopener">Source</a>{% if p.source_note %}<span class="gs-meta"> — {{ p.source_note }}</span>{% endif %}{% endif %}
   {% if not p.has_candidate %}
   <div class="gs-meta">No entity match to accept or reject — this row was routed to triage for the reason above.</div>
+  <div class="gs-feedback">
+    <button type="button" class="gs-btn"
+            hx-post="/review/triage"
+            hx-vals='{{ {"raw_event_id": p.raw_event_id, "candidate_entity_id": "", "accept": "false"} | tojson }}'
+            hx-target="#{{ p.dom_id }}" hx-swap="outerHTML">Dismiss</button>
+  </div>
   {% else %}
   <div class="gs-feedback">
     <button type="button" class="gs-btn"
