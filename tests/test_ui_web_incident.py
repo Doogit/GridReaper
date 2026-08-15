@@ -18,6 +18,7 @@ from app.db.migrate import apply_migrations
 from app.ingest.runner import ingest_lock
 from app.ui_web.app import app
 from app.ui_web.render import tier_dom_id
+from tests.lock_fixture import redirect_ingest_lock
 
 
 def _seed(conn):
@@ -72,6 +73,7 @@ class IncidentTierBase(unittest.TestCase):
     def setUp(self):
         self.path = _make_db()
         os.environ["GRIDSIGNALS_DB"] = self.path
+        self.lock_path = redirect_ingest_lock(self)
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -259,7 +261,7 @@ class TestGuards(IncidentTierBase):
         self.assertEqual(self.edit_count(), 0)
 
     def test_held_lock_warns_and_writes_nothing(self):
-        with ingest_lock():
+        with ingest_lock(self.lock_path):
             resp = self.client.post("/incident/tier", data={
                 "signal_id": "S_UNCONF", "new_level": "confirmed"})
         self.assertIn("Ingestion in progress", resp.text)

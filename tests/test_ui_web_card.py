@@ -20,6 +20,7 @@ from app.db.migrate import apply_migrations
 from app.ui import data
 from app.ui_web import render
 from app.ui_web.app import app
+from tests.lock_fixture import redirect_ingest_lock
 
 # A signal_id whose raw_event_id is itself a URL — must never land raw in a path.
 URLISH_SIGNAL_ID = "peer_incident:the_record:https://example.com/a?x=1&y=2:sector"
@@ -82,6 +83,7 @@ class CardRouteBase(unittest.TestCase):
     def setUp(self):
         self.path = _make_db(_seed)
         os.environ["GRIDSIGNALS_DB"] = self.path
+        self.lock_path = redirect_ingest_lock(self)
         self.client = TestClient(app)
 
     def tearDown(self):
