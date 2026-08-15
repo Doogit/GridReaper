@@ -2,6 +2,12 @@
    Both sections are labeled so an empty account section reads as deliberately
    empty (R6.6), not broken. Only the account group shows an explicit empty
    panel — a quiet sector reads fine under its labeled divider. #}
+{% if sort == "score" %}
+<p class="gs-muted-text">Ranked by score, highest first — the cards that most
+  deserve action. Capped at {{ page_size }} per section; switch Sort to
+  <b>Newest</b> for the full date-ordered feed with paging.</p>
+{% endif %}
+
 {% with label = "Account signals" %}{% include "_divider.html" %}{% endwith %}
 {% if account_cards %}
   {% with cards = account_cards, next = account_next %}{% include "_cards.html" %}{% endwith %}
