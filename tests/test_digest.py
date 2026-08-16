@@ -14,11 +14,14 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 
 from fastapi.testclient import TestClient
 
 from app import digest as digest_mod
 from app.db.migrate import apply_migrations
+from app.ui import data
+from app.ui_web import render
 from app.ui_web.app import app
 
 
@@ -42,8 +45,8 @@ def days_ago(n):
 
 def _add_signal(conn, sid, entity_id, scope, trigger_id, event_date, headline,
                 cfa=0, status="active", score=None, source_url="http://src/doc",
-                incident_level=None):
-    raw = "re_acc" if scope in ("account", "parent") else None
+                incident_level=None, raw_event_id=None):
+    raw = raw_event_id or ("re_acc" if scope in ("account", "parent") else None)
     conn.execute(
         "INSERT INTO signals (signal_id, raw_event_id, entity_id, signal_scope, "
         "trigger_id, event_date, headline, evidence_snippet, source_url, "
@@ -280,6 +283,119 @@ class TestDigestRoute(DigestTestBase):
         resp = self.client.get("/digest")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("No digest generated yet", resp.text)
+
+
+# -- U5: R3.7 provenance renders in the digest too ---------------------------
+#
+# digest.html carries its OWN card macro (it does not include _card.html), which
+# is why the R3.7 provenance block used to be a named exception on this surface.
+# A digest is the artifact that leaves the tool — a saved file someone forwards —
+# so it is the surface where "which raw event produced this" matters most, and
+# also the one where a leaked victim name is hardest to recall.
+
+# ransomware.live's permalink path is base64("<Victim>@<crew>"), so both the
+# stored raw_event_id and the signal's own source_url spell the victim. A sector
+# card must show NEITHER: identity_safe_source_url swaps the link for the
+# tracker index, identity_safe_raw_event_ref hashes the id (R3.7 + R4.1).
+VICTIM_PERMALINK = ("https://www.ransomware.live/id/"
+                    "Q29tbXVuaXR5IENvbm5lY3Rpb25zQHRoZWdlbnRsZW1lbg==")
+VICTIM_RAW_ID = f"ransomware_live:{VICTIM_PERMALINK}"
+# The security-press peer path is the other name-carrying shape: an RSS
+# native_id is the article link, whose slug names the breached company.
+PRESS_RAW_ID = ("bleepingcomputer:https://www.bleepingcomputer.com/news/"
+                "security/victimcorp-discloses-data-breach/")
+ACCOUNT_RAW_ID = "sec_edgar_submissions:0000012345-26-000004"
+# Both security_rss peer paths mint FIXED template headlines, so two peer cards
+# are literally the same string — the source name is the only discriminator.
+PEER_HEADLINE = ("Sector peer disclosed a cybersecurity incident - "
+                 "security-press reported")
+
+
+def _hashed(raw_event_id):
+    return sha256(raw_event_id.encode("utf-8")).hexdigest()[
+        :data.RAW_EVENT_REF_LEN]
+
+
+def seed_provenance(conn):
+    conn.execute("INSERT INTO triggers (trigger_id, name, base_strength, "
+                 "decay_half_life_days) VALUES ('t_peer','Peer incident',3,60)")
+    conn.execute("INSERT INTO watchlist_entities (entity_id, name) "
+                 "VALUES ('E_ACME','Acme Energy')")
+    conn.executemany(
+        "INSERT INTO source_policies (source_id, name, evidence_rank) "
+        "VALUES (?,?,?)",
+        [("ransomware_live", "ransomware.live", 3),
+         ("bleepingcomputer", "BleepingComputer", 2),
+         ("sec_edgar_submissions", "SEC EDGAR", 1)])
+    conn.executemany(
+        "INSERT INTO raw_events (raw_event_id, source_id, event_date, url) "
+        "VALUES (?,?,?,?)",
+        [(VICTIM_RAW_ID, "ransomware_live", days_ago(3), VICTIM_PERMALINK),
+         (PRESS_RAW_ID, "bleepingcomputer", days_ago(4),
+          "https://www.bleepingcomputer.com/news/security/victimcorp-discloses-data-breach/"),
+         (ACCOUNT_RAW_ID, "sec_edgar_submissions", days_ago(2),
+          "https://www.sec.gov/Archives/8k.htm")])
+    _add_signal(conn, "S_PEER_LEAK", None, "sector", "t_peer", days_ago(3),
+                PEER_HEADLINE, score=2.2, source_url=VICTIM_PERMALINK,
+                raw_event_id=VICTIM_RAW_ID)
+    _add_signal(conn, "S_PEER_PRESS", None, "sector", "t_peer", days_ago(4),
+                PEER_HEADLINE, score=2.1, source_url="https://example.invalid/x",
+                raw_event_id=PRESS_RAW_ID)
+    _add_signal(conn, "S_ACC_PROV", "E_ACME", "account", "t_peer", days_ago(2),
+                "Acme discloses a material cybersecurity incident", cfa=1,
+                score=4.4, source_url="https://www.sec.gov/Archives/8k.htm",
+                raw_event_id=ACCOUNT_RAW_ID)
+
+
+class TestDigestProvenance(DigestTestBase):
+    seed_fn = staticmethod(seed_provenance)
+
+    def setUp(self):
+        super().setUp()
+        self.html = _read(digest_mod.generate(now=NOW))
+
+    def test_sector_card_hashes_its_raw_event_and_never_names_the_victim(self):
+        # the provenance block renders at all (the closed exception) ...
+        self.assertIn("Provenance", self.html)
+        self.assertIn("raw event (hashed)", self.html)
+        # ... hashed, with the digest an operator can grep the store for ...
+        self.assertIn(_hashed(VICTIM_RAW_ID), self.html)
+        # ... and the identity gone from the document entirely: neither the
+        # stored id nor the per-victim permalink it embeds reaches the DOM.
+        self.assertNotIn(VICTIM_RAW_ID, self.html)
+        self.assertNotIn(VICTIM_PERMALINK, self.html)
+        self.assertNotIn("Q29tbXVuaXR5", self.html)
+
+    def test_security_press_peer_raw_event_id_is_hashed_too(self):
+        self.assertIn(_hashed(PRESS_RAW_ID), self.html)
+        self.assertNotIn(PRESS_RAW_ID, self.html)
+
+    def test_account_card_shows_its_raw_event_reference_verbatim(self):
+        # An account card already names its entity, so its id discloses nothing
+        # new — and reproducing the card needs the real key, not a digest.
+        self.assertIn(ACCOUNT_RAW_ID, self.html)
+        self.assertNotIn(_hashed(ACCOUNT_RAW_ID), self.html)
+
+    def test_peer_cards_from_different_sources_have_distinguishable_meta(self):
+        # Same headline twice; only the meta line tells them apart.
+        self.assertEqual(self.html.count(PEER_HEADLINE), 2)
+        self.assertIn("ransomware.live", self.html)
+        self.assertIn("BleepingComputer", self.html)
+
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        try:
+            legend = data.badge_legend(conn)
+            leak = render.card_view(
+                data.signal_detail(conn, "S_PEER_LEAK"), legend)
+            press = render.card_view(
+                data.signal_detail(conn, "S_PEER_PRESS"), legend)
+        finally:
+            conn.close()
+        self.assertEqual(leak["headline"], press["headline"])
+        self.assertNotEqual(leak["meta_bits"], press["meta_bits"])
+        self.assertIn("ransomware.live", leak["meta_bits"])
+        self.assertIn("BleepingComputer", press["meta_bits"])
 
 
 class TestDigestRetention(unittest.TestCase):

@@ -76,12 +76,20 @@ _SIGNAL_COLUMNS = """
   s.scored_at, s.scoring_config_version,
   t.name AS trigger_name, t.base_strength, t.decay_half_life_days,
   e.name AS entity_name, e.subsector, e.richness, e.coverage_flag,
-  e.gov_cloud_likelihood, e.tenant_cloud_environment
+  e.gov_cloud_likelihood, e.tenant_cloud_environment,
+  re.source_id, sp.name AS source_name
 """
+# The source join is what makes two templated peer cards tellable apart (R4.1):
+# both security_rss peer paths mint one FIXED headline, so a feed of peer cards
+# reads as N identical rows until the meta line names which outlet reported it.
+# Both joins are 1:1 on a primary key (raw_events.raw_event_id,
+# source_policies.source_id) and LEFT, so no row count changes.
 _SIGNAL_FROM = (
     " FROM signals s"
     " JOIN triggers t ON t.trigger_id = s.trigger_id"
-    " LEFT JOIN watchlist_entities e ON e.entity_id = s.entity_id ")
+    " LEFT JOIN watchlist_entities e ON e.entity_id = s.entity_id"
+    " LEFT JOIN raw_events re ON re.raw_event_id = s.raw_event_id"
+    " LEFT JOIN source_policies sp ON sp.source_id = re.source_id ")
 
 
 # -- small helpers -----------------------------------------------------------
