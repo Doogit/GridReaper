@@ -476,20 +476,17 @@ def stale_fact_view(fact):
         "verified_date": fact.get("verified_date") or "never",
         "age": f"{age}d old" if age is not None else "unverified",
     }
-# -- Precision / QA view helpers (R8.6, R9.2-R9.5, R9.12) --------------------
+# -- Precision / QA view helpers (R8.6, R9.2-R9.5, R9.12, R10.9) -------------
 #
-# Ported from app/ui/pages/4_Precision.py. These are the awkward-read-shape
-# seam the plan sanctions: app.audit.precision returns computation dicts, and
-# these pure helpers reshape them into template-ready view dicts, carrying the
-# TRUST INVARIANT to the DOM — a rate is NEVER emitted as a bare percentage;
-# every rate ships with its n, and a None rate reads as an honest "n/a", never
-# a fabricated 0%. Below the G1 sample floor (n<20) the headline shows the
-# low-n message instead of a gauge. The template autoescapes every string here.
-
-from app.audit import precision as _precision
-
-# G1's rated-card floor: below this we never draw a gauge (mirrors 4_Precision).
-PRECISION_MIN_SAMPLE = _precision.G1_MIN_RATED  # 20
+# Ported from app/ui/pages/4_Precision.py. These helpers FORMAT, they do not
+# compute: the computation dicts arrive already built by
+# ``data.precision_report`` — R10.9 keeps app.audit.precision on the backend
+# side of the boundary, and the view reads it through the data seam like
+# everything else. What is left here is the TRUST INVARIANT carried to the DOM —
+# a rate is NEVER emitted as a bare percentage; every rate ships with its n, and
+# a None rate reads as an honest "n/a", never a fabricated 0%. Below the G1
+# sample floor (``report["min_rated"]``, n<20) the headline shows the low-n
+# message instead of a gauge. The template autoescapes every string here.
 
 # The R9.3 dimensions and a friendly column header for each (mirrors the page).
 PRECISION_DIMENSION_LABELS = {
@@ -513,20 +510,21 @@ def rate_with_n(rate, n, unit="rated"):
     return f"{rate:.0%} (n={n})"
 
 
-def precision_headline_view(feedback_rows, audit_rows):
+def precision_headline_view(report):
     """Headline useful-rate + auto-accuracy, each n-gated. A gauge value is only
     supplied above the G1 sample floor / with real data; below it, ``gauge`` is
     None so the template renders the low-n / empty copy, never a fake percent."""
-    ur = _precision.useful_rate_overall(feedback_rows)
-    aa = _precision.auto_accuracy(audit_rows, "trigger")["overall"]
+    ur = report["useful_overall"]
+    aa = report["auto_overall"]
+    min_rated = report["min_rated"]
 
-    if ur["total"] >= PRECISION_MIN_SAMPLE and ur["rate"] is not None:
+    if ur["total"] >= min_rated and ur["rate"] is not None:
         useful = {"gauge": _pct(ur["rate"]), "n": ur["total"],
                   "low_n": None}
     else:
         useful = {"gauge": None, "n": ur["total"], "low_n": (
             f"not enough rated cards yet (n={ur['total']}<"
-            f"{PRECISION_MIN_SAMPLE}) — no gauge until at least the G1 floor "
+            f"{min_rated}) — no gauge until at least the G1 floor "
             "of rated feedback.")}
 
     if aa["scored"] > 0 and aa["accuracy"] is not None:
@@ -538,12 +536,11 @@ def precision_headline_view(feedback_rows, audit_rows):
     return {"useful": useful, "auto": auto}
 
 
-def precision_g1_view(feedback_rows, audit_rows):
+def precision_g1_view(g1):
     """Gate G1 per primary account trigger + the reported-separately block
     (R9.4). Rates are pre-formatted with their n; sector / regulatory /
     unconfirmed cards are reported apart so they can't inflate account
     precision."""
-    g1 = _precision.g1_status(feedback_rows, audit_rows)
     triggers = []
     for tid, m in g1["triggers"].items():
         triggers.append({
@@ -566,23 +563,19 @@ def precision_g1_view(feedback_rows, audit_rows):
     }
 
 
-def precision_g2_view(feedback_rows, audit_rows=None):
+def precision_g2_view(g2):
     """Gate G2 per-source demotion *recommendations* — report-only (R9.5), with
-    the R9.11 disagreement gate overlaid (KTD3).
+    the R9.11 disagreement gate already overlaid by ``data.precision_report``
+    (KTD3).
 
-    When ``audit_rows`` is supplied, per-source judge-human disagreement is
-    computed and ``g2_gated`` overlays it: a source with >20% disagreement over
-    enough comparable evidence has its demote recommendation WITHHELD ("judge
-    verdicts withheld from demotion — revise rubric"); below the comparable floor
-    the gate reads "below floor" and NEVER blocks; no comparable signals reads
-    "n/a". Every gate ships with its disagreement rate AND comparable ``n`` so an
-    operator can see dormant-vs-active. Empty list when no rated cards are
-    attributed to any source yet.
+    A source with >20% judge-human disagreement over enough comparable evidence
+    has its demote recommendation WITHHELD ("judge verdicts withheld from
+    demotion — revise rubric"); below the comparable floor the gate reads "below
+    floor" and NEVER blocks; no comparable signals reads "n/a". Every gate ships
+    with its disagreement rate AND comparable ``n`` so an operator can see
+    dormant-vs-active. Empty list when no rated cards are attributed to any
+    source yet.
     """
-    g2 = _precision.g2_status(feedback_rows)
-    dis = _precision.judge_human_disagreement_by_source(
-        audit_rows or [], feedback_rows)
-    g2 = _precision.g2_gated(g2, dis)
     out = []
     for sid, m in g2.items():
         out.append({
@@ -600,12 +593,11 @@ def precision_g2_view(feedback_rows, audit_rows=None):
     return out
 
 
-def precision_spotcheck_view(audit_rows, feedback_rows, now=None):
+def precision_spotcheck_view(sc):
     """Monthly audit spot-check tracker (R9.11) — report-only. Shows how many
     audited signals a human reviewed this month against the R9.11 target, with
     honest "below floor" copy below the target and its window. Reuses existing
     feedback-on-audited-signal rows (no new storage)."""
-    sc = _precision.spotcheck_coverage(audit_rows, feedback_rows, now=now)
     return {
         "reviewed": sc["reviewed"],
         "audited": sc["audited"],
@@ -619,13 +611,12 @@ def precision_spotcheck_view(audit_rows, feedback_rows, now=None):
     }
 
 
-def _dimension_tables(rows, computed_fn, value_key, empty_key):
+def _dimension_tables(by_dimension, value_key, empty_key):
     """Shared shaper for the useful-rate / auto-accuracy per-dimension tables:
     one table per dimension that actually has sliced values (the headline
     already carries 'overall'). Each cell keeps its own n."""
     tables = []
-    for dimension in _precision.DIMENSIONS:
-        sliced = computed_fn(rows, dimension)
+    for dimension, sliced in by_dimension.items():
         values = [k for k in sliced if k != "overall"]
         if not values:
             continue
@@ -643,30 +634,21 @@ def _dimension_tables(rows, computed_fn, value_key, empty_key):
     return tables
 
 
-def precision_useful_tables(feedback_rows):
+def precision_useful_tables(useful_by_dimension):
     """Human useful-rate sliced by trigger / source / scope / incident tier
     (R9.3); empty list when nothing is rated yet."""
-    return _dimension_tables(feedback_rows, _precision.useful_rate,
-                             "rate", "total")
+    return _dimension_tables(useful_by_dimension, "rate", "total")
 
 
-def precision_auto_tables(audit_rows):
+def precision_auto_tables(auto_by_dimension):
     """Automated judge accuracy sliced the same way (R9.3); empty list when
     there are no scored verdicts yet."""
-    return _dimension_tables(audit_rows, _precision.auto_accuracy,
-                             "accuracy", "scored")
+    return _dimension_tables(auto_by_dimension, "accuracy", "scored")
 
 
-def precision_reason_codes(feedback_rows):
-    """Reason-code distribution over not-useful ratings (R9.2), most common
-    first."""
-    return _precision.reason_code_distribution(feedback_rows)
-
-
-def precision_disagreement_view(audit_rows, feedback_rows):
+def precision_disagreement_view(d):
     """Judge-vs-human agreement over comparable signals (a QA signal, not ground
     truth). ``comparable`` == 0 → the template shows the honest empty copy."""
-    d = _precision.judge_human_disagreement(audit_rows, feedback_rows)
     return {
         "comparable": d["comparable"],
         "agree": d["agree"],
@@ -678,11 +660,10 @@ def precision_disagreement_view(audit_rows, feedback_rows):
     }
 
 
-def precision_halflife_view(halflife_rows):
+def precision_halflife_view(hl):
     """Per-trigger configured half-life vs observed useful-rate + mean stored
     score-decay (R9.3, descriptive aid). Empty list when there are no signals
     yet."""
-    hl = _precision.half_life_effectiveness(halflife_rows)
     out = []
     for row in hl:
         mean_decay = row["mean_score_decay"]

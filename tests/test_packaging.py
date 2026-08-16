@@ -61,7 +61,7 @@ class PackagingContractTest(unittest.TestCase):
             "app/licensing.py",
             "app/scoring.py",
             "app/plays.py",
-            "app/digest.py",
+            "app/ui_web/digest.py",
             "app/classify/regulatory.py",
             "app/classify/leadership.py",
             "app/classify/company_statement.py",
@@ -137,13 +137,13 @@ class PackagingContractTest(unittest.TestCase):
         # The digest (R8.8) is the pipeline's LAST step: it reads the freshest
         # scored cards + play snapshots, so it must run after scoring and plays.
         p = self._pipeline()
-        self.assertIn("app.digest", p, "pipeline dropped the digest step (R8.8)")
+        self.assertIn("app.ui_web.digest", p, "pipeline dropped the digest step (R8.8)")
         self.assertGreater(
-            p.index("app.digest"), p.index("app.scoring"),
+            p.index("app.ui_web.digest"), p.index("app.scoring"),
             "digest must run after scoring",
         )
         self.assertGreater(
-            p.index("app.digest"), p.index("app.plays"),
+            p.index("app.ui_web.digest"), p.index("app.plays"),
             "digest must run after plays",
         )
 

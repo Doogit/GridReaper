@@ -18,9 +18,9 @@ from hashlib import sha256
 
 from fastapi.testclient import TestClient
 
-from app import digest as digest_mod
 from app.db.migrate import apply_migrations
 from app.ui import data
+from app.ui_web import digest as digest_mod
 from app.ui_web import render
 from app.ui_web.app import app
 
@@ -149,7 +149,7 @@ class DigestTestBase(unittest.TestCase):
         os.environ["GRIDSIGNALS_DB"] = self.path
         # digests land in <db-dir>/digests (the generator's default), isolated
         # per test so the "no digest yet" case sees a genuinely empty dir.
-        self.digest_dir = digest_mod._digest_dir(self.path)
+        self.digest_dir = digest_mod.digest_dir(self.path)
         self.client = TestClient(app)
 
     def tearDown(self):

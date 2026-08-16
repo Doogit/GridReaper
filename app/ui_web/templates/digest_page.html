@@ -15,7 +15,7 @@
     This is the last generated digest, exactly as it was saved and sent.
     {% if as_of %}<strong>Generated at {{ as_of }} (UTC).</strong>{% endif %}
     It is a point-in-time snapshot, not a live feed — regenerate with
-    <code>python -m app.digest</code>.
+    <code>python -m app.ui_web.digest</code>.
   </p>
 </div>
 {{ body }}
@@ -25,7 +25,7 @@
 </div>
 {% else %}
 <div class="gs-empty">
-  No digest generated yet. Run <code>python -m app.digest</code> (it also runs as
+  No digest generated yet. Run <code>python -m app.ui_web.digest</code> (it also runs as
   the last step of the packaged build) to produce one. GridSignals is low-volume
   by design (R6.6) — an absent digest means none has been generated, not that
   anything is broken.

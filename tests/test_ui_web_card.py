@@ -23,9 +23,9 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from app import digest as digest_mod
 from app.db.migrate import apply_migrations
 from app.ui import data
+from app.ui_web import digest as digest_mod
 from app.ui_web import render
 from app.ui_web.app import app
 from tests.lock_fixture import redirect_ingest_lock
@@ -280,7 +280,7 @@ class TestDigestNeverLeaksTheRawEventId(ProvenanceBase):
 
     def _generate(self):
         path = digest_mod.generate(db_path=self.path,
-                                   digest_dir=self.digest_dir, now=NOW)
+                                   out_dir=self.digest_dir, now=NOW)
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 

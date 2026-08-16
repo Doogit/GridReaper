@@ -776,6 +776,47 @@ def audit_run_rows(conn):
     return [dict(r) for r in rows]
 
 
+def precision_report(conn, now=None):
+    """Every precision COMPUTATION the QA surface needs, in one read (R8.6,
+    R9.2-R9.5, R9.11, R9.12, R10.9).
+
+    R10.9 makes this module the only door between the view layer and the
+    backend, so the view may not call ``app.audit.precision`` itself: it reads
+    the computed dicts from here and only FORMATS them. One call so the four
+    row-reads happen once per page, and so the G2 gate overlay (``g2_status``
+    plus the R9.11 disagreement gate, KTD3) is applied in exactly one place —
+    the same composition ``source_policy_rows`` uses, which is what keeps the
+    Precision page and the Admin source table from ever contradicting each other.
+
+    Returns the raw computation shapes verbatim (rates as floats or None, each
+    beside its n) — no percent strings, no "n/a": the n-carrying trust invariant
+    is enforced when these are rendered, and this layer must stay renderable by
+    any front end. ``now`` is injectable for deterministic tests (R10.2).
+    """
+    feedback = precision_feedback_rows(conn)
+    audit = precision_audit_rows(conn)
+    g2 = precision.g2_gated(
+        precision.g2_status(feedback, now=now),
+        precision.judge_human_disagreement_by_source(audit, feedback))
+    return {
+        "min_rated": precision.G1_MIN_RATED,
+        "useful_overall": precision.useful_rate_overall(feedback),
+        "auto_overall": precision.auto_accuracy(audit, "trigger")["overall"],
+        "g1": precision.g1_status(feedback, audit, now=now),
+        "g2": g2,
+        "spotcheck": precision.spotcheck_coverage(audit, feedback, now=now),
+        "useful_by_dimension": {d: precision.useful_rate(feedback, d)
+                                for d in precision.DIMENSIONS},
+        "auto_by_dimension": {d: precision.auto_accuracy(audit, d)
+                              for d in precision.DIMENSIONS},
+        "reason_codes": precision.reason_code_distribution(feedback),
+        "disagreement": precision.judge_human_disagreement(audit, feedback),
+        "halflife": precision.half_life_effectiveness(
+            precision_halflife_rows(conn)),
+        "runs": audit_run_rows(conn),
+    }
+
+
 # -- account 360 -------------------------------------------------------------
 
 def account_header(conn, entity_id):

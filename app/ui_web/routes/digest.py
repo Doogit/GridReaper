@@ -7,8 +7,8 @@ live (design finding D2) — and stamps its generation time prominently so the
 in-app view reads as a snapshot, not a live feed. No saved digest yet → honest
 "no digest generated yet" copy (R6.6), never a 500.
 
-The route is a read-only reader: it reads the file the ``app.digest`` CLI wrote;
-it does not itself build a digest. It reuses the digest BODY within base.html by
+The route is a read-only reader: it reads the file the ``app.ui_web.digest`` CLI
+wrote; it does not build a digest. It reuses the digest BODY within base.html by
 extracting the saved document's inner ``<body>`` markup + its as-of timestamp, so
 the in-app view is byte-for-byte the artifact that was distributed.
 """
@@ -20,8 +20,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from markupsafe import Markup
 
-from app.db.connection import DEFAULT_DB_PATH
-from app.digest import _digest_dir
+from app.ui_web.digest import digest_dir
 from app.ui_web.templating import templates
 
 router = APIRouter()
@@ -34,9 +33,10 @@ _ASOF_RE = re.compile(r"Generated at (?P<asof>[^<(]+?) \(UTC\)")
 def _latest_digest_path():
     """Newest saved dated digest file, or None if none exists. Reads the newest
     by filename (``digest-YYYY-MM-DD.html`` sorts lex- and chrono-graphically),
-    ignoring the ``digest-latest.html`` alias so the dated artifact is canonical."""
-    db_path = os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH
-    dated = sorted(glob.glob(os.path.join(_digest_dir(db_path), "digest-2*.html")))
+    ignoring the ``digest-latest.html`` alias so the dated artifact is canonical.
+    The directory comes from ``digest.digest_dir`` — the same public helper the
+    generator writes through, so reader and writer cannot drift."""
+    dated = sorted(glob.glob(os.path.join(digest_dir(), "digest-2*.html")))
     return dated[-1] if dated else None
 
 
@@ -62,7 +62,7 @@ def digest(request: Request):
         ctx["body"] = None
         ctx["digest_error"] = (
             f"Saved digest file {os.path.basename(path)} could not be displayed. "
-            "Regenerate it with python -m app.digest."
+            "Regenerate it with python -m app.ui_web.digest."
         )
     ctx["as_of"] = asof_match.group("asof").strip() if asof_match else None
     return templates.TemplateResponse(
