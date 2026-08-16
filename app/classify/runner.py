@@ -1,4 +1,5 @@
-"""Classification runner framework (R3.7, R4.1, R6.2, R6.4, R6.5, R7.1, R7.2).
+"""Classification runner framework (R3.7, R4.1, R6.2, R6.4, R6.5, R7.1, R7.2,
+R10.6).
 
 A classifier is a function ``classify(conn, raw_event_row)`` returning a list
 of candidate dicts:
@@ -52,6 +53,30 @@ a parser_version bump self-correcting - see app/classify/ransomware.py 1.0 ->
           operator's own judgment, and a rule change does not get to restate
           it. Every other status yields to retraction.
 
+PROVENANCE (R10.6). "No PII beyond executive names in public filings/press. No
+person-level enrichment." Until now that held by OMISSION - the classifiers
+happen to quote or hand-write their text, and nothing checked. The guard below
+asserts what is actually decidable: PROVENANCE, not name shape. Every word of a
+candidate's headline and of each evidence text must come from the raw event it
+cites or from the classifier's own source file. Source-quoted text is exactly
+what R10.6 permits; a classifier literal is a string a reviewer can read in the
+diff; anything else has no traceable origin, which IS person-level enrichment.
+
+  not shape  A person-name regex is not a usable gate here: measured over the
+             real store it matches every non-peer card ("Virtualization
+             Reliability", "Critical Infrastructure", "Order No"), and a
+             first-name gazetteer fares no better ("Order", "Mark", "Grant",
+             "Bill" are live tokens in this domain).
+  blast      A violation quarantines the ONE offending candidate to
+             review_queue (raw_event_id logged) and mints no signal. It never
+             raises: for a cron-driven single-operator tool a guard that can
+             stop the pipeline is worse than the risk it prevents, so every
+             other candidate in the same run still lands. Signals already
+             stored are skipped before the guard and never re-judged.
+  scope      headline too, not just evidence - it is written by the same INSERT,
+             is rendered more prominently, and security_rss.py fills it with
+             verbatim source text.
+
   incident_evidence_level  optional (R10.5): confirmed / corroborated /
                     unconfirmed_early_warning. When set, the candidate is an
                     incident: the framework stores the tier and derives
@@ -66,6 +91,8 @@ a parser_version bump self-correcting - see app/classify/ransomware.py 1.0 ->
 """
 import argparse
 import json
+import re
+import sys
 from datetime import datetime, timezone
 
 from app.db.connection import get_connection
@@ -79,6 +106,13 @@ ACCOUNT_SCOPES = {"account", "parent"}
 # R10.5 incident evidence tiers. Only unconfirmed_early_warning suppresses
 # customer-facing outreach (R7.12); confirmed/corroborated allow it.
 INCIDENT_TIERS = ("confirmed", "corroborated", "unconfirmed_early_warning")
+
+
+# R10.6 provenance guard. Tokens shorter than this carry no identity, and
+# matching them would only produce noise.
+PROVENANCE_MIN_TOKEN = 3
+PROVENANCE_REASON = "provenance_guard"
+_PROVENANCE_TOKEN_RE = re.compile(r"[0-9a-z]+")
 
 
 def customer_facing_for_tier(incident_level):
@@ -130,6 +164,95 @@ def top_level_entity(conn, entity_id):
     return current
 
 
+def _provenance_tokens(text):
+    """Lowercased alphanumeric tokens of at least PROVENANCE_MIN_TOKEN chars.
+    Splitting on every non-alphanumeric character makes the comparison immune to
+    escaping and punctuation drift - a payload's "CIP 013" covers a card's
+    "CIP-013", and a JSON-escaped "Company\\u2019s" still yields "company"."""
+    return {t for t in _PROVENANCE_TOKEN_RE.findall((text or "").lower())
+            if len(t) >= PROVENANCE_MIN_TOKEN}
+
+
+def authored_tokens(classify_fn):
+    """Tokens of the source file that defines ``classify_fn`` - the literals its
+    author wrote and a reviewer can read in the diff.
+
+    Returns None when the file cannot be read, which DISABLES the guard for that
+    run: a guard that cannot load its own baseline must not quarantine every
+    card the run produces."""
+    module = sys.modules.get(getattr(classify_fn, "__module__", "") or "")
+    path = getattr(module, "__file__", None)
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return _provenance_tokens(fh.read())
+    except OSError:
+        return None
+
+
+def provenance_vocabulary(raw, authored):
+    """Everything a candidate off this raw event is allowed to say: the event it
+    cites plus the classifier's own literals. None disables the guard."""
+    if authored is None:
+        return None
+    return (authored | _provenance_tokens(raw["payload"])
+            | _provenance_tokens(raw["url"]))
+
+
+def novel_tokens(text, vocabulary):
+    """Tokens of ``text`` that the vocabulary does not account for.
+
+    The FINAL token may instead be a prefix of a vocabulary token: classifiers
+    cap long text (the headline cap, the page-diff snippet cap) and a word cut
+    in half is still sourced text, not invented text. Without this, every
+    truncated regulatory headline would quarantine itself."""
+    found = _PROVENANCE_TOKEN_RE.findall((text or "").lower())
+    last = len(found) - 1
+    novel = set()
+    for i, token in enumerate(found):
+        if len(token) < PROVENANCE_MIN_TOKEN or token in vocabulary:
+            continue
+        if i == last and any(v.startswith(token) for v in vocabulary):
+            continue
+        novel.add(token)
+    return sorted(novel)
+
+
+def unprovenanced_text(cand, evidence, vocabulary):
+    """(field, sorted novel tokens) for the first headline/evidence text that
+    carries words found in neither the raw event nor the classifier source;
+    None when the candidate is fully provenanced (R10.6)."""
+    if vocabulary is None:
+        return None
+    texts = [("headline", cand.get("headline") or "")]
+    texts += [(f"evidence[{i}]", e["text"]) for i, e in enumerate(evidence)]
+    for field, text in texts:
+        novel = novel_tokens(text, vocabulary)
+        if novel:
+            return field, novel
+    return None
+
+
+def _quarantine(conn, raw, field, novel, confidence):
+    """Route ONE unprovenanced candidate to the review queue instead of minting
+    it (R10.6). Never raises and never touches the rest of the run. The queue
+    row carries the raw_event_id, so the operator can read the source and decide
+    whether the classifier or the text is wrong."""
+    reason = (f"{PROVENANCE_REASON}: {field} carries text found in neither the "
+              f"raw event nor the classifier source ("
+              f"{', '.join(novel[:5])})")
+    if conn.execute(
+            "SELECT 1 FROM review_queue WHERE raw_event_id = ? "
+            "AND disposition = 'pending' AND reason = ?",
+            (raw["raw_event_id"], reason)).fetchone() is None:
+        conn.execute(
+            "INSERT INTO review_queue (raw_event_id, candidate_entity_id, "
+            " reason, confidence, created_at, disposition) "
+            "VALUES (?, NULL, ?, ?, ?, 'pending')",
+            (raw["raw_event_id"], reason, confidence, _utcnow()))
+
+
 def _triggers_config(conn):
     """trigger_id -> {'allowed_scopes': set, 'evidence_quality': str}."""
     cfg = {}
@@ -145,7 +268,7 @@ def _triggers_config(conn):
 
 
 def _process_candidate(conn, resolver, raw, cand, evidence_rank,
-                       triggers_cfg, parser_version, counts):
+                       triggers_cfg, parser_version, counts, vocabulary=None):
     """Resolve, roll up, and insert-or-skip one candidate. Returns the
     signal_id when the candidate mapped to a signal (new or already existing),
     else None. The caller collects those ids: a signal this run did NOT emit is
@@ -204,6 +327,13 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
                     (signal_id,)).fetchone():
         counts["signals_existing"] += 1
         return signal_id
+
+    # R10.6: past this point the candidate becomes a stored, rendered card.
+    unprovenanced = unprovenanced_text(cand, evidence, vocabulary)
+    if unprovenanced is not None:
+        _quarantine(conn, raw, unprovenanced[0], unprovenanced[1], confidence)
+        counts["quarantined"] += 1
+        return None
 
     conn.execute(
         "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
@@ -309,8 +439,9 @@ def run_classifier(conn, classifier_id, source_id, classify_fn,
     counts = {"events_processed": 0, "events_errored": 0, "signals_new": 0,
               "signals_existing": 0, "review_enqueued": 0,
               "dropped_scope": 0, "dropped_no_evidence": 0,
-              "dropped_no_entity": 0, "signals_retracted": 0,
-              "signals_restored": 0}
+              "dropped_no_entity": 0, "quarantined": 0,
+              "signals_retracted": 0, "signals_restored": 0}
+    authored = authored_tokens(classify_fn)     # R10.6 baseline, once per run
     last_error = ""
     # Retraction inputs: only cleanly-processed events, and every signal_id
     # this run stands behind (freshly inserted OR already present).
@@ -332,10 +463,13 @@ def run_classifier(conn, classifier_id, source_id, classify_fn,
             classifier_queued_review = reviews_after_classify > reviews_before
             emitted = 0
             event_emitted = []
+            # Built once per event with candidates, shared by all of them.
+            vocabulary = (provenance_vocabulary(raw, authored)
+                          if candidates else None)
             for cand in candidates:
                 signal_id = _process_candidate(
                     conn, resolver, raw, cand, evidence_rank, triggers_cfg,
-                    parser_version, counts)
+                    parser_version, counts, vocabulary)
                 if signal_id:
                     event_emitted.append(signal_id)
                     emitted += 1
@@ -413,6 +547,7 @@ def cli(classifier_id, sources, parser_version, description):
                         f"dropped_scope={s['dropped_scope']} "
                         f"dropped_no_evidence={s['dropped_no_evidence']} "
                         f"dropped_no_entity={s['dropped_no_entity']} "
+                        f"quarantined={s['quarantined']} "
                         f"retracted={s['signals_retracted']} "
                         f"restored={s['signals_restored']} "
                         f"errors={s['events_errored']}")
