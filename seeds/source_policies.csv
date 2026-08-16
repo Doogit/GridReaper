@@ -9,7 +9,6 @@ gdelt,GDELT 2.0 DOC API,api,86400,1,approved_store_only,3,,2026-08-11
 cisa_kev,CISA KEV JSON,json,86400,1,approved_store_only,1,,2026-08-11
 nvd,NVD API 2.0,api,86400,1,approved_store_only,1,keyed rolling window; unauthenticated fallback (R5.3),2026-08-11
 ransomware_live,ransomware.live API,api,86400,1,approved_cc_by_4.0,3,,2026-08-11
-ransomlook,RansomLook API,api,86400,1,approved_cc_by_4.0,3,,2026-08-11
 eia,EIA API v2,api,604800,1,approved,1,key-based; paginated typed parsing (R5.4),2026-08-11
 gleif,GLEIF LEI API,api,31536000,1,approved,1,,2026-08-11
 wikidata,Wikidata API,api,31536000,1,approved,3,,2026-08-11
