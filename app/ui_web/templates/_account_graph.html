@@ -1,0 +1,24 @@
+{# Account 360 — Entity Graph tab (R8.3). A sourced relationship LIST, not a
+   drawn graph: entity_relationships holds one edge in the whole store, so there
+   is no measured structure to draw and drawing one would be a fabricated claim
+   (R4.1). Each edge shows its own source and verification date. #}
+{% if relationship_rows %}
+<p class="gs-muted-text">Corporate relationships recorded for this account, each shown with the source that supplied it and the date it was verified. Only sourced edges appear — the seeded parent_id hint is not shown here because it carries no source or verification date.</p>
+<table class="gs-table">
+  <thead><tr><th>Direction</th><th>Entity</th><th>Subsector</th><th>Type</th><th>Source</th><th>Verified</th></tr></thead>
+  <tbody>
+    {% for r in relationship_rows %}
+    <tr>
+      <td>{{ r.direction_label }}</td>
+      <td><a href="/account?entity_id={{ r.entity_id | urlencode }}">{{ r.name }}</a></td>
+      <td><span class="gs-badge scope">{{ r.subsector }}</span></td>
+      <td>{{ r.relationship_type }}</td>
+      <td>{{ r.source }}</td>
+      <td>{{ r.verified_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% with message = "No sourced corporate relationships recorded for this account. Relationships are populated from GLEIF parent/child records during entity enrichment; coverage is sparse across the watchlist, so an empty list here means no edge has been sourced yet — not that this account is independent." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}

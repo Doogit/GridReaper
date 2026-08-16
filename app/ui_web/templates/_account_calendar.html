@@ -1,0 +1,24 @@
+{# Account 360 — Compliance Calendar tab (R8.3, R7.2, R4.1). Regulatory
+   obligations matched to this account by subsector class, soonest effective date
+   first. An EFFECTIVE-DATE calendar: no compliance date is shown or derived,
+   because none is in the fetched record. The coverage line is always rendered so
+   an empty tab reads as "checked N, none apply", never as a blank. #}
+<p class="gs-muted-text">{{ calendar_caption }}</p>
+<div class="gs-info">{{ calendar.coverage }}</div>
+{% if calendar.rows %}
+{% for o in calendar.rows %}
+<div class="gs-record">
+  <div class="gs-headline">{{ o.rule_name }}</div>
+  <div class="gs-meta">{{ o.regulator }} · effective {{ o.effective_date }} · compliance date {{ o.compliance_date }}</div>
+  <div class="gs-evidence"><span class="gs-locator">Applies to</span> &nbsp; {{ o.affected_scope }}</div>
+  <div class="gs-badges">
+    <span class="gs-badge scope">{{ o.status_label }}</span>
+    {% for name in o.products %}<span class="gs-badge">{{ name }}</span>{% endfor %}
+  </div>
+  {% if o.source_url %}<a class="gs-source-link" href="{{ o.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>{% endif %}
+  {% if o.card_key %}<a class="gs-permalink" href="/card/{{ o.card_key }}" title="Permalink to the signal this obligation was derived from">permalink</a>{% endif %}
+</div>
+{% endfor %}
+{% else %}
+{% with message = "No regulatory obligations apply to this account's subsector class. Obligations are derived from stored regulatory signals that carry a durable compliance clock; when one applies to this class it appears here, soonest effective date first." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}

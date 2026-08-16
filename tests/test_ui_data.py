@@ -144,6 +144,40 @@ def fixture_conn():
         "'Given the recent development, a licensing check may be timely.')",
         (iso(NOW),))
 
+    # regulatory obligations (R8.3 Compliance Calendar). Class-scoped, never
+    # account-keyed: the reader matches them to an account by subsector.
+    #   ob_cip     applies to both fixture electric classes, already in effect
+    #   ob_future  applies to E_ACME's class only, effective date still ahead
+    #   ob_pipe    a class no fixture entity is in — proves the filter excludes
+    #   ob_public  'public' must NOT match 'muni_public' (substring trap)
+    #   ob_bad     a rule this reader cannot evaluate — fail-closed + disclosed
+    conn.executemany(
+        "INSERT INTO regulatory_obligations (obligation_id, source_url, "
+        " regulator, rule_name, affected_scope, applicability_rule, "
+        " effective_date, compliance_date, mapped_products, verified_at, "
+        " signal_id, derived_at) VALUES (?,?,?,?,?,?,?,NULL,?,NULL,?,?)",
+        [("ob_cip", "http://fr/cip", "Federal Energy Regulatory Commission",
+          "CIP-003-11 Security Management Controls",
+          "NERC-registered BES owners and operators (registration not "
+          "verified per account)", "subsector_in:iou_electric;muni_public",
+          days_ago_date(20), "p_sentinel", "S_SEC", iso(NOW)),
+         ("ob_future", "http://fr/virt", "Federal Energy Regulatory Commission",
+          "Virtualization Reliability Standards",
+          "NERC-registered BES owners and operators",
+          "subsector_in:iou_electric", days_ago_date(-30), None, "S_REG",
+          iso(NOW)),
+         ("ob_pipe", "http://fr/tsa", "Transportation Security Administration",
+          "Pipeline Security Directive",
+          "TSA-designated critical pipeline owners and operators",
+          "subsector_in:lng;midstream", days_ago_date(10), None, "S_REG",
+          iso(NOW)),
+         ("ob_public", "http://fr/pub", "Some Agency", "Public power rule",
+          "public power", "subsector_in:public", days_ago_date(10), None,
+          "S_SEC", iso(NOW)),
+         ("ob_bad", "http://fr/x", "Some Agency", "Unparseable rule",
+          "unknown", "entity_in:E_ACME", days_ago_date(5), None, "S_SEC",
+          iso(NOW))])
+
     # review queue: one pending, one already disposed (must not surface)
     conn.execute(
         "INSERT INTO review_queue (raw_event_id, candidate_entity_id, reason, "
@@ -574,6 +608,156 @@ class TestAccountAndLegend(unittest.TestCase):
         legend = data.badge_legend(self.conn)
         self.assertEqual(
             legend["source_quality"]["non-primary"]["label"], "Non-primary")
+
+
+class TestAccountLicensePlays(unittest.TestCase):
+    """R8.3 Products tab: plays for the account's OWN signals, snapshots only."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_plays_for_account_signal(self):
+        rows = data.account_license_plays(self.conn, "E_ACME")
+        self.assertEqual([r["play_id"] for r in rows], ["play1"])
+        row = rows[0]
+        self.assertEqual(row["signal_id"], "S_ACC1")
+        self.assertEqual(row["product_name"], "Microsoft Sentinel")
+        self.assertEqual(row["discovery_question"], "What is your SIEM?")
+        self.assertEqual(row["display_text"], "Recommended path: Adopt E5 grant")
+
+    def test_no_price_note_column_is_returned(self):
+        """R4.3/R7.11: a non-primary price must never reach the view layer."""
+        row = data.account_license_plays(self.conn, "E_ACME")[0]
+        self.assertNotIn("price_note", row.keys())
+        self.assertNotIn("$2/GB", " ".join(str(row[k]) for k in row.keys()))
+
+    def test_account_without_signals_gets_no_plays(self):
+        self.assertEqual(data.account_license_plays(self.conn, "E_DARK"), [])
+
+    def test_sector_scoped_plays_are_not_attributed_to_an_account(self):
+        """A sector signal's play must not appear on any account's tab: the
+        account fit it would imply was never computed."""
+        self.conn.execute(
+            "INSERT INTO license_play_snapshots (signal_id, play_id, "
+            "generated_at, generation_version, display_text) VALUES "
+            "('S_SEC','play1', ?, 'plays/1.0', 'Sector play')", (iso(NOW),))
+        self.conn.commit()
+        for eid in ("E_ACME", "E_SUB", "E_DARK"):
+            texts = [r["display_text"]
+                     for r in data.account_license_plays(self.conn, eid)]
+            self.assertNotIn("Sector play", texts)
+
+    def test_non_active_signal_plays_are_excluded(self):
+        self.conn.execute(
+            "INSERT INTO license_play_snapshots (signal_id, play_id, "
+            "generated_at, generation_version, display_text) VALUES "
+            "('S_DEAD','play1', ?, 'plays/1.0', 'Decayed play')", (iso(NOW),))
+        self.conn.commit()
+        rows = data.account_license_plays(self.conn, "E_ACME")
+        self.assertEqual([r["signal_id"] for r in rows], ["S_ACC1"])
+
+
+class TestAccountObligations(unittest.TestCase):
+    """R8.3 Compliance Calendar: class-scoped obligations joined by subsector."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_matches_own_subsector_soonest_first(self):
+        cal = data.account_obligations(self.conn, "E_ACME", now=NOW)
+        self.assertEqual(cal["subsector"], "iou_electric")
+        self.assertEqual([o["obligation_id"] for o in cal["obligations"]],
+                         ["ob_cip", "ob_future"])
+
+    def test_other_class_obligations_are_excluded(self):
+        ids = [o["obligation_id"] for o in
+               data.account_obligations(self.conn, "E_ACME", now=NOW)["obligations"]]
+        self.assertNotIn("ob_pipe", ids)
+
+    def test_subsector_match_is_exact_not_substring(self):
+        """'public' must not match 'muni_public' — an over-broad predicate would
+        put a rule on an account class it does not bind."""
+        cal = data.account_obligations(self.conn, "E_DARK", now=NOW)
+        self.assertEqual(cal["subsector"], "muni_public")
+        self.assertEqual([o["obligation_id"] for o in cal["obligations"]],
+                         ["ob_cip"])
+
+    def test_unevaluable_rule_is_excluded_and_disclosed(self):
+        cal = data.account_obligations(self.conn, "E_ACME", now=NOW)
+        self.assertNotIn(
+            "ob_bad", [o["obligation_id"] for o in cal["obligations"]])
+        self.assertEqual(cal["unscoped"], 1)
+        self.assertEqual(cal["total"], 5)
+
+    def test_in_effect_is_computed_against_now(self):
+        cal = data.account_obligations(self.conn, "E_ACME", now=NOW)
+        by_id = {o["obligation_id"]: o for o in cal["obligations"]}
+        self.assertTrue(by_id["ob_cip"]["in_effect"])
+        self.assertFalse(by_id["ob_future"]["in_effect"])
+
+    def test_compliance_date_is_never_derived(self):
+        """R4.1: no derived obligation carries a compliance date, and the reader
+        must not manufacture one from the effective date."""
+        for o in data.account_obligations(
+                self.conn, "E_ACME", now=NOW)["obligations"]:
+            self.assertIsNone(o["compliance_date"])
+
+    def test_mapped_products_resolve_to_names(self):
+        by_id = {o["obligation_id"]: o for o in data.account_obligations(
+            self.conn, "E_ACME", now=NOW)["obligations"]}
+        self.assertEqual(by_id["ob_cip"]["product_names"],
+                         [("p_sentinel", "Microsoft Sentinel")])
+        self.assertEqual(by_id["ob_future"]["product_names"], [])
+
+    def test_unknown_entity_returns_empty_shape(self):
+        cal = data.account_obligations(self.conn, "nope", now=NOW)
+        self.assertEqual(cal, {"subsector": "", "obligations": [],
+                               "unscoped": 0, "total": 0})
+
+    def test_applicability_subsectors_parsing(self):
+        self.assertEqual(data.applicability_subsectors("subsector_in:a;b"),
+                         {"a", "b"})
+        self.assertIsNone(data.applicability_subsectors("entity_in:E1"))
+        self.assertIsNone(data.applicability_subsectors(None))
+
+
+class TestAccountRelationships(unittest.TestCase):
+    """R8.3 Entity Graph: sourced edges only, in both directions."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_parent_sees_child_edge(self):
+        rows = data.account_relationships(self.conn, "E_ACME")
+        self.assertEqual([(r["direction"], r["entity_id"]) for r in rows],
+                         [("child", "E_SUB")])
+        self.assertEqual(rows[0]["relationship_type"], "subsidiary")
+
+    def test_child_sees_parent_edge(self):
+        rows = data.account_relationships(self.conn, "E_SUB")
+        self.assertEqual([(r["direction"], r["entity_id"]) for r in rows],
+                         [("parent", "E_ACME")])
+
+    def test_seeded_parent_id_hint_is_not_an_edge(self):
+        """E_SUB's watchlist parent_id is E_ACME, but only the stored
+        entity_relationships row counts here — a hint with no source and no
+        verification date must not render as a sourced edge."""
+        self.conn.execute("DELETE FROM entity_relationships")
+        self.conn.commit()
+        self.assertEqual(data.account_relationships(self.conn, "E_SUB"), [])
+        self.assertIsNotNone(data.account_header(self.conn, "E_SUB")["parent"])
+
+    def test_account_with_no_edges(self):
+        self.assertEqual(data.account_relationships(self.conn, "E_DARK"), [])
 
 
 class TestWrites(unittest.TestCase):

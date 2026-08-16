@@ -894,6 +894,104 @@ def timeline_rows(signals):
             for s in signals]
 
 
+def account_play_rows(plays):
+    """Rows for the Account 360 Products tab (R8.3, R7.6, R4.3).
+
+    Display shaping only, over data.account_license_plays. The stored snapshot
+    text is passed through verbatim — it is what the card showed, frozen — and
+    no price ever appears because the data layer never returns one.
+    """
+    return [{"signal_id": p["signal_id"],
+             "card_key": card_key(p["signal_id"]),
+             "play_id": p["play_id"],
+             "product": p["product_name"] or p["product_id"] or p["play_id"],
+             "headline": p["headline"] or "",
+             "event_date": str(p["event_date"] or ""),
+             "display_text": p["display_text"] or "",
+             "discovery_question": p["discovery_question"] or "",
+             "generation_version": str(p["generation_version"] or "")}
+            for p in plays]
+
+
+# Every derived obligation leaves compliance_date NULL — FERC states compliance
+# dates in the order body, which the fetched metadata does not carry. The tab
+# says so in these words rather than showing a blank cell the reader could mistake
+# for "no deadline", and NOTHING here derives a date from effective_date (R4.1).
+COMPLIANCE_DATE_UNKNOWN = "not in the fetched record"
+
+CALENDAR_CAPTION = (
+    "Effective dates of regulatory obligations that apply to this account's "
+    "subsector class. This is an effective-date calendar, not a deadline "
+    "calendar: compliance dates are stated in the order body, which is not in "
+    "the fetched record, so none is shown or derived. Subsector match is a "
+    "regulated-class filter — it does not assert that this account is a "
+    "registered entity."
+)
+
+
+def account_calendar_view(calendar):
+    """Assemble the Account 360 Compliance Calendar tab (R8.3, R7.2, R4.1).
+
+    Takes data.account_obligations. Returns the account's matched subsector,
+    the shaped obligation rows, and a coverage line that discloses how many of
+    the store's obligations were checked and how many could not be evaluated —
+    an empty tab must read as "checked 3, none apply to this class", never as
+    an unexplained blank.
+    """
+    rows = []
+    for o in calendar["obligations"]:
+        rows.append({
+            "obligation_id": o["obligation_id"],
+            "regulator": o["regulator"] or "",
+            "rule_name": o["rule_name"] or "",
+            "effective_date": str(o["effective_date"] or ""),
+            "in_effect": bool(o["in_effect"]),
+            "status_label": "in effect" if o["in_effect"] else "upcoming",
+            "compliance_date": (str(o["compliance_date"])
+                                if o["compliance_date"]
+                                else COMPLIANCE_DATE_UNKNOWN),
+            "affected_scope": o["affected_scope"] or "",
+            "products": [name for _, name in o["product_names"]],
+            "source_url": safe_source_url(o["source_url"]),
+            "signal_id": o["signal_id"] or "",
+            "card_key": card_key(o["signal_id"]) if o["signal_id"] else "",
+        })
+    total = calendar["total"]
+    coverage = (f"Checked {total} stored obligation"
+                f"{'' if total == 1 else 's'}; "
+                f"{len(rows)} apply to subsector "
+                f"'{calendar['subsector'] or 'unknown'}'.")
+    if calendar["unscoped"]:
+        coverage += (f" {calendar['unscoped']} could not be evaluated "
+                     "(unrecognized applicability rule) and are not shown.")
+    return {"subsector": calendar["subsector"] or "unknown",
+            "rows": rows, "coverage": coverage}
+
+
+_RELATIONSHIP_DIRECTION_LABELS = {"parent": "Parent of this account",
+                                  "child": "Subsidiary of this account"}
+
+
+def account_relationship_rows(relationships):
+    """Rows for the Account 360 Entity Graph tab (R8.3).
+
+    A sourced relationship LIST, not a drawn graph: entity_relationships holds
+    one edge in the whole store, so there is no measured structure to draw and
+    inventing one would be a fabricated claim (R4.1). Each row carries its own
+    source and verification date so an unverified edge is visible as such.
+    """
+    return [{"direction": r["direction"],
+             "direction_label": _RELATIONSHIP_DIRECTION_LABELS.get(
+                 r["direction"], r["direction"]),
+             "entity_id": r["entity_id"],
+             "name": r["name"] or r["entity_id"],
+             "subsector": str(r["subsector"] or "unknown"),
+             "relationship_type": r["relationship_type"] or "",
+             "source": r["source"] or "not recorded",
+             "verified_at": r["verified_at"] or "not verified"}
+            for r in relationships]
+
+
 def provenance_view(signal, provenance):
     """The R3.7 reproducibility block: which raw event, which classifier
     version, which fetcher version, which scoring config, and when scored.
