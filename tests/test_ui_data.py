@@ -217,6 +217,37 @@ class TestFeed(unittest.TestCase):
         with self.assertRaises(ValueError):
             data.feed_page(self.conn, scope_group="bogus")
 
+    def test_score_order_ranks_by_score_not_date(self):
+        """B3/R8.1: the date keyset cannot surface the best card. S_ACC3 is the
+        OLDEST account signal and the highest-scoring one."""
+        for sid, score in (("S_ACC1", 2.0), ("S_ACC2", 3.5), ("S_ACC3", 4.8)):
+            self.conn.execute("UPDATE signals SET score = ? WHERE signal_id = ?",
+                              (score, sid))
+        by_date = [r["signal_id"] for r in data.feed_page(self.conn, "account")]
+        self.assertEqual(by_date, ["S_ACC1", "S_ACC2", "S_ACC3"])
+        by_score = [r["signal_id"] for r in data.feed_page(
+            self.conn, "account", order="score")]
+        self.assertEqual(by_score, ["S_ACC3", "S_ACC2", "S_ACC1"])
+
+    def test_score_order_puts_unscored_rows_last(self):
+        self.conn.execute("UPDATE signals SET score = 1.5 "
+                          "WHERE signal_id = 'S_ACC3'")
+        ids = [r["signal_id"] for r in data.feed_page(
+            self.conn, "account", order="score")]
+        # S_ACC1/S_ACC2 are unscored (NULL) and must not outrank a real score
+        self.assertEqual(ids[0], "S_ACC3")
+
+    def test_unknown_order_raises(self):
+        with self.assertRaises(ValueError):
+            data.feed_page(self.conn, "account", order="bogus")
+
+    def test_score_order_refuses_a_chronological_after_key(self):
+        """Keyset paging is chronological by construction; silently ignoring an
+        after_key here would page a score view wrongly."""
+        with self.assertRaises(ValueError):
+            data.feed_page(self.conn, "account", order="score",
+                           after_key=("2026-08-01", "S_ACC1"))
+
     def test_feed_row_carries_score_components(self):
         row = data.feed_page(self.conn, "account")[0]
         for col in ("score_base", "score_decay", "score_account_fit",

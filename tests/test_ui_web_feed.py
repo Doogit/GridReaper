@@ -194,12 +194,13 @@ class TestCardsRender(FeedTestBase):
     def test_feed_body_auto_refreshes_every_120s(self):
         # R8.1: the feed body polls every 120s so a background first-load ingest
         # (and later scored cards) surface without a manual reload. hx-include
-        # carries the current status filter through the poll.
+        # carries BOTH view controls through the poll — dropping either would
+        # reset the operator's view every two minutes.
         dom = self.home()
         self.assertIn('id="gs-feed-body"', dom)
         self.assertIn('hx-trigger="every 120s"', dom)
         self.assertIn('hx-get="/feed"', dom)
-        self.assertIn("hx-include=\"[name='status']\"", dom)
+        self.assertIn("hx-include=\"[name='status'],[name='sort']\"", dom)
 
     def test_non_primary_chip_badged_and_no_price_in_dom(self):
         dom = self.home()
@@ -326,20 +327,119 @@ class TestKeysetPagination(FeedTestBase):
     seed_fn = staticmethod(seed_paginated)
 
     def test_first_page_caps_and_offers_load_more(self):
-        dom = self.home()
+        # keyset paging is the 'recent' view; the score view is a capped ranking
+        dom = self.home(sort="recent")
         self.assertEqual(dom.count('<article class="gs-card'), 25)
         self.assertIn("gs-loadmore", dom)
         # oldest signal (26th) is below the fold, not on page 1
         self.assertNotIn("Paginated account signal 26", dom)
 
+    def test_score_view_caps_without_a_dead_load_more(self):
+        """A score ranking has no chronological keyset, so it caps and says so
+        rather than offering a Load more that cannot resume."""
+        dom = self.home(sort="score")
+        self.assertEqual(dom.count('<article class="gs-card'), 25)
+        self.assertNotIn("gs-loadmore", dom)
+        self.assertIn("Capped at 25 per section", dom)
+
     def test_load_more_returns_remainder_and_stops(self):
-        dom = self.home()
+        dom = self.home(sort="recent")
         url = re.search(r'hx-get="(/feed/more[^"]*)"', dom).group(1)
         resp = self.client.get(url.replace("&amp;", "&"))
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Paginated account signal 26", resp.text)
         self.assertEqual(resp.text.count('<article class="gs-card'), 1)
         self.assertNotIn("gs-loadmore", resp.text)   # end of the list
+
+
+TOP_HEADLINE = "Top-scoring account signal"
+_HEADLINE_RE = re.compile(r'<div class="gs-headline">([^<]*)</div>')
+
+
+def seed_buried_top(conn):
+    """The B3 shape: the highest-scoring card is the OLDEST, and a pile of
+    recent retracted peer cards sits on top of it. Date ordering buries it onto
+    page 2 at status=all; score ordering leads with it."""
+    conn.execute("INSERT INTO triggers (trigger_id, name, base_strength, "
+                 "decay_half_life_days) VALUES ('t_lead','Leadership',4,90)")
+    conn.execute(
+        "INSERT INTO watchlist_entities (entity_id, name, subsector, richness, "
+        "coverage_flag) VALUES ('E_ACME','Acme Energy','iou_electric','high',"
+        "'edgar-visible')")
+    conn.execute(
+        "INSERT INTO source_policies (source_id, name, enabled, ttl, "
+        "access_method, evidence_rank) VALUES ('sp_ok','OK',1,3600,'rss',2)")
+    conn.execute(
+        "INSERT INTO raw_events (raw_event_id, source_id, event_date, payload, url) "
+        "VALUES ('re_acc','sp_ok', ?, '{\"title\": \"Acme\"}', 'http://acme/8k')",
+        (days_ago(1),))
+    _add_signal(conn, "S_TOP", "E_ACME", "account", "t_lead", days_ago(90),
+                TOP_HEADLINE, cfa=1, score=4.9)
+    _add_signal(conn, "S_MID", "E_ACME", "account", "t_lead", days_ago(2),
+                "Newer but weaker account signal", cfa=1, score=2.0)
+    _add_signal(conn, "S_NOSCORE", "E_ACME", "account", "t_lead", days_ago(1),
+                "Newest but unscored account signal", cfa=1, score=None)
+    for i in range(1, 30):
+        _add_signal(conn, f"S_R{i:02d}", "E_ACME", "account", "t_lead",
+                    days_ago(i), f"Retracted peer card {i}", score=1.2,
+                    status="retracted")
+
+
+class TestSortControl(FeedTestBase):
+    """B3 / R8.1: the feed must surface what deserves action, and must not lose
+    the chosen view to the 120s auto-refresh."""
+
+    seed_fn = staticmethod(seed_buried_top)
+
+    def headlines(self, dom):
+        return [h.strip() for h in _HEADLINE_RE.findall(dom)]
+
+    def test_default_screen_leads_with_the_top_scoring_card(self):
+        """The proving test: no paging, no control fiddling — the top-scoring
+        active card is the first card on the default screen, even though it is
+        the oldest and a newer, weaker card exists."""
+        heads = self.headlines(self.home())
+        self.assertEqual(heads[0], TOP_HEADLINE)
+        self.assertIn("Newer but weaker account signal", heads)
+
+    def test_unscored_cards_rank_last_not_first(self):
+        heads = self.headlines(self.home())
+        self.assertEqual(heads[-1], "Newest but unscored account signal")
+
+    def test_date_order_buries_the_top_card_off_page_one(self):
+        """Why the sort exists: at status=all the retracted backlog pushes the
+        best card off the first screen entirely under date ordering."""
+        dated = self.home(sort="recent", status="all")
+        self.assertNotIn(TOP_HEADLINE, self.headlines(dated))
+        self.assertIn("gs-loadmore", dated)
+        scored = self.home(sort="score", status="all")
+        self.assertEqual(self.headlines(scored)[0], TOP_HEADLINE)
+
+    def test_auto_refresh_fragment_preserves_the_chosen_view(self):
+        """The trap: the 120s poll hits /feed with the hx-include'd controls.
+        The fragment must come back in the same view, not reset to the default."""
+        dom = self.home(sort="recent", status="all")
+        # both controls are outside the swapped body, so the poll can include them
+        self.assertIn("hx-include=\"[name='status'],[name='sort']\"", dom)
+        frag = self.client.get("/feed", params={"sort": "recent", "status": "all"})
+        self.assertEqual(frag.status_code, 200)
+        self.assertNotIn(TOP_HEADLINE, self.headlines(frag.text))
+        self.assertIn("gs-loadmore", frag.text)
+        frag = self.client.get("/feed", params={"sort": "score", "status": "all"})
+        self.assertEqual(self.headlines(frag.text)[0], TOP_HEADLINE)
+
+    def test_each_control_carries_the_other(self):
+        dom = self.home(sort="recent", status="all")
+        select_status = re.search(r'<select name="status".*?>', dom, re.DOTALL).group(0)
+        select_sort = re.search(r'<select name="sort".*?>', dom, re.DOTALL).group(0)
+        self.assertIn("[name='sort']", select_status)
+        self.assertIn("[name='status']", select_sort)
+        # the chosen sort round-trips into the control itself
+        self.assertIn('<option value="recent" selected>', dom)
+
+    def test_unknown_sort_falls_back_to_the_default_view(self):
+        heads = self.headlines(self.home(sort="not-a-sort"))
+        self.assertEqual(heads[0], TOP_HEADLINE)
 
 
 def seed_unconfirmed(conn):

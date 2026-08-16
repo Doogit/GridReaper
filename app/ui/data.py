@@ -37,6 +37,15 @@ SCOPE_GROUPS = {
     "sector": ("sector", "subsector", "regulatory_calendar"),
 }
 
+# Feed orderings (R8.1). 'recent' is the original keyset-paged chronological
+# feed - it answers "what happened". 'score' answers the operator's actual
+# question, "what deserves action": a date-ordered feed can leave the
+# highest-scoring card anywhere in the list, and once retracted/decayed cards
+# are included it is buried pages down. A score page is capped, not paged: the
+# keyset is chronological by construction, so a score ordering takes no
+# after_key (see feed_page).
+FEED_ORDERS = ("score", "recent")
+
 # Feedback verdicts (R9.1) and reason codes (R9.2, verbatim). A not_useful
 # verdict MUST carry a reason_code.
 VERDICTS = ("useful", "not_useful", "converted")
@@ -170,28 +179,44 @@ def _placeholders(n):
 # -- feed --------------------------------------------------------------------
 
 def feed_page(conn, scope_group="account", after_key=None, limit=25,
-              statuses=("active",)):
-    """One keyset page of the signal feed for a scope group, newest first.
+              statuses=("active",), order="recent"):
+    """One page of the signal feed for a scope group.
 
-    Ordering is ``(event_date, signal_id)`` descending (R8.1). ``after_key`` is
-    the ``(event_date, signal_id)`` of the last row on the previous page; pass
-    None for the first page. ``statuses`` filters status (feed default: active
-    only; decayed/superseded/dismissed reachable by widening it). Returns up to
-    ``limit`` rows; the caller uses the last row's key as the next after_key.
+    ``order='recent'`` (the default) is the keyset-paged chronological feed:
+    ordering is ``(event_date, signal_id)`` descending (R8.1) and ``after_key``
+    is the ``(event_date, signal_id)`` of the last row on the previous page
+    (None for the first page). ``order='score'`` ranks by score instead -
+    highest first, unscored rows last, newest as the tie-break - which is the
+    only ordering that surfaces what deserves action; it is a capped top-N view
+    and takes no ``after_key``, because the keyset is chronological.
+
+    ``statuses`` filters status (feed default: active only; decayed/superseded/
+    dismissed/retracted reachable by widening it). Returns up to ``limit`` rows;
+    a 'recent' caller uses the last row's key as the next after_key.
     """
     if scope_group not in SCOPE_GROUPS:
         raise ValueError(f"unknown scope_group {scope_group!r}")
+    if order not in FEED_ORDERS:
+        raise ValueError(f"unknown feed order {order!r}")
     scopes = SCOPE_GROUPS[scope_group]
     statuses = tuple(statuses)
     where = [f"s.signal_scope IN ({_placeholders(len(scopes))})",
              f"s.status IN ({_placeholders(len(statuses))})"]
     params = list(scopes) + list(statuses)
     if after_key is not None:
+        if order != "recent":
+            raise ValueError(
+                f"keyset paging is chronological; order={order!r} takes no "
+                "after_key")
         ev, sid = after_key
         where.append("(s.event_date < ? OR (s.event_date = ? AND s.signal_id < ?))")
         params += [ev, ev, sid]
+    order_sql = (" ORDER BY s.event_date DESC, s.signal_id DESC LIMIT ?"
+                 if order == "recent" else
+                 " ORDER BY s.score IS NULL, s.score DESC, s.event_date DESC,"
+                 " s.signal_id DESC LIMIT ?")
     sql = (f"SELECT {_SIGNAL_COLUMNS} {_SIGNAL_FROM} WHERE " + " AND ".join(where)
-           + " ORDER BY s.event_date DESC, s.signal_id DESC LIMIT ?")
+           + order_sql)
     params.append(limit)
     return conn.execute(sql, params).fetchall()
 

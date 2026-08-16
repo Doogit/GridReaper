@@ -3,8 +3,12 @@
 The scope-separated feed: account-scoped cards first, a labeled divider, then
 sector/regulatory cards (R7.2). Status filter defaults to active; decayed/
 superseded/dismissed are reachable by widening it (HTMX re-renders the feed
-body). Keyset pagination on (event_date, signal_id) via an HTMX "Load more"
-button per group. Feedback writes go through data.record_feedback (R9.1:
+body). Sort defaults to score (see SORT_OPTIONS); "Newest" restores the
+chronological feed with keyset pagination on (event_date, signal_id) via an
+HTMX "Load more" button per group. Both controls live outside #gs-feed-body and
+are hx-include'd by every fragment request - including the 120s auto-refresh
+poll - so a re-render never resets the operator's chosen view (R8.1).
+Feedback writes go through data.record_feedback (R9.1:
 not_useful requires a reason code) — enforced server-side, so a missing reason
 returns the reason form with the error, never a bad row.
 
@@ -39,23 +43,39 @@ STATUS_FILTERS = {
 }
 
 
+# Sort options, in display order. The feed LANDS on score: the operator's
+# question on a Monday is "what deserves action this week", and a date-keyset
+# feed cannot answer it - the highest-scoring card sits wherever its event date
+# puts it, and at status=all the retracted backlog buries it pages down. A
+# score ranking is capped at PAGE_SIZE per group rather than paged, because the
+# keyset is chronological by construction (data.feed_page); "Newest" is one
+# control away and keeps the full paged archive reachable.
+SORT_OPTIONS = (("score", "Top score"), ("recent", "Newest"))
+DEFAULT_SORT = "score"
+
+
 def _choice(status):
     return status if status in STATUS_FILTERS else "active"
 
 
-def _group(conn, scope_group, statuses, after_key, legend, choice):
-    """One keyset page of cards for a scope group + the next-page cursor (or
-    None). The cursor is set only when a further page actually exists (probe),
-    so the Load more button never dead-ends."""
+def _sort(value):
+    return value if value in dict(SORT_OPTIONS) else DEFAULT_SORT
+
+
+def _group(conn, scope_group, statuses, after_key, legend, choice, sort):
+    """One page of cards for a scope group + the next-page cursor (or None).
+    The cursor exists only under sort='recent' (score order is a capped ranking,
+    not a keyset) and only when a further page actually exists (probe), so the
+    Load more button never dead-ends."""
     rows = data.feed_page(conn, scope_group=scope_group, after_key=after_key,
-                          limit=PAGE_SIZE, statuses=statuses)
+                          limit=PAGE_SIZE, statuses=statuses, order=sort)
     cards = []
     for row in rows:
         detail = data.signal_detail(conn, row["signal_id"])
         if detail is not None:
             cards.append(render.card_view(detail, legend))
     nxt = None
-    if len(rows) == PAGE_SIZE:
+    if sort == "recent" and len(rows) == PAGE_SIZE:
         last = rows[-1]
         probe = data.feed_page(
             conn, scope_group=scope_group,
@@ -67,30 +87,39 @@ def _group(conn, scope_group, statuses, after_key, legend, choice):
     return cards, nxt
 
 
-def _feed_context(conn, choice):
+def _feed_context(conn, choice, sort):
     statuses = STATUS_FILTERS[choice]
     legend = data.badge_legend(conn)
-    account_cards, account_next = _group(conn, "account", statuses, None, legend, choice)
-    sector_cards, sector_next = _group(conn, "sector", statuses, None, legend, choice)
+    account_cards, account_next = _group(conn, "account", statuses, None,
+                                         legend, choice, sort)
+    sector_cards, sector_next = _group(conn, "sector", statuses, None,
+                                       legend, choice, sort)
     return {
         "status": choice,
         "status_options": list(STATUS_FILTERS),
+        "sort": sort,
+        "sort_options": SORT_OPTIONS,
+        "page_size": PAGE_SIZE,
         "account_cards": account_cards, "account_next": account_next,
         "sector_cards": sector_cards, "sector_next": sector_next,
     }
 
 
 @router.get("/", response_class=HTMLResponse)
-def home(request: Request, status: str = "active", conn=Depends(get_db)):
-    ctx = _feed_context(conn, _choice(status))
+def home(request: Request, status: str = "active", sort: str = DEFAULT_SORT,
+         conn=Depends(get_db)):
+    ctx = _feed_context(conn, _choice(status), _sort(sort))
     ctx["nav_active"] = "home"
     return templates.TemplateResponse(request=request, name="feed.html", context=ctx)
 
 
 @router.get("/feed", response_class=HTMLResponse)
-def feed_body(request: Request, status: str = "active", conn=Depends(get_db)):
-    """Feed body only — the status filter swaps this into #gs-feed-body."""
-    ctx = _feed_context(conn, _choice(status))
+def feed_body(request: Request, status: str = "active",
+              sort: str = DEFAULT_SORT, conn=Depends(get_db)):
+    """Feed body only — the status and sort controls (and the 120s poll) swap
+    this into #gs-feed-body. Both are hx-include'd on every one of those
+    requests, so a poll never resets the view the operator chose."""
+    ctx = _feed_context(conn, _choice(status), _sort(sort))
     return templates.TemplateResponse(request=request, name="_feed_body.html", context=ctx)
 
 
@@ -98,12 +127,14 @@ def feed_body(request: Request, status: str = "active", conn=Depends(get_db)):
 def feed_more(request: Request, scope: str = "account", status: str = "active",
               after_date: str = "", after_id: str = "", conn=Depends(get_db)):
     """Next keyset page for one group; the Load more button swaps itself with
-    this partial (more cards + a fresh button, or nothing at the end)."""
+    this partial (more cards + a fresh button, or nothing at the end). Keyset
+    paging is chronological, so this route is always sort='recent' — the button
+    is only ever rendered in that view."""
     scope_group = scope if scope in data.SCOPE_GROUPS else "account"
     choice = _choice(status)
     after_key = (after_date, after_id) if after_date and after_id else None
     cards, nxt = _group(conn, scope_group, STATUS_FILTERS[choice], after_key,
-                        data.badge_legend(conn), choice)
+                        data.badge_legend(conn), choice, "recent")
     return templates.TemplateResponse(
         request=request, name="_cards.html", context={"cards": cards, "next": nxt})
 

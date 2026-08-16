@@ -4,26 +4,40 @@
 {% block content %}
 <div class="gs-feed-head">
   <p class="gs-muted-text">External events scored into Microsoft security license plays.</p>
+  {# Both controls live OUTSIDE #gs-feed-body (which is swapped by innerHTML),
+     and each hx-include's the other, so switching one carries the other and the
+     120s poll below carries both. #}
   <label class="gs-status">Status
     <select name="status" hx-get="/feed" hx-target="#gs-feed-body" hx-swap="innerHTML"
+            hx-include="[name='sort']"
             title="Feed defaults to active; widen to see decayed / superseded / dismissed / retracted signals.">
       {% for opt in status_options %}
       <option value="{{ opt }}"{% if opt == status %} selected{% endif %}>{{ opt }}</option>
       {% endfor %}
     </select>
   </label>
+  <label class="gs-status">Sort
+    <select name="sort" hx-get="/feed" hx-target="#gs-feed-body" hx-swap="innerHTML"
+            hx-include="[name='status']"
+            title="Top score ranks what most deserves action; Newest is the chronological feed with paging.">
+      {% for value, label in sort_options %}
+      <option value="{{ value }}"{% if value == sort %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
 </div>
 
 {# R8.1: poll the feed body every 120s so a background first-load ingest (and
-   later scored cards) surface without a manual reload. hx-include carries the
-   current status filter, and swapping innerHTML leaves this div (with its poll
-   attrs) in place across status re-renders. #}
+   later scored cards) surface without a manual reload. hx-include carries BOTH
+   the status filter and the sort order — a poll that dropped either would
+   silently reset the operator's view every two minutes — and swapping innerHTML
+   leaves this div (with its poll attrs) in place across re-renders. #}
 <div id="gs-feed-body"
      hx-get="/feed"
      hx-trigger="every 120s"
      hx-target="#gs-feed-body"
      hx-swap="innerHTML"
-     hx-include="[name='status']">
+     hx-include="[name='status'],[name='sort']">
   {% include "_feed_body.html" %}
 </div>
 {% endblock %}
