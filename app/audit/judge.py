@@ -5,8 +5,9 @@ The runner is the deterministic, budget-capped orchestration layer around the
 injectable ``AuditClient`` (client.py) and the versioned prompt/parser
 (schema.py). Per invocation it:
 
-  1. Records an ``audit_runs`` row up front (status 'running', R9.12: a skip is
-     recorded, never silent).
+  1. Reaps any ``audit_runs`` row stranded at 'running' by a killed run (marked
+     'error', never deleted) and records its own row up front (status 'running',
+     R9.12: a skip is recorded, never silent).
   2. Samples up to ``min(limit, MAX_SIGNALS_PER_RUN)`` signals NOT yet audited
      at the current PROMPT_VERSION (R9.7 dedupe), stratified across
      (trigger_id, source_id, signal_scope) so one busy trigger cannot crowd out
@@ -165,6 +166,29 @@ def sample_signals(conn, prompt_version, limit, rng_seed=0):
 
 # -- run bookkeeping ---------------------------------------------------------
 
+REAP_NOTE = "reaped: no clean finalize"
+
+
+def _reap_stranded_runs(conn, now):
+    """Close out any ``audit_runs`` row still at 'running' (R9.12).
+
+    Only a clean return through ``_finalize_run`` moves a row off 'running', so
+    a process killed mid-run strands its row there forever and the audit history
+    silently reads as "a run is in flight". Nothing else reaps it. A row is
+    never deleted — it is marked 'error' with the reason in ``error_state``, so
+    the fact that a run died stays visible. ``audit_runs`` has no scope column,
+    so this is unqualified: any running row predates this invocation, which is
+    the only writer (``cli()`` holds the single-writer lock, R3.2).
+
+    Returns the number of rows reaped.
+    """
+    cur = conn.execute(
+        "UPDATE audit_runs SET status = 'error', finished_at = ?, "
+        " error_state = ? WHERE status = 'running'",
+        (now, REAP_NOTE))
+    return cur.rowcount
+
+
 def _finalize_run(conn, run_id, now, status, signals_sampled, verdicts_written,
                   budget_spent, error_state="", skipped_reason=""):
     conn.execute(
@@ -190,6 +214,7 @@ def run_audit(conn, client, now=None, limit=None, rng_seed=0):
     wrapped in the ingestion lock — ``cli()`` owns that (R3.2).
     """
     now = now or _utcnow()
+    _reap_stranded_runs(conn, now)
     run_id = f"audit:{uuid.uuid4().hex[:12]}"
     conn.execute(
         "INSERT INTO audit_runs (run_id, started_at, finished_at, model_id, "

@@ -18,6 +18,7 @@ unchanged — they cover the helper semantics; this file covers the HTTP surface
 """
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -26,8 +27,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app.db.migrate import apply_migrations
+from app.ingest import runner
 from app.ingest.runner import ingest_lock
 from app.ui_web.app import app
+from tests.lock_fixture import redirect_ingest_lock
 
 NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -88,6 +91,7 @@ class AdminTestBase(unittest.TestCase):
     def setUp(self):
         self.path = make_db()
         os.environ["GRIDSIGNALS_DB"] = self.path
+        self.lock_path = redirect_ingest_lock(self)
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -179,9 +183,32 @@ class TestSourceToggle(AdminTestBase):
         self.assertEqual(self.scalar("SELECT field FROM config_audit"), "enabled")
 
 
+class TestLockIsolation(AdminTestBase):
+    """B7 / R3.2: routes call data.config_write_conn() bare, so the lock path a
+    TestClient request uses is whatever app.ingest.runner.LOCK_PATH holds at
+    call time (config_write_conn imports it lazily inside the function body).
+    setUp redirects it to a private temp file, so a lock left at the default
+    data/.ingest.lock — the residue of a killed ingestion run — is a different
+    file and cannot turn this suite red with a misleading assertion."""
+
+    def test_redirect_is_live_and_a_foreign_lock_is_inert(self):
+        self.assertEqual(runner.LOCK_PATH, self.lock_path)
+        self.assertNotEqual(runner.LOCK_PATH, "data/.ingest.lock")
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        stray = os.path.join(tmpdir, "data", ".ingest.lock")
+        with ingest_lock(stray):
+            resp = self.client.post("/admin/tuning",
+                                    data={"w:scope:sector": "0.90"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("Ingestion in progress", resp.text)
+        self.assertEqual(self.scalar(
+            "SELECT weight FROM scoring_weights WHERE key='sector'"), 0.90)
+
+
 class TestLockHeld(AdminTestBase):
     def test_save_under_held_lock_warns_and_writes_nothing(self):
-        with ingest_lock():
+        with ingest_lock(self.lock_path):
             resp = self.client.post("/admin/tuning",
                                     data={"w:scope:sector": "0.90"})
         self.assertIn("Ingestion in progress", resp.text)
@@ -502,7 +529,7 @@ class TestTuningBatchSave(AdminTestBase):
         self.assertIn("half-life must be", resp.text)
 
     def test_held_lock_writes_nothing(self):
-        with ingest_lock():
+        with ingest_lock(self.lock_path):
             resp = self.client.post("/admin/tuning", data={
                 "w:scope:sector": "0.90", "h:t_lead": "150"})
         self.assertIn("Ingestion in progress", resp.text)

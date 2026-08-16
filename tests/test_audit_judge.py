@@ -3,16 +3,18 @@
 Hermetic: real migrations against in-memory SQLite (FK on), a fake injected
 judge client returning canned JudgeResults — no network, ever. Covers record
 assembly, the happy path, re-run dedupe, the R9.12 no-key / over-budget /
-no-signals skips, per-signal error containment, and deterministic stratified
-sampling.
+no-signals skips, per-signal error containment, deterministic stratified
+sampling, the reap of runs stranded at 'running' by a killed process, and the
+date-aware model price schedule (R10.1).
 """
 import json
 import sqlite3
 import unittest
 
+from app.audit import config as cfg
 from app.audit import schema
 from app.audit.client import JudgeResult
-from app.audit.judge import assemble_record, run_audit, sample_signals
+from app.audit.judge import REAP_NOTE, assemble_record, run_audit, sample_signals
 from app.db.migrate import apply_migrations
 
 NOW = "2026-08-11T00:00:00+00:00"
@@ -341,6 +343,118 @@ class TestSampling(unittest.TestCase):
                 "SELECT trigger_id FROM signals WHERE signal_id = ?",
                 (sid,)).fetchone()["trigger_id"] for sid in ids}
         self.assertEqual(triggers, {"t_lead", "t_reg"})
+
+
+class TestReapStrandedRuns(unittest.TestCase):
+    """B6 / R9.12: a run killed mid-flight strands its audit_runs row at
+    'running' forever, because only _finalize_run moves a row off it. The next
+    run must close that row out — marked, never deleted."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _insert_stranded(self, run_id, started_at):
+        self.conn.execute(
+            "INSERT INTO audit_runs (run_id, started_at, model_id, status) "
+            "VALUES (?, ?, ?, 'running')", (run_id, started_at, MODEL))
+        self.conn.commit()
+
+    def test_stranded_row_is_reaped_and_new_run_unaffected(self):
+        self._insert_stranded("audit:dead0000", "2026-08-10T00:00:00+00:00")
+        summary = run_audit(self.conn, FakeClient(), now=NOW)
+
+        dead = self.conn.execute(
+            "SELECT * FROM audit_runs WHERE run_id = 'audit:dead0000'").fetchone()
+        self.assertIsNotNone(dead, "the row must be marked, never deleted")
+        self.assertEqual(dead["status"], "error")
+        self.assertEqual(dead["error_state"], REAP_NOTE)
+        self.assertEqual(dead["finished_at"], NOW)
+        # its own bookkeeping is untouched by the reap
+        self.assertEqual(dead["started_at"], "2026-08-10T00:00:00+00:00")
+
+        # the new run is unaffected: it completes normally and writes verdicts
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(summary["verdicts_written"], 3 * len(schema.CHECKS))
+        new = self.conn.execute(
+            "SELECT * FROM audit_runs WHERE run_id = ?",
+            (summary["run_id"],)).fetchone()
+        self.assertEqual(new["status"], "success")
+        self.assertEqual(new["error_state"], "")
+
+    def test_every_stranded_row_is_reaped(self):
+        # audit_runs has no scope column, so the reap cannot be qualified: any
+        # pre-existing 'running' row predates this invocation.
+        self._insert_stranded("audit:dead0001", "2026-08-09T00:00:00+00:00")
+        self._insert_stranded("audit:dead0002", "2026-08-10T00:00:00+00:00")
+        run_audit(self.conn, FakeClient(), now=NOW)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM audit_runs WHERE status = 'running'"
+        ).fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM audit_runs WHERE error_state = ?",
+            (REAP_NOTE,)).fetchone()[0], 2)
+
+    def test_finalized_rows_are_never_touched(self):
+        self.conn.execute(
+            "INSERT INTO audit_runs (run_id, started_at, status, skipped_reason) "
+            "VALUES ('audit:ok0001', '2026-08-01T00:00:00+00:00', "
+            "'skipped_no_key', 'ANTHROPIC_API_KEY not set')")
+        self.conn.commit()
+        run_audit(self.conn, FakeClient(), now=NOW)
+        row = self.conn.execute(
+            "SELECT * FROM audit_runs WHERE run_id = 'audit:ok0001'").fetchone()
+        self.assertEqual(row["status"], "skipped_no_key")
+        self.assertEqual(row["error_state"], "")
+        self.assertEqual(row["finished_at"], "")
+
+
+class TestPriceSchedule(unittest.TestCase):
+    """B8 / R10.1: claude-sonnet-5 launched with promotional $2/$10 through
+    2026-08-31, but Anthropic made that price permanent on 2026-08-10. The rate
+    still resolves through a schedule so a future announced change can be pinned
+    to the run's UTC timestamp."""
+
+    def test_sonnet_5_rate_before_the_original_boundary(self):
+        self.assertEqual(
+            cfg.price_per_mtok("claude-sonnet-5", "2026-08-31T23:59:59+00:00"),
+            (2.00, 10.00))
+
+    def test_sonnet_5_rate_stays_flat_after_the_original_boundary(self):
+        self.assertEqual(
+            cfg.price_per_mtok("claude-sonnet-5", "2026-09-01T00:00:00+00:00"),
+            (2.00, 10.00))
+
+    def test_cost_estimate_follows_the_schedule(self):
+        self.assertAlmostEqual(
+            cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000,
+                                  at="2026-08-15T00:00:00+00:00"),
+            12.0, places=6)
+        self.assertAlmostEqual(
+            cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000,
+                                  at="2026-09-15T00:00:00+00:00"),
+            12.0, places=6)
+
+    def test_models_without_a_scheduled_change_are_flat(self):
+        for at in ("2026-08-15T00:00:00+00:00", "2026-09-15T00:00:00+00:00"):
+            # Haiku is DEFAULT_MODEL_ID, so it alone prices live spend today.
+            self.assertEqual(cfg.price_per_mtok("claude-haiku-4-5", at),
+                             (1.00, 5.00))
+            self.assertEqual(cfg.price_per_mtok("claude-opus-4-8", at),
+                             (5.00, 25.00))
+
+    def test_unknown_model_still_falls_back_to_haiku_rate(self):
+        self.assertEqual(cfg.price_per_mtok("some-future-model",
+                                            "2026-09-15T00:00:00+00:00"),
+                         (1.00, 5.00))
+
+    def test_default_timestamp_is_now(self):
+        # No `at` -> the moment the spend is incurred; must still be a real
+        # scheduled rate, never zero.
+        in_rate, out_rate = cfg.price_per_mtok("claude-sonnet-5")
+        self.assertIn((in_rate, out_rate), {(2.00, 10.00), (3.00, 15.00)})
 
 
 if __name__ == "__main__":

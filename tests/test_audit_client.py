@@ -178,10 +178,15 @@ class TestClient(unittest.TestCase):
         cost = cfg.estimate_cost_usd("some-future-model", 1_000_000, 0)
         self.assertGreater(cost, 0)
 
-    def test_estimate_cost_sonnet_5_uses_current_rate(self):
-        # Sonnet 5 standard pricing: $2 input / $10 output per 1M tokens.
-        cost = cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000)
-        self.assertAlmostEqual(cost, 12.0, places=6)
+    def test_estimate_cost_sonnet_5_uses_rate_in_force(self):
+        # Sonnet 5 launched with $2/$10 promotional pricing through 2026-08-31,
+        # but Anthropic made that price permanent on 2026-08-10.
+        before = cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000,
+                                       at="2026-08-15T00:00:00+00:00")
+        self.assertAlmostEqual(before, 12.0, places=6)
+        after = cfg.estimate_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000,
+                                      at="2026-09-01T00:00:00+00:00")
+        self.assertAlmostEqual(after, 12.0, places=6)
 
 
 if __name__ == "__main__":
