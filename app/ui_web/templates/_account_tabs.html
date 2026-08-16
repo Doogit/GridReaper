@@ -1,14 +1,21 @@
-{# Account 360 tabs — Timeline + Signals (R8.3). CSS-only tab toggle (radio
-   inputs + :checked sibling rules); no JS, no server round-trip to switch tabs.
-   Timeline is a compact chronological list; Signals reuses _card.html and its
-   feedback flow verbatim. Both tabs carry an honest low-volume-by-design empty
-   state (R6.6) — a dark, zero-signal account renders these, never a crash. #}
+{# Account 360 tabs — Timeline, Signals, Products, Compliance Calendar, Entity
+   Graph (R8.3). CSS-only tab toggle (radio inputs + :checked sibling rules); no
+   JS, no server round-trip to switch tabs. Timeline is a compact chronological
+   list; Signals reuses _card.html and its feedback flow verbatim. Every tab
+   carries an honest low-volume-by-design empty state (R6.6) that names WHY it is
+   empty — a dark, zero-signal account renders these, never a crash. #}
 <div class="gs-tabs">
   <input type="radio" name="gs-acct-tab" id="gs-tab-timeline" class="gs-tab-input" checked>
   <input type="radio" name="gs-acct-tab" id="gs-tab-signals" class="gs-tab-input">
+  <input type="radio" name="gs-acct-tab" id="gs-tab-products" class="gs-tab-input">
+  <input type="radio" name="gs-acct-tab" id="gs-tab-calendar" class="gs-tab-input">
+  <input type="radio" name="gs-acct-tab" id="gs-tab-graph" class="gs-tab-input">
   <div class="gs-tablist">
     <label class="gs-tab" for="gs-tab-timeline">Timeline</label>
     <label class="gs-tab" for="gs-tab-signals">Signals</label>
+    <label class="gs-tab" for="gs-tab-products">Products</label>
+    <label class="gs-tab" for="gs-tab-calendar">Compliance Calendar</label>
+    <label class="gs-tab" for="gs-tab-graph">Entity Graph</label>
   </div>
 
   <div class="gs-tabpanel gs-tabpanel-timeline">
@@ -28,4 +35,8 @@
     {% with message = "No account-scoped signal cards yet — low volume by design. This account currently surfaces only through its profile above." %}{% include "_empty.html" %}{% endwith %}
     {% endif %}
   </div>
+
+  <div class="gs-tabpanel gs-tabpanel-products">{% include "_account_products.html" %}</div>
+  <div class="gs-tabpanel gs-tabpanel-calendar">{% include "_account_calendar.html" %}</div>
+  <div class="gs-tabpanel gs-tabpanel-graph">{% include "_account_graph.html" %}</div>
 </div>

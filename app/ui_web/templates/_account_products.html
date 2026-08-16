@@ -1,0 +1,18 @@
+{# Account 360 — Products tab (R8.3, R7.6, R4.3). The stored license plays that
+   this account's OWN signals generated: frozen snapshot text, never live facts,
+   never a price. Empty is the norm today and the copy names the reason rather
+   than showing an unexplained blank. #}
+{% if play_rows %}
+<p class="gs-muted-text">Licensing plays as they were frozen on this account's cards (R7.6) — snapshot text, not live facts, and no pricing.</p>
+{% for p in play_rows %}
+<div class="gs-record">
+  <div class="gs-headline">{{ p.product }}</div>
+  <div class="gs-meta">{{ p.event_date }} · {{ p.headline }} · <a class="gs-permalink" href="/card/{{ p.card_key }}" title="Permalink to the card this play came from">permalink</a></div>
+  <div class="gs-evidence">{{ p.display_text }}</div>
+  {% if p.discovery_question %}<div class="gs-evidence"><span class="gs-locator">Discovery</span> &nbsp; {{ p.discovery_question }}</div>{% endif %}
+  <div class="gs-badges"><span class="gs-badge">{{ p.generation_version }}</span></div>
+</div>
+{% endfor %}
+{% else %}
+{% with message = "No licensing plays for this account yet. A play is generated per signal card, and this account has no account-scoped signals — low volume by design (R6.6). Sector and regulatory plays are not shown here: attributing them to this account would assert an account fit that was never computed. The Compliance Calendar tab carries the class-scoped regulatory material that does apply." %}{% include "_empty.html" %}{% endwith %}
+{% endif %}

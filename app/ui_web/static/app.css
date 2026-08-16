@@ -496,11 +496,18 @@ html { interpolate-size: allow-keywords; }  /* lets height:auto animate (details
   transition: color 150ms cubic-bezier(0.2,0,0,1); }
 .gs-tab:hover { color: var(--gs-text); }
 .gs-tabpanel { display: none; }
+.gs-tablist { flex-wrap: wrap; }
 #gs-tab-timeline:checked ~ .gs-tablist label[for="gs-tab-timeline"],
-#gs-tab-signals:checked ~ .gs-tablist label[for="gs-tab-signals"] {
+#gs-tab-signals:checked ~ .gs-tablist label[for="gs-tab-signals"],
+#gs-tab-products:checked ~ .gs-tablist label[for="gs-tab-products"],
+#gs-tab-calendar:checked ~ .gs-tablist label[for="gs-tab-calendar"],
+#gs-tab-graph:checked ~ .gs-tablist label[for="gs-tab-graph"] {
   color: var(--gs-accent); border-bottom-color: var(--gs-accent); }
 #gs-tab-timeline:checked ~ .gs-tabpanel-timeline { display: block; }
 #gs-tab-signals:checked ~ .gs-tabpanel-signals { display: block; }
+#gs-tab-products:checked ~ .gs-tabpanel-products { display: block; }
+#gs-tab-calendar:checked ~ .gs-tabpanel-calendar { display: block; }
+#gs-tab-graph:checked ~ .gs-tabpanel-graph { display: block; }
 
 /* ---- Review Queue (Chunk 3) ---- */
 .gs-review-row .gs-feedback { margin-top: 10px; }

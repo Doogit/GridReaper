@@ -855,6 +855,167 @@ def account_header(conn, entity_id):
     }
 
 
+# -- Account 360 tabs 3-5: Products, Compliance Calendar, Entity Graph (R8.3) --
+#
+# Three reads over three tables that are populated to very different depths, and
+# each read says so rather than papering over it:
+#
+#   Products    license_play_snapshots keyed by the account's OWN signals. 312
+#               snapshots exist, 0 of them on an entity-bearing signal, because
+#               no signal in the store has ever carried an entity_id (R7.2). So
+#               this returns [] for every account today, by construction, and
+#               the tab's copy names that reason. It is deliberately NOT joined
+#               through the class-scoped obligation predicate: a play is a
+#               per-signal licensing recommendation (R7.6), and attributing a
+#               sector signal's play to an account would assert an account fit
+#               that was never computed.
+#
+#   Calendar    regulatory_obligations, joined to the account by
+#               applicability_rule (see app/obligations.py). Class-scoped, never
+#               account-keyed; the predicate is a regulated-class FILTER, not a
+#               registration claim.
+#
+#   Graph       entity_relationships in both directions. One row exists in the
+#               whole store (E0088 -> E0089, direct_parent, from GLEIF), so this
+#               is a relationship LIST, not a graph drawing - there is no
+#               measured structure to draw.
+
+def account_license_plays(conn, entity_id, statuses=("active",)):
+    """Stored license plays for the account's own signals (R8.3, R7.6).
+
+    Reads ``license_play_snapshots`` — the frozen text the card showed — never
+    live ``license_facts``, and never a fact's ``price_note`` (R4.3/R7.11).
+    Ordered newest signal first, then by play_id, so the tab is stable.
+    """
+    statuses = tuple(statuses)
+    return conn.execute(
+        "SELECT lps.signal_id, lps.play_id, lps.display_text, "
+        "       lps.outreach_safe_text, lps.generated_at, "
+        "       lps.generation_version, c.product_id, c.discovery_question, "
+        "       p.name AS product_name, s.headline, s.event_date "
+        "FROM license_play_snapshots lps "
+        "JOIN signals s ON s.signal_id = lps.signal_id "
+        "LEFT JOIN license_play_candidates c ON c.play_id = lps.play_id "
+        "LEFT JOIN products p ON p.product_id = c.product_id "
+        f"WHERE s.entity_id = ? AND s.status IN ({_placeholders(len(statuses))}) "
+        "ORDER BY s.event_date DESC, lps.signal_id DESC, lps.play_id",
+        [entity_id] + list(statuses)).fetchall()
+
+
+# The predicate format app/obligations.py writes. Spelled out on both sides
+# rather than imported, so the reader does not drag the ingestion lock into the
+# UI import path; tests/test_obligations.py binds the two ends so a drift on
+# either side fails a test instead of silently emptying the calendar tab.
+SUBSECTOR_RULE_PREFIX = "subsector_in:"
+
+
+def applicability_subsectors(applicability_rule):
+    """The subsector set a ``subsector_in:a;b;c`` predicate admits.
+
+    Returns None when the rule is missing or in a form this reader does not
+    understand — the caller then EXCLUDES the obligation rather than showing
+    it. Fail-closed is the safe direction: the predicate exists to keep a FERC
+    CIP deadline off a refiner's page, so an unevaluable rule must not default
+    to "applies to everyone".
+    """
+    rule = (applicability_rule or "").strip()
+    if not rule.startswith(SUBSECTOR_RULE_PREFIX):
+        return None
+    return {s for s in rule[len(SUBSECTOR_RULE_PREFIX):].split(";") if s}
+
+
+def account_obligations(conn, entity_id, now=None):
+    """Regulatory obligations applying to one account's subsector (R8.3, R7.2).
+
+    Returns ``{subsector, obligations, unscoped, total}``:
+
+        subsector    the account's own subsector — the value the predicate was
+                     matched on, surfaced so the reader can see WHY these rows
+                     are here (and an empty tab can say which class it checked)
+        obligations  matching rows, soonest effective date first, each carrying
+                     ``in_effect`` computed against ``now``
+        unscoped     obligations excluded because their applicability_rule could
+                     not be evaluated. Disclosed, never silently dropped
+        total        obligations in the store, so "3 of 3 checked" is verifiable
+
+    ``compliance_date`` is passed through untouched and is NULL on every derived
+    row: FERC states compliance dates in the order body, which is not in the
+    fetched metadata. This is an EFFECTIVE-DATE calendar; deriving a deadline
+    from an effective date would be a fabricated obligation (R4.1).
+    """
+    entity = conn.execute(
+        "SELECT subsector FROM watchlist_entities WHERE entity_id = ?",
+        (entity_id,)).fetchone()
+    if entity is None:
+        return {"subsector": "", "obligations": [], "unscoped": 0, "total": 0}
+    subsector = (entity["subsector"] or "").strip()
+    today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+
+    rows = conn.execute(
+        "SELECT obligation_id, source_url, regulator, rule_name, "
+        "       affected_scope, applicability_rule, effective_date, "
+        "       compliance_date, mapped_products, verified_at, signal_id "
+        "FROM regulatory_obligations "
+        "ORDER BY effective_date, obligation_id").fetchall()
+
+    obligations, unscoped = [], 0
+    for row in rows:
+        admitted = applicability_subsectors(row["applicability_rule"])
+        if admitted is None:
+            unscoped += 1
+            continue
+        if subsector not in admitted:
+            continue
+        effective = _parse_date(row["effective_date"])
+        item = dict(row)
+        item["in_effect"] = effective is not None and effective <= today
+        item["product_names"] = _obligation_product_names(
+            conn, row["mapped_products"])
+        obligations.append(item)
+    return {"subsector": subsector, "obligations": obligations,
+            "unscoped": unscoped, "total": len(rows)}
+
+
+def _obligation_product_names(conn, mapped_products):
+    """[(product_id, name)] for a ';'-joined mapped_products string.
+
+    An id with no products row keeps its id as the label — the mapping came
+    from cip_product_map and is shown as stored, not silently dropped.
+    """
+    ids = [p for p in (mapped_products or "").split(";") if p]
+    if not ids:
+        return []
+    names = {r["product_id"]: r["name"] for r in conn.execute(
+        f"SELECT product_id, name FROM products "
+        f"WHERE product_id IN ({_placeholders(len(ids))})", ids)}
+    return [(pid, names.get(pid) or pid) for pid in ids]
+
+
+def account_relationships(conn, entity_id):
+    """Corporate relationships touching one account, both directions (R8.3).
+
+    Each row carries ``direction`` ('parent' — the other entity is this one's
+    parent — or 'child'), the related entity, the stored relationship_type, and
+    the source/verified_at provenance the header drops. Unlike
+    ``account_header``, this does NOT fall back to watchlist_entities.parent_id:
+    that column is a seeded hint with no source or verification date, and this
+    tab's whole claim is that every edge shown is a sourced, stored edge.
+    """
+    return conn.execute(
+        "SELECT 'parent' AS direction, e.entity_id, e.name, e.subsector, "
+        "       r.relationship_type, r.source, r.verified_at "
+        "FROM entity_relationships r "
+        "JOIN watchlist_entities e ON e.entity_id = r.parent_entity_id "
+        "WHERE r.child_entity_id = ? "
+        "UNION ALL "
+        "SELECT 'child' AS direction, e.entity_id, e.name, e.subsector, "
+        "       r.relationship_type, r.source, r.verified_at "
+        "FROM entity_relationships r "
+        "JOIN watchlist_entities e ON e.entity_id = r.child_entity_id "
+        "WHERE r.parent_entity_id = ? "
+        "ORDER BY direction, name", (entity_id, entity_id)).fetchall()
+
+
 def badge_legend(conn):
     """badge_legend table -> {badge_kind: {code: {'label','description'}}}.
     The UI renders badge labels from this, never hardcoding a code's meaning."""

@@ -2,9 +2,18 @@
 
 A per-entity view for the watchlist: an entity selector, a header (identifiers,
 subsector, richness, coverage badge, gov-cloud posture, parent/children linked
-to their own account pages), and two tabs — Timeline and Signals. The Signals
-tab reuses the feed's card (_card.html) and its feedback flow verbatim, driven
-by render.card_view over data.account_signals (same row shape as feed_page).
+to their own account pages), and five tabs — Timeline, Signals, Products,
+Compliance Calendar and Entity Graph. The Signals tab reuses the feed's card
+(_card.html) and its feedback flow verbatim, driven by render.card_view over
+data.account_signals (same row shape as feed_page).
+
+The three later tabs read three tables populated to very different depths, and
+each says which: Products reads the account's OWN license play snapshots (R7.6)
+and is empty for every account today because no signal carries an entity_id;
+Compliance Calendar reads regulatory_obligations matched by subsector class
+(never account-keyed) and is the one tab with live rows; Entity Graph lists
+sourced entity_relationships edges rather than drawing a graph, because one edge
+exists in the whole store. Every empty state names its reason (R6.6).
 
 Zero account-scoped signals is the norm today (dark accounts, R6.6): the page
 stays useful from identifiers, relationships, and gov-cloud posture, and both
@@ -75,6 +84,13 @@ def _account_context(conn, entity_id):
         "account": render.account_header_view(header),
         "timeline": render.timeline_rows(signals),
         "cards": cards,
+        "play_rows": render.account_play_rows(
+            data.account_license_plays(conn, entity_id, statuses=STATUSES)),
+        "calendar": render.account_calendar_view(
+            data.account_obligations(conn, entity_id)),
+        "calendar_caption": render.CALENDAR_CAPTION,
+        "relationship_rows": render.account_relationship_rows(
+            data.account_relationships(conn, entity_id)),
     }
 
 

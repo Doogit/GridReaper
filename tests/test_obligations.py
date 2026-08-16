@@ -12,6 +12,7 @@ from pathlib import Path
 
 from app.db.migrate import apply_migrations
 from app.obligations import APPLICABILITY, derive_obligations
+from app.ui import data
 
 PIPELINE = (Path(__file__).resolve().parent.parent / "deploy"
             / "ingest_pipeline.sh")
@@ -261,6 +262,17 @@ class ApplicabilityTest(unittest.TestCase):
             "({}) ORDER BY entity_id".format(", ".join("?" * len(subsectors))),
             subsectors)]
         self.assertEqual(matched, ["E1", "E2"])
+
+    def test_reader_parses_the_rule_this_producer_writes(self):
+        """The producer composes ``subsector_in:...`` and the Account 360
+        Compliance Calendar parses it back. The format literal is spelled out
+        in both modules, so this is the test that binds them — a drift on
+        either side fails here rather than silently emptying the tab."""
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        rule = obligations(self.conn)[0]["applicability_rule"]
+        self.assertEqual(data.applicability_subsectors(rule),
+                         set(APPLICABILITY["nerc_cip_revision"][2]))
 
     def test_scope_label_does_not_assert_registration(self):
         # NERC registration is not in the store; the label must hedge and
