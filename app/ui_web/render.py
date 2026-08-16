@@ -19,7 +19,6 @@ raw text (no manual html.escape) — the escaping lives in exactly one place.
 from hashlib import sha256
 from urllib.parse import urlsplit
 
-from app.classify.runner import INCIDENT_TIERS
 from app.ui import data
 from app.ui_web import us_geometry
 
