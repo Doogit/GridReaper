@@ -29,6 +29,12 @@ from app.db.connection import get_connection
 from app.licensing import EDITABLE_FACT_COLS
 from app.scoring import rescore
 
+# R10.9: the UI reads the backend through THIS module and no other, so
+# INCIDENT_TIERS (imported above and used by retier_incident) is also the
+# view layer's supported way to reach the tier vocabulary — app/ui_web/ reads
+# ``data.INCIDENT_TIERS``, never ``app.classify.runner``. Import-neutral: this
+# module already depended on it.
+
 # Signal-scope groupings for the scope-separated feed (R7.2): account cards are
 # rendered first, then a labeled divider, then sector/regulatory cards.
 SCOPE_GROUPS = {
