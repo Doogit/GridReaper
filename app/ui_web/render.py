@@ -791,6 +791,34 @@ def timeline_rows(signals):
             for s in signals]
 
 
+def provenance_view(signal, provenance):
+    """The R3.7 reproducibility block: which raw event, which classifier
+    version, which fetcher version, which scoring config, and when scored.
+
+    The raw event reference goes through data.identity_safe_raw_event_ref, so a
+    non-account card shows a sha256 digest and never the stored id — on this
+    corpus that id embeds the source article URL, whose slug names the breached
+    company, and this block renders on the feed, Account 360 and /card/ alike.
+
+    A signal scored before migration 0011 has no scoring_config_version; it
+    reads "pre-versioning" rather than being backfilled with today's token,
+    which would be a fabricated provenance claim.
+    """
+    ref = data.identity_safe_raw_event_ref(
+        _row_get(signal, "raw_event_id"), _row_get(signal, "signal_scope"))
+    prov = provenance or {}
+    return {
+        "raw_event_ref": ref["ref"],
+        "raw_event_hashed": ref["hashed"],
+        "classifier_version": (prov.get("classifier_parser_version")
+                               or prov.get("extraction_version")),
+        "fetch_version": prov.get("fetch_parser_version"),
+        "scoring_config_version": (_row_get(signal, "scoring_config_version")
+                                   or "pre-versioning"),
+        "scored_at": _row_get(signal, "scored_at") or "never scored",
+    }
+
+
 def card_view(detail, legend):
     """Assemble everything _card.html needs from a signal_detail() dict.
 
@@ -897,6 +925,8 @@ def card_view(detail, legend):
         # before any play/snapshot exists (R7.12).
         "outreach_withheld": (
             (not show_outreach) and (bool(snapshots) or unconfirmed)),
+        # R3.7: everything needed to reproduce this score, victim-name-free.
+        "provenance": provenance_view(signal, detail.get("provenance")),
     }
 
 

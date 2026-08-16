@@ -1,0 +1,27 @@
+-- 0011_scoring_config_version: which tuning produced this score (R3.7, R8.1).
+--
+-- signals already carries the four score components and scored_at (0005), so a
+-- score can be explained. It could not be REPRODUCED: nothing recorded which
+-- operator tuning was in force when rescore() ran, and every knob behind a
+-- score is live-editable from Admin (data.update_weight / update_half_life /
+-- update_tuning). After an edit, an old row's stored components no longer match
+-- what today's config would produce, and nothing said so.
+--
+-- scoring_config_version is app.scoring.scoring_config_version(conn): a sha256
+-- digest over BOTH tuning tables the scorer reads -
+--   scoring_weights(weight_kind, key, weight)  -- account_fit / scope_fit
+--   triggers(trigger_id, base_strength, decay_half_life_days)  -- base + decay
+-- sorted, so the token is deterministic for a given tuning and moves whenever
+-- any knob moves. Hashing scoring_weights alone would miss half-life and
+-- base-strength edits, which is precisely the failure this column closes.
+--
+-- NULLABLE on purpose, and never backfilled. A signal scored before this
+-- migration was scored under an unknown tuning; guessing today's token for it
+-- would be a fabricated provenance claim. Those rows read "pre-versioning" in
+-- the UI until the next rescore stamps them.
+--
+-- Known, intended gap: rescore() only touches status='active' rows, so a
+-- decayed/dismissed/retracted/superseded signal keeps whatever token (or NULL)
+-- it had when it was last active. Its frozen score belongs to that frozen
+-- tuning, which is the honest reading.
+ALTER TABLE signals ADD COLUMN scoring_config_version TEXT;
