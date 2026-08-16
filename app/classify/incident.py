@@ -18,10 +18,13 @@ every stored 8-K is filed by a tracked entity and pre-attributed with
                  the tier is confirmed - leaves customer_facing_allowed=1 so
                  careful outreach may be drafted (R7.12).
   peer_incident  sector scope, the same disclosure read as a class signal to
-                 sector peers. Class-phrased and name-free in the headline (the
-                 filer is not named in a sector card, mirroring the
-                 URE-anonymized enforcement card); the framework attaches no
-                 entity. Also confirmed. The card is sector-wide: subsector-
+                 sector peers. Class-phrased and unnamed in the headline; the
+                 framework attaches no entity. NOTE this is a SCOPE rule, not
+                 the retired identity rule: the very same filing already mints
+                 the own_incident card above, which names the filer outright.
+                 The sector card is about the sector, so naming the filer on it
+                 would restate the own card rather than protect anyone. Do not
+                 "unwind" this alongside the peer-card naming pivot. Also confirmed. The card is sector-wide: subsector-
                  precise peer targeting is deferred - it needs a subsector
                  dimension on signals, and a subsector label in the headline
                  would be an unsourced (R4.1), mutable claim on a card the

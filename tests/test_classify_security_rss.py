@@ -128,8 +128,20 @@ class TestOwnDisclosure(SecurityRssTestCase):
 
 
 class TestPeerDisclosure(SecurityRssTestCase):
-    def test_offlist_disclosure_yields_name_free_peer(self):
-        # Real backfill headline: an off-list (non-energy) company disclosure.
+    def test_offlist_disclosure_names_company_but_hedges_sector_claim(self):
+        """The live defect this path shipped, pinned both ways.
+
+        Trezor is a crypto hardware-wallet vendor, and it went out under a flat
+        "Sector peer disclosed a cybersecurity incident" headline - a claim this
+        classifier never verified. Resolver status "none" means only that the
+        name is off-watchlist; it is not evidence of a shared industry, and
+        unlike ransomware.py this path has no industry gate to lean on.
+
+        So: NAME the company (operator ruling - naming is acceptable wherever
+        the card cites its source) and HEDGE the sector claim. Naming actually
+        makes a misfile like this one visible to the operator, where "an
+        organization" concealed it.
+        """
         rid = add_item(self.conn, 1, BLEEP,
                        "Trezor discloses data breach affecting nearly 14,000 customers")
         s = self.run_src(BLEEP)
@@ -141,13 +153,18 @@ class TestPeerDisclosure(SecurityRssTestCase):
         self.assertEqual(peer["signal_scope"], "sector")
         self.assertEqual(peer["incident_evidence_level"], "corroborated")
         self.assertEqual(peer["customer_facing_allowed"], 1)
-        # name-free: the off-list company is never printed on the card
         ev = self.conn.execute(
             "SELECT evidence_text FROM signal_evidence WHERE signal_id = ?",
             (peer["signal_id"],)).fetchone()["evidence_text"]
         for text in (peer["headline"], ev):
-            self.assertNotIn("Trezor", text)
-        self.assertIn("Sector peer", peer["headline"])
+            self.assertIn("Trezor", text)
+        # The unhedged claim must be GONE, not merely accompanied by a hedge:
+        # the headline must not open by asserting a sector peer outright.
+        self.assertTrue(peer["headline"].startswith("Possible sector peer:"),
+                        peer["headline"])
+        self.assertFalse(peer["headline"].startswith("Sector peer"),
+                         peer["headline"])
+        self.assertIn("Industry match is unverified", ev)
 
 
 class TestLeakAdjacent(SecurityRssTestCase):

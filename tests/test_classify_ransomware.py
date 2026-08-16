@@ -133,7 +133,12 @@ class TestOwnMatch(RansomwareTestCase):
 
 
 class TestPeerOffList(RansomwareTestCase):
-    def test_offlist_victim_yields_name_free_peer(self):
+    def test_offlist_victim_yields_named_peer(self):
+        """The off-list victim IS named on the peer card (operator ruling:
+        naming is acceptable wherever the card cites its source), and the
+        "Sector peer" claim stays unhedged because this path already gated on
+        is_peer_industry - unlike the security-press path, the industry claim
+        here is source-supported."""
         rid = add_victim(self.conn, 1, "Obscure Regional Water Co")
         s = self.run_it()
         self.assertEqual(s["signals_new"], 1)
@@ -145,17 +150,22 @@ class TestPeerOffList(RansomwareTestCase):
         self.assertEqual(peer["incident_evidence_level"],
                          "unconfirmed_early_warning")
         self.assertEqual(peer["customer_facing_allowed"], 0)
-        # name-free: the off-list company is never printed on the card
-        self.assertNotIn("Obscure", peer["headline"])
+        self.assertIn("Obscure Regional Water Co", peer["headline"])
         ev = self.conn.execute(
             "SELECT evidence_text FROM signal_evidence WHERE signal_id = ?",
             (peer["signal_id"],)).fetchone()["evidence_text"]
-        self.assertNotIn("Obscure", ev)
+        self.assertIn("Obscure Regional Water Co", ev)
         self.assertIn("Sector peer", peer["headline"])
+        # The R10.5 tier caveat must survive naming - naming a victim does not
+        # promote an unverified leak-site claim to a confirmed incident.
+        self.assertIn("Unverified", ev)
 
-    def test_group_field_never_leaks_identity_onto_peer_card(self):
-        """R4.1: the attacker-controlled `group` string can embed the victim's
-        identity, so the name-free peer card prints neither victim nor group."""
+    def test_group_field_is_never_printed_on_a_peer_card(self):
+        """The victim is named, but the attacker-controlled `group` string is
+        still withheld: a crew can name itself after its victim, and that
+        string is authored by the extortionist rather than by any source we
+        can cite. Naming the victim is a sourced claim; repeating the crew's
+        self-chosen label is not."""
         add_victim(self.conn, 1, "Obscure Regional Water Co",
                    group="Obscure Regional Water Co breach crew")
         self.run_it()
@@ -164,7 +174,6 @@ class TestPeerOffList(RansomwareTestCase):
             "SELECT evidence_text FROM signal_evidence WHERE signal_id = ?",
             (peer["signal_id"],)).fetchone()["evidence_text"]
         for text in (peer["headline"], ev):
-            self.assertNotIn("Obscure", text)
             self.assertNotIn("breach crew", text)
 
 
