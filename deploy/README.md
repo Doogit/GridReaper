@@ -57,7 +57,7 @@ not freeze at first boot (R3.1).
 | Piece | Role |
 |---|---|
 | `deploy/crontab` | The schedule. Installed by the Dockerfile to `/etc/cron.d/gridsignals` (mode 644 — cron ignores anything else). |
-| `deploy/scheduled_run.sh` | Lock guard. The single-writer ingestion lock (R3.2) *raises* on a live lock; the guard records a dated skip and exits 0 instead of aborting the tick mid-pipeline. |
+| `deploy/scheduled_run.sh` | Lock guard. Serializes scheduled ticks against each other, and records a dated skip (exit 0) rather than aborting mid-pipeline when a manual run already holds the ingestion lock. |
 | `deploy/entrypoint.sh` | Starts `cron` before `exec uvicorn`, so the scheduler never blocks the web process. |
 | `deploy/ingest_pipeline.sh` | The one canonical step list, shared with the first-load path. The crontab must never inline its own copy. |
 
@@ -68,12 +68,25 @@ Two container facts the schedule has to work around:
   every tick. The entrypoint snapshots the exported environment to
   `/etc/gridsignals.env` (mode 600, outside the repo tree) and each crontab line
   sources it first. No secret is ever written into a tracked file.
-- **A tick can collide with a manual or first-load run.** `deploy/scheduled_run.sh`
-  checks the lock and skips cleanly; a lock older than 2h is treated as abandoned
-  (matching the runner's own staleness window) so a crashed run cannot wedge the
-  schedule permanently.
+- **A tick can collide with another run.** `deploy/scheduled_run.sh` holds a
+  tick-scoped lock for the whole run, so two scheduled ticks can never overlap,
+  and it probes the per-step ingestion lock at tick start so a manual run already
+  in flight yields a clean skip. A lock older than 2h is treated as abandoned, so
+  a crashed run cannot wedge the schedule permanently.
+- **Line endings matter more than usual here.** `az acr build` uploads the local
+  working tree as the build context. A CRLF shell script fails loudly, but a CRLF
+  `/etc/cron.d` entry just never fires — cron reports that only via syslog/mail,
+  neither of which exists in this image. `.gitattributes` pins these files to LF
+  and the Dockerfile strips CRs on install.
 
 Scheduled output goes to `/var/log/gridsignals-cron.log` inside the container.
+
+Known gap, not closed here: the R3.2 ingestion lock is acquired and released
+**per step**, so the guard's single probe cannot stop a manual run started
+mid-tick from interleaving with a scheduled one. Serializing that needs a lock
+the Python steps honor. Routing the first-load ingest through the guard is the
+related follow-up, deliberately left alone so this change cannot regress
+first-load behavior.
 
 **Not scheduled: the annual entity-identifier refresh (R4.2).**
 `app/enrich_entities.py` writes reviewable seed CSVs and never writes the store —

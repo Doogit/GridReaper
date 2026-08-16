@@ -1,0 +1,15 @@
+# Files that ship into the Linux container must be LF on every platform.
+#
+# core.autocrlf=true on Windows plus deploy/azure-deploy.ps1, which hands
+# `az acr build` the LOCAL working tree as the build context, means a fresh
+# Windows clone would otherwise ship CRLF copies. The failure modes are not
+# symmetric: a CRLF shell script fails loudly (dash chokes and the container
+# will not boot), but a CRLF /etc/cron.d entry corrupts its trailing field and
+# cron reports that only through syslog/mail — both no-ops in this image. The
+# container boots, uvicorn serves, CI is green, and the schedule simply never
+# fires.
+#
+# Deliberately scoped to the files that ship: no repo-wide `* text=auto`, which
+# would renormalize unrelated files.
+deploy/crontab text eol=lf
+*.sh text eol=lf

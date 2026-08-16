@@ -25,10 +25,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Register the schedule. /etc/cron.d entries must be root-owned and mode 644 or
-# cron silently ignores them. Pipeline steps stay in deploy/ingest_pipeline.sh —
-# never here (see docs on runbook drift from the canonical pipeline).
-RUN install -m 644 deploy/crontab /etc/cron.d/gridsignals
+# Register the schedule. /etc/cron.d entries must be root-owned and mode 644, and
+# their filename must contain no dot, or cron silently ignores them.
+# `tr -d '\r'` because the build context is whatever working tree the build was
+# handed (deploy/azure-deploy.ps1 uploads the local one): a CRLF crontab corrupts
+# its trailing field and cron reports that only through syslog/mail — neither
+# exists here — so the container would boot, serve, and never refresh.
+# .gitattributes is the primary fix; this is the belt-and-braces one.
+# Pipeline steps stay in deploy/ingest_pipeline.sh — never here (see docs on
+# runbook drift from the canonical pipeline).
+RUN tr -d '\r' < deploy/crontab > /etc/cron.d/gridsignals \
+ && chmod 644 /etc/cron.d/gridsignals
 
 ENV GRIDSIGNALS_DB=/app/data/gridsignals.db
 
