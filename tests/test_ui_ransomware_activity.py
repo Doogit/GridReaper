@@ -625,11 +625,67 @@ class TestBaselineDelta(unittest.TestCase):
         self.assertEqual(b["total_delta"], 0)
         self.assertEqual((b["prior_total"], b["current_total"]), (12, 12))
         self.assertEqual(b["excluded_boundary"], ["2026-08-10", "2026-08-15"])
-        self.assertEqual(view["subject_delta"], "no change")
         self.assertNotIn("+", view["baseline_note"])
+        # This corpus is entirely Manufacturing, so the WATCHLIST row has no
+        # listing on either side. The subject delta is withheld rather than
+        # printing "no change" off a 0-vs-0 comparison — see the subject-floor
+        # test below. The all-listings delta above is unaffected.
+        self.assertEqual(view["subject_delta"], "")
+        self.assertEqual(view["subject_delta_note"],
+                         "too few watchlist listings to compare")
         # And the exclusion is disclosed, not silent.
         self.assertIn("2026-08-10", view["baseline_note"])
         self.assertIn("partial days", view["baseline_note"])
+
+    def test_subject_delta_withheld_when_watchlist_absent_from_both_halves(self):
+        """0 against 0 is not "no change" — it is nothing to compare.
+
+        The corpus-wide floor asks only whether two whole interior days exist.
+        It can pass while the watchlist's own industry appears on neither side,
+        which is exactly the live corpus's shape: 2 watchlist listings in 100,
+        both on excluded boundary days. Printing "no change" there states a
+        measured finding off an empty denominator.
+        """
+        conn = fixture_conn(TRUNCATED_CORPUS)
+        activity = data.ransomware_activity(conn)
+        view = render.ransomware_activity_view(activity)
+        conn.close()
+
+        b = activity["baseline"]
+        # The corpus-wide comparison IS available; only the subject's is not.
+        self.assertTrue(b["available"])
+        self.assertFalse(b["subject_available"])
+        self.assertEqual((b["prior_peer"], b["current_peer"]), (0, 0))
+
+        self.assertEqual(view["subject_delta"], "")
+        note = view["baseline_note"]
+        # "no change" is reserved for a MEASURED zero, so it must not appear in
+        # the SUBJECT clause, which had nothing to measure. It legitimately
+        # does appear in the all-listings clause of this very note (12 against
+        # 12 is a real zero) — which is exactly why the two must read
+        # differently, and why this assertion is scoped rather than global.
+        subject_clause, _, totals_clause = note.partition("All listings:")
+        self.assertNotIn("no change", view["subject_delta_note"])
+        self.assertNotIn("no change", subject_clause)
+        self.assertIn("no change", totals_clause)
+        self.assertIn("too few listings to compare", note)
+        # The two zeroes are still shown, so the reader sees WHY it is withheld.
+        self.assertIn("none in", note)
+        # ...and the all-listings comparison still reports normally.
+        self.assertIn("12 against 12", note)
+
+    def test_subject_delta_renders_when_the_watchlist_has_listings(self):
+        """The floor withholds an empty comparison; it must not suppress a
+        real one. BASELINE_CORPUS puts watchlist listings in both halves."""
+        conn = fixture_conn(BASELINE_CORPUS)
+        activity = data.ransomware_activity(conn)
+        view = render.ransomware_activity_view(activity)
+        conn.close()
+
+        self.assertTrue(activity["baseline"]["subject_available"])
+        self.assertEqual(view["subject_delta"], "+3")
+        self.assertEqual(view["subject_delta_note"], "+3 vs prior window")
+        self.assertIn("watchlist industry: 5 listings", view["baseline_note"])
 
     def test_odd_interior_drops_the_middle_day_not_an_end(self):
         # Five covered days leaves three interior days. Dropping an END would

@@ -1329,15 +1329,27 @@ def _ransomware_baseline_note(activity):
             "support.")
         return note
     half = b["half_days"]
-    span = "day" if half == 1 else "days"
+    current_span = _span_label(b["current_start"], b["current_end"])
+    prior_span = _span_label(b["prior_start"], b["prior_end"])
+    if b.get("subject_available"):
+        subject = (
+            f"watchlist industry: {b['current_peer']} listings "
+            f"({current_span}) against {b['prior_peer']} ({prior_span}), "
+            f"{_delta_word(b['peer_delta'])}.")
+    else:
+        # Zero on both sides is not "no change" — see the subject floor note in
+        # app/ui/data.py. Say the comparison is unsupported and still show the
+        # two zeroes, so the reader can see WHY rather than take it on trust.
+        # "no change" is reserved for a measured zero (_delta_word), so it is
+        # deliberately not reused here — the two would be indistinguishable.
+        subject = (
+            "watchlist industry: too few listings to compare — none in "
+            f"{current_span} and none in {prior_span}, so no comparison is "
+            "possible on that row.")
     note = (
-        f"Change vs prior window — watchlist industry: {b['current_peer']} "
-        f"listings ({_span_label(b['current_start'], b['current_end'])}) "
-        f"against {b['prior_peer']} "
-        f"({_span_label(b['prior_start'], b['prior_end'])}), "
-        f"{_delta_word(b['peer_delta'])}. "
+        f"Change vs prior window — {subject} "
         f"All listings: {b['current_total']} against {b['prior_total']}, "
-        f"{_delta_word(b['total_delta'])}. Equal {half}-{span} halves.")
+        f"{_delta_word(b['total_delta'])}. Equal {half}-day halves.")
     if boundary:
         note += (
             f" {' and '.join(boundary)} "
@@ -1442,13 +1454,23 @@ def ransomware_activity_view(activity):
             "finding.")
 
     baseline = activity.get("baseline") or {}
+    # The lede's delta is withheld unless the WATCHLIST row itself has a
+    # listing on one side of the split (data._ransomware_baseline). The note
+    # carries the full phrase so the template never has to compose one.
     subject_delta = (_delta_word(baseline["peer_delta"])
-                     if baseline.get("available") else "")
+                     if baseline.get("subject_available") else "")
+    if subject_delta:
+        subject_delta_note = f"{subject_delta} vs prior window"
+    elif baseline.get("available"):
+        subject_delta_note = "too few watchlist listings to compare"
+    else:
+        subject_delta_note = "no prior window"
 
     return {
         "total": total,
         "subject_count": peers,
         "subject_delta": subject_delta,
+        "subject_delta_note": subject_delta_note,
         "subject_rank_note": subject_rank_note,
         "baseline_available": bool(baseline.get("available")),
         "baseline_note": _ransomware_baseline_note(activity),

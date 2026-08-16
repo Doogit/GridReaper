@@ -97,7 +97,7 @@
       <p class="gs-rw-lede-figure">
         <span class="gs-rw-lede-count">{{ ransomware.subject_count }}</span>
         <span class="gs-rw-lede-of">of {{ ransomware.total }} listings</span>
-        {% if ransomware.subject_delta %}<span class="gs-rw-lede-delta">{{ ransomware.subject_delta }} vs prior window</span>{% else %}<span class="gs-rw-lede-delta none">no prior window</span>{% endif %}
+        <span class="gs-rw-lede-delta{% if not ransomware.subject_delta %} none{% endif %}">{{ ransomware.subject_delta_note }}</span>
       </p>
       <p class="gs-rw-note">{{ ransomware.peer_note }}</p>
       <p class="gs-rw-note{% if not ransomware.baseline_available %} gs-rw-nobaseline{% endif %}">{{ ransomware.baseline_note }}</p>

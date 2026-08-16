@@ -2724,6 +2724,16 @@ def _ransomware_baseline(day_total, day_peer):
 
     Both n's are returned, never just the difference: a delta with no
     denominators is unreadable on a corpus this thin.
+
+    ``subject_available`` is a SECOND, narrower floor for the watchlist row.
+    The corpus-wide floor only asks whether two whole interior days exist; it
+    says nothing about whether the watchlist's own industry appeared on any of
+    them. On the live corpus it does not — the watchlist holds 2 listings in
+    100 and both fall on excluded boundary days — so the subject would compare
+    0 against 0 and the lede would render the word "no change". That is not a
+    fabricated rise, but it is a fabricated FINDING: "no change" reads as a
+    measured result when the denominator is zero on both sides. The subject
+    delta is withheld unless at least one watchlist listing lands in one half.
     """
     days = sorted(day_total)
     prior, current, boundary, middle = _baseline_split(days)
@@ -2734,7 +2744,7 @@ def _ransomware_baseline(day_total, day_peer):
     }
     if not prior:
         base.update({
-            "available": False, "half_days": 0,
+            "available": False, "subject_available": False, "half_days": 0,
             "prior_start": "", "prior_end": "",
             "current_start": "", "current_end": "",
             "prior_total": 0, "current_total": 0, "total_delta": None,
@@ -2746,7 +2756,9 @@ def _ransomware_baseline(day_total, day_peer):
     prior_peer = sum(day_peer.get(d, 0) for d in prior)
     current_peer = sum(day_peer.get(d, 0) for d in current)
     base.update({
-        "available": True, "half_days": len(prior),
+        "available": True,
+        "subject_available": (prior_peer + current_peer) > 0,
+        "half_days": len(prior),
         "prior_start": prior[0], "prior_end": prior[-1],
         "current_start": current[0], "current_end": current[-1],
         "prior_total": prior_total, "current_total": current_total,
