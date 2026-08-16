@@ -32,11 +32,16 @@ measurement downward by construction. So the report also lists the
 review-queued organization names and the top fuzzy near-misses with their
 scores, and a hit is an **operator-confirmed** watchlist organization
 regardless of how the resolver classified it; the bands below are applied only
-after that pass. Resolver ``none`` names are the one bucket no listed surface
-covers (a subsidiary name scores below the fuzzy cutoff and returns no
-candidates at all), so ``--unmatched-sample N`` prints the first N of them for
-eyeballing — the live run happens once, under the ingestion lock, and a second
-look should not cost a second fetch.
+after that pass. Resolver ``none`` names would otherwise escape adjudication
+entirely — a subsidiary name scores below the fuzzy cutoff and comes back with
+no candidates and no score — so ``token_overlap`` lists, by default, every
+unmatched organization sharing a distinctive token with a watchlist name or
+alias, with the token shown. ``--unmatched-sample N`` additionally dumps the
+first N of the remainder: the live run happens once, under the ingestion lock,
+and a second look should not cost a second fetch.
+
+Because of that bucket the hit count is a **lower bound** until the operator
+has read the review-queued and token-overlap lists.
 
 THRESHOLDS, agreed before the number was known:
 
@@ -67,19 +72,20 @@ this spike to the wrong band.
 """
 import argparse
 import csv
+import http.client
 import io
 import json
 import re
 import sqlite3
 import sys
 import time
-import urllib.error
 import urllib.request
 from collections import namedtuple
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from pathlib import Path
 
 from app.db.connection import DEFAULT_DB_PATH
-from app.resolve import EntityResolver
+from app.resolve import EntityResolver, normalize
 
 USER_AGENT = "GridSignals/0.1 (+https://github.com/Doogit/GridSignals)"
 POLITENESS_SECONDS = 2.0
@@ -93,7 +99,8 @@ CA_URL = "https://oag.ca.gov/privacy/databreach/list-export"
 # here as "WA untested", never as zero: a state registry only names
 # organizations that notified THAT state's residents, so an unreachable state
 # and a state with nothing to report produce the same empty list.
-WA_URL = "https://data.wa.gov/resource/sb4j-ca4h.json?$limit=50000"
+WA_ROW_CAP = 50000
+WA_URL = f"https://data.wa.gov/resource/sb4j-ca4h.json?$limit={WA_ROW_CAP}"
 
 WINDOW_MONTHS = 24
 NEAR_MISS_LIMIT = 15
@@ -111,6 +118,15 @@ WA_ORG_KEYS = ("name_of_business", "business_name", "organization_name",
 WA_DATE_KEYS = ("datesubmitted", "date_reported_to_ag",
                 "date_reported_to_attorney_general", "date_reported",
                 "reported_date", "date_of_notice", "notice_date")
+
+# Display-only ranking of the resolver's `none` bucket (see token_overlap).
+# These tokens recur across too many energy company names to distinguish
+# anything, so an overlap on one of them is noise, not a lead.
+GENERIC_TOKENS = frozenset({
+    "energy", "company", "inc", "llc", "corp", "holdings", "group",
+    "services", "power", "electric", "gas", "resources", "international",
+    "technologies"})
+MIN_TOKEN_CHARS = 4
 
 NEGATIVE_FINDING = (
     "CA+WA registries do not name watchlist entities at a usable rate; the "
@@ -133,11 +149,22 @@ def _iso_date(text):
     t = "" if text is None else str(text).strip()
     m = _ISO_RE.match(t)
     if m:
-        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        return _valid_date(m.group(1), m.group(2), m.group(3))
     m = _US_RE.match(t)
     if m:
-        return f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+        return _valid_date(m.group(3), m.group(1), m.group(2))
     return ""
+
+
+def _valid_date(year, month, day):
+    """Real calendar date or "". Both registries publish US month-first dates,
+    so a DD/MM/YYYY value cannot be told from M/D/YYYY when the day is <= 12 —
+    but when it is not, the range check refuses it instead of minting a
+    "2026-14-03" that would sort as in-window and count toward the number."""
+    try:
+        return date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        return ""
 
 
 def _clean(name):
@@ -146,7 +173,13 @@ def _clean(name):
 
 def parse_ca_export(text):
     """CA OAG CSV export -> BreachRow list. Organization name and reported date
-    only; every other column is dropped at the row boundary (R10.6)."""
+    only; every other column is dropped at the row boundary (R10.6).
+
+    Both halves of the allowlist fail loud, for the reason spelled out in
+    ``parse_wa_dataset``: a missing date HEADER would make every row undated,
+    every row out of window, and CA's contribution zero — under ``status=ok``.
+    A header that is present with empty values is a different thing and stays
+    tolerated: those rows are genuinely undated and are counted as such."""
     reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
     headers = {(h or "").strip().casefold(): h for h in (reader.fieldnames or [])}
     org_key = headers.get(CA_ORG_HEADER)
@@ -155,13 +188,16 @@ def parse_ca_export(text):
         raise ValueError(
             "CA export has no organization column; headers="
             + repr(sorted(headers)))
+    if not date_key:
+        raise ValueError(
+            "CA export has no reported-date column; headers="
+            + repr(sorted(headers)))
     rows = []
     for rec in reader:
         org = _clean(rec.get(org_key))
         if not org:
             continue
-        rows.append(BreachRow("CA", org,
-                              _iso_date(rec.get(date_key) if date_key else "")))
+        rows.append(BreachRow("CA", org, _iso_date(rec.get(date_key))))
     return rows
 
 
@@ -219,6 +255,51 @@ def window_cutoff(now):
         return now.replace(year=year, day=28).date().isoformat()
 
 
+def _distinctive_tokens(text):
+    return {t for t in normalize(text).split()
+            if len(t) >= MIN_TOKEN_CHARS and t not in GENERIC_TOKENS}
+
+
+def token_overlap(conn, organizations, names):
+    """Rank the resolver's ``none`` bucket for the adjudication pass.
+
+    DISPLAY ONLY — this decides nothing and resolves nothing; it is a reading
+    order over names the resolver already declined (KTD5's "do not add a second
+    matching path" governs matching, and no match is made here). It exists
+    because ``none`` is the one bucket with no handle on it: ``matched`` and
+    ``review`` names are listed with entity ids and scores, but a name below
+    the fuzzy cutoff comes back with no candidates at all, so listing it
+    alphabetically buries it among off-list third parties. The shape KTD5
+    predicts — an operating subsidiary ("Southern California Edison Company")
+    against a watchlist parent with no alias ("Edison International") — lands
+    exactly here and shares exactly one distinctive token.
+
+    Returns one entry per organization sharing a non-generic token of >=
+    MIN_TOKEN_CHARS with an active entity's name or alias, most shared tokens
+    first."""
+    active, index = set(), {}
+    for r in conn.execute("SELECT entity_id, name FROM watchlist_entities "
+                          "WHERE active = 1"):
+        active.add(r["entity_id"])
+        for token in _distinctive_tokens(r["name"]):
+            index.setdefault(token, set()).add(r["entity_id"])
+    for r in conn.execute("SELECT entity_id, alias FROM entity_aliases"):
+        if r["entity_id"] not in active:
+            continue
+        for token in _distinctive_tokens(r["alias"]):
+            index.setdefault(token, set()).add(r["entity_id"])
+
+    out = []
+    for org in organizations:
+        shared = sorted(_distinctive_tokens(org) & set(index))
+        if not shared:
+            continue
+        eids = sorted({eid for token in shared for eid in index[token]})
+        out.append({"organization": org, "tokens": shared,
+                    "entities": [(eid, names.get(eid, "")) for eid in eids]})
+    return sorted(out, key=lambda e: (-len(e["tokens"]), e["organization"]))
+
+
 def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
     """Run every in-window organization name through the EntityResolver and
     derive the pinned hit count. ``conn`` is read-only; nothing is written and
@@ -244,6 +325,18 @@ def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
             continue
         st["in_window"] += 1
         orgs.setdefault(row.organization, set()).add(row.state)
+
+    # A present column whose VALUES do not parse is the same silent zero as a
+    # missing column, one layer down: the allowlist proves the field exists,
+    # never that _iso_date understood it. A registry that switches to
+    # "March 4, 2026" (or to DD/MM/YYYY, which the M/D branch mis-reads rather
+    # than rejects) leaves every row undated and the hit count at 0 while the
+    # status still reads ok. Degrade it so recommendation() refuses to call
+    # that a measured zero.
+    for state, st in states.items():
+        if st["status"] == "ok" and st["rows"] and st["undated"] == st["rows"]:
+            st["status"] = (f"DATES UNPARSEABLE (all {st['rows']} rows undated "
+                            "-- the reported-date column parsed to nothing)")
 
     names = {r["entity_id"]: r["name"] for r in
              conn.execute("SELECT entity_id, name FROM watchlist_entities")}
@@ -271,10 +364,19 @@ def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
         else:
             unmatched.append(org)
 
+    # fuzzy_below_threshold only: it is the one review reason whose confidence
+    # is a computed similarity ratio. collision_term / ambiguous_name /
+    # ambiguous_context all carry the constant REVIEW_THRESHOLD, so ranking
+    # them here would print 0.75 under a "score desc" heading as if it measured
+    # resemblance. They are still listed in full under review-queued names.
     near_misses = sorted(
-        (r for r in review if r["candidates"]),
+        (r for r in review
+         if r["reason"] == "fuzzy_below_threshold" and r["candidates"]),
         key=lambda r: (-max(c[2] for c in r["candidates"]), r["organization"])
     )[:NEAR_MISS_LIMIT]
+
+    overlap = token_overlap(conn, sorted(unmatched), names)
+    listed = {e["organization"] for e in overlap}
 
     hit_list = [{"entity_id": h["entity_id"], "entity_name": h["entity_name"],
                  "states": sorted(h["states"]), "names": sorted(h["names"]),
@@ -294,7 +396,11 @@ def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
         "review": sorted(review, key=lambda r: r["organization"]),
         "near_misses": near_misses,
         "unmatched_count": len(unmatched),
-        "unmatched_sample": sorted(unmatched)[:max(0, unmatched_sample)],
+        "unmatched_token_overlap": overlap,
+        # the REMAINDER: a name already listed above does not need listing
+        # twice, and the sample exists to reach the names nothing else reaches.
+        "unmatched_sample": [o for o in sorted(unmatched)
+                             if o not in listed][:max(0, unmatched_sample)],
         "recommendation": recommendation(len(hit_list), states),
     }
 
@@ -329,9 +435,10 @@ def format_report(result):
            f"HIT COUNT (pinned definition): {result['hit_count']}",
            "  a hit is a distinct watchlist entity named at least once in the "
            "CA or WA registry",
-           "  with a reported date in the trailing 24 months; an entity named "
-           "in both states counts",
-           "  once. The counts below are context, not the threshold quantity.",
+           f"  with a reported date in the trailing {WINDOW_MONTHS} months; an "
+           "entity named in both states",
+           "  counts once. The counts below are context, not the threshold "
+           "quantity.",
            ""]
     out.append("context")
     for state in sorted(result["states"]):
@@ -366,27 +473,49 @@ def format_report(result):
         eid, name, score = max(r["candidates"], key=lambda c: c[2])
         out.append(f"  {score}  \"{r['organization']}\" ~ {eid} {name}")
 
+    overlap = result["unmatched_token_overlap"]
     out += ["", f"unmatched organizations: {result['unmatched_count']}",
-            "  names are not listed by default -- off-list third parties are "
-            "not this product's",
-            "  business, and a resolver 'none' carries no score to rank by. "
-            "This bucket is the",
-            "  one adjudication surface the lists above do not cover; use "
-            "--unmatched-sample N."]
+            f"  ADJUDICATE THESE TOO: {len(overlap)} sharing a distinctive "
+            "token with a watchlist name",
+            "  or alias, listed below. A resolver 'none' carries no score, so "
+            "token",
+            "  overlap is the only handle on this bucket, and it is where an "
+            "operating subsidiary",
+            "  lands when the parent has no alias (KTD5). Expect noise: a "
+            "shared token is not a",
+            "  match, it is a name worth one second of a human's attention. "
+            "The remainder are",
+            "  counted only; --unmatched-sample N dumps them raw."]
+    for e in overlap:
+        ents = "; ".join(f"{eid} {name}" for eid, name in e["entities"])
+        out.append(f"  ? \"{e['organization']}\"  "
+                   f"shares={','.join(e['tokens'])}  ~ {ents}")
     for org in result["unmatched_sample"]:
-        out.append(f"  ? \"{org}\"")
+        out.append(f"  . \"{org}\"")
 
     out += ["", "RECOMMENDATION (provisional -- re-band after the adjudication "
             "pass)", "  " + result["recommendation"], ""]
     return "\n".join(out)
 
 
+def read_only_connect(db_path):
+    """Open the store ``mode=ro`` — the containment the ``#74`` precedent asks
+    for, and the reason this harness cannot write even by accident.
+
+    The path goes through ``Path.as_uri()`` rather than being pasted into an
+    f-string. In a SQLite URI a ``#`` starts the fragment, so a db path
+    containing one truncates the URI and takes ``?mode=ro`` with it — the
+    connection then opens READ-WRITE with no error, and the one guarantee this
+    module makes about the store is silently gone. ``as_uri()`` percent-encodes
+    it."""
+    return sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro",
+                           uri=True)
+
+
 def report(db_path, rows, state_status=None, now=None, out=sys.stdout,
            unmatched_sample=0):
-    """Analyze ``rows`` against the store and print the report. The store is
-    opened ``mode=ro`` via a URI connection: the harness cannot write even by
-    accident, which is the containment the ``#74`` precedent asks for."""
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    """Analyze ``rows`` against the store and print the report."""
+    conn = read_only_connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         result = analyze(conn, rows, state_status=state_status, now=now,
@@ -411,17 +540,35 @@ def collect(ca_url=CA_URL, wa_url=WA_URL, sleep=POLITENESS_SECONDS):
     ``(rows, state_status)``; a state that fails contributes no rows and a
     non-"ok" status, never a silent zero."""
     rows, status = [], {}
-    for state, url, accept, parse in (
-            ("CA", ca_url, "text/csv", parse_ca_export),
-            ("WA", wa_url, "application/json", parse_wa_dataset)):
-        if rows or status:
+    for state, url, accept, parse, cap in (
+            ("CA", ca_url, "text/csv", parse_ca_export, None),
+            ("WA", wa_url, "application/json", parse_wa_dataset, WA_ROW_CAP)):
+        if status:
             time.sleep(sleep)
         try:
-            rows.extend(parse(fetch(url, accept)))
-            status[state] = "ok"
-        except (urllib.error.URLError, TimeoutError, ValueError,
-                UnicodeError) as exc:
+            parsed = parse(fetch(url, accept))
+        # The whole point of a per-state status is that one dead source cannot
+        # cost the other its measurement, so this catches everything a fetch or
+        # a parse can raise rather than an enumerated few: URLError and
+        # TimeoutError are OSError subclasses, http.client covers a truncated
+        # or malformed response, and JSONDecodeError/UnicodeError are
+        # ValueError subclasses. An escaping exception would abort main()
+        # before one report line printed and throw away a good CA fetch.
+        except (OSError, http.client.HTTPException, ValueError,
+                csv.Error) as exc:
             status[state] = f"FAILED ({type(exc).__name__}: {exc})"
+            continue
+        rows.extend(parsed)
+        # Socrata returns exactly $limit rows when the dataset is larger, with
+        # no error and no marker, so a truncated page is indistinguishable from
+        # a complete one -- "trust the array you got, not the count the API
+        # advertised" (docs/solutions/store-only-fetcher-dedup-and-quirks.md).
+        # A truncated fetch is a partial measurement, never a measured zero.
+        if cap is not None and len(parsed) >= cap:
+            status[state] = (f"TRUNCATED (hit the {cap}-row page limit; refetch "
+                             "with a higher $limit before trusting the count)")
+        else:
+            status[state] = "ok"
     return rows, status
 
 
@@ -444,6 +591,10 @@ def main(argv=None):
     # so a cp1252 console must not turn an accented name into the reason the
     # measurement is lost.
     sys.stdout.reconfigure(errors="replace")
+    # Prove the store opens read-only BEFORE spending the network run: a typo
+    # in --db discovered after the fetch costs the one live pass this spike
+    # gets, and the run is sequenced behind the ingestion lock.
+    read_only_connect(args.db).close()
     rows, status = collect(args.ca_url, args.wa_url)
     report(args.db, rows, state_status=status,
            unmatched_sample=args.unmatched_sample)

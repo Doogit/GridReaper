@@ -13,7 +13,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from app.db.migrate import apply_migrations
@@ -29,6 +29,8 @@ ENTITIES = [
     ("E0004", "Dominion Energy", "0000715957", "D"),
     ("E0005", "American Electric Power", "0000004904", "AEP"),
     ("E0008", "PG&E", "0001004980", "PCG"),
+    # a parent with no alias for its operating subsidiary -- the KTD5 shape
+    ("E0031", "Edison International", "0000827052", "EIX"),
 ]
 ALIASES = [("E0008", "Pacific Gas and Electric")]
 COLLISIONS = [("E0004", "Dominion")]
@@ -111,6 +113,18 @@ class TestParsers(unittest.TestCase):
         with self.assertRaises(ValueError):
             probe.parse_ca_export('"Reported Date"\n"03/04/2026"\n')
 
+    def test_ca_export_without_date_column_raises_with_observed_headers(self):
+        """The CA twin of the WA regression: a missing date HEADER would make
+        every CA row undated, every row out of window, and CA's contribution
+        zero, under status=ok. Both halves of the allowlist fail loud."""
+        with self.assertRaises(ValueError) as ctx:
+            probe.parse_ca_export(
+                '"Organization Name","Date(s) of Breach (if known)"\n'
+                '"Acme Power","01/02/2026"\n')
+        message = str(ctx.exception)
+        self.assertIn("reported-date", message)
+        self.assertIn("date(s) of breach (if known)", message)
+
     def test_wa_dataset_reads_the_real_columns_and_drops_individual_fields(self):
         """Real column names, and the calendar_date time component stripped."""
         rows = probe.parse_wa_dataset(WA_JSON)
@@ -159,6 +173,14 @@ class TestParsers(unittest.TestCase):
         # unrecognised or absent -> undated, never guessed
         self.assertEqual(probe._iso_date(None), "")
         self.assertEqual(probe._iso_date("March 2026"), "")
+
+    def test_out_of_range_date_is_undated_not_a_fabricated_month(self):
+        """A DD/MM/YYYY value with day > 12 must fail closed. Formatting it
+        blind produced "2026-14-03", which sorts as in-window and would have
+        counted toward the number."""
+        self.assertEqual(probe._iso_date("14/03/2026"), "")
+        self.assertEqual(probe._iso_date("2026-13-45"), "")
+        self.assertEqual(probe._iso_date("02/30/2026"), "")
 
 
 class TestWindow(unittest.TestCase):
@@ -236,6 +258,16 @@ class TestAnalysis(unittest.TestCase):
         self.assertIn("American Electric Power of Ohio", self.text)
         self.assertIn(str(score), self.text)
 
+    def test_near_misses_exclude_reasons_with_no_computed_similarity(self):
+        """collision_term / ambiguous_* carry the constant REVIEW_THRESHOLD,
+        not a similarity ratio, so printing them under "score desc" would
+        publish 0.75 as if it measured resemblance. They stay in the
+        review-queued list, which is where an adjudicator needs them."""
+        self.assertEqual([r["organization"] for r in self.result["near_misses"]],
+                         ["American Electric Power of Ohio"])
+        self.assertIn("Dominion", [r["organization"]
+                                   for r in self.result["review"]])
+
     def test_off_list_organization_is_counted_but_not_named(self):
         self.assertEqual(self.result["unmatched_count"], 1)
         self.assertEqual(self.result["unmatched_sample"], [])
@@ -252,6 +284,19 @@ class TestAnalysis(unittest.TestCase):
                                unmatched_sample=5)
         self.assertEqual(result["unmatched_sample"], ["Zephyr Bakery Collective"])
 
+    def test_unmatched_sample_holds_the_remainder_not_a_second_copy(self):
+        """The sample reaches the names nothing else reaches; a name already
+        listed by token overlap is not printed twice."""
+        rows = fixture_rows() + [probe.BreachRow(
+            "CA", "Southern California Edison Company", "2026-01-05")]
+        result = probe.analyze(self.conn, rows, now=NOW, unmatched_sample=5)
+        self.assertEqual([e["organization"]
+                          for e in result["unmatched_token_overlap"]],
+                         ["Southern California Edison Company"])
+        self.assertEqual(result["unmatched_sample"],
+                         ["Zephyr Bakery Collective"])
+        self.assertEqual(result["unmatched_count"], 2)
+
     def test_report_wording_is_ascii(self):
         """The live run prints to a Windows console; a smart dash in the
         report's own wording would come back mojibake in the PR body."""
@@ -261,6 +306,165 @@ class TestAnalysis(unittest.TestCase):
         self.assertIn("HIT COUNT (pinned definition): 2", self.text)
         self.assertIn("trailing 24 months", self.text)
         self.assertIn("reported_date >= 2024-08-16", self.text)
+
+
+class TestWindowBoundary(unittest.TestCase):
+    """The window is the single choice that can swing the number by ~5x and
+    cross the build line on its own (CA reaches back to 2024-01, WA to
+    2015-07), so its inclusive edge gets a fixture sitting exactly on it. The
+    dates are derived from window_cutoff so the pair stays adjacent to the
+    boundary whatever `now` is; TestWindow pins the cutoff's value itself."""
+
+    def _analyze(self, reported_date):
+        conn = fixture_conn()
+        try:
+            return probe.analyze(
+                conn, [probe.BreachRow("CA", "Dominion Energy", reported_date)],
+                state_status={"CA": "ok"}, now=NOW)
+        finally:
+            conn.close()
+
+    def test_row_exactly_on_the_cutoff_counts(self):
+        result = self._analyze(probe.window_cutoff(NOW))
+        self.assertEqual(result["states"]["CA"]["in_window"], 1)
+        self.assertEqual(result["hit_count"], 1)
+
+    def test_row_one_day_before_the_cutoff_does_not_count(self):
+        day_before = (date.fromisoformat(probe.window_cutoff(NOW))
+                      - timedelta(days=1)).isoformat()
+        result = self._analyze(day_before)
+        self.assertEqual(result["states"]["CA"]["in_window"], 0)
+        self.assertEqual(result["hit_count"], 0)
+
+
+class TestUnparseableDates(unittest.TestCase):
+    """A column that EXISTS but whose values do not parse is the same silent
+    zero one layer down: the allowlist proves the field is there, never that
+    _iso_date understood it. Left alone, the operator reads a STOP band off a
+    parsing failure."""
+
+    CSV = ('"Organization Name","Reported Date"\n'
+           '"Dominion Energy","March 4, 2026"\n'
+           '"Pacific Gas and Electric Company","14/03/2026"\n')
+
+    @classmethod
+    def setUpClass(cls):
+        cls.conn = fixture_conn()
+        cls.result = probe.analyze(cls.conn, probe.parse_ca_export(cls.CSV),
+                                   state_status={"CA": "ok"}, now=NOW)
+        cls.text = probe.format_report(cls.result)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+
+    def test_state_status_degrades_when_every_row_is_undated(self):
+        self.assertEqual(self.result["states"]["CA"]["rows"], 2)
+        self.assertEqual(self.result["states"]["CA"]["undated"], 2)
+        self.assertEqual(self.result["states"]["CA"]["in_window"], 0)
+        self.assertNotEqual(self.result["states"]["CA"]["status"], "ok")
+        self.assertIn("DATES UNPARSEABLE", self.result["states"]["CA"]["status"])
+
+    def test_the_zero_is_reported_as_partial_never_as_a_stop_band(self):
+        self.assertEqual(self.result["hit_count"], 0)
+        self.assertIn("PARTIAL MEASUREMENT", self.result["recommendation"])
+        self.assertIn("PARTIAL MEASUREMENT", self.text)
+
+    def test_the_undated_counter_renders_in_the_report(self):
+        # the live WA defect presented as `in_window=0 undated=1629`; the
+        # counter that made it visible has to be on the page.
+        self.assertIn("in_window=0  undated=2", self.text)
+
+
+class TestTokenOverlap(unittest.TestCase):
+    """The resolver's `none` bucket is the one adjudication surface with no
+    score to rank by, and the KTD5 shape -- an operating subsidiary against a
+    parent with no alias -- lands squarely in it."""
+
+    def test_subsidiary_surfaces_by_its_shared_distinctive_token(self):
+        conn = fixture_conn()
+        try:
+            result = probe.analyze(
+                conn,
+                [probe.BreachRow("CA", "Southern California Edison Company",
+                                 "2026-01-05")],
+                state_status={"CA": "ok"}, now=NOW)
+        finally:
+            conn.close()
+        self.assertEqual(result["hit_count"], 0)      # the resolver declines it
+        self.assertEqual(result["unmatched_count"], 1)
+        entry = result["unmatched_token_overlap"][0]
+        self.assertEqual(entry["organization"],
+                         "Southern California Edison Company")
+        self.assertEqual(entry["tokens"], ["edison"])
+        self.assertIn(("E0031", "Edison International"), entry["entities"])
+        text = probe.format_report(result)
+        self.assertIn("Southern California Edison Company", text)
+        self.assertIn("shares=edison", text)
+
+    def test_a_generic_token_alone_is_not_an_overlap(self):
+        conn = fixture_conn()
+        try:
+            self.assertEqual(
+                probe.token_overlap(conn, ["Riverbend Energy Company"], {}), [])
+            self.assertTrue(
+                probe.token_overlap(conn, ["Riverbend Edison Company"], {}))
+        finally:
+            conn.close()
+
+
+class TestCollect(unittest.TestCase):
+    """collect() is the only place a live failure can be absorbed, so its
+    per-state status is what keeps one dead source from costing the other its
+    measurement. Hermetic: probe.fetch is replaced, no network."""
+
+    def _collect(self, ca, wa):
+        def fake_fetch(url, accept):
+            payload = ca if "oag" in url else wa
+            if isinstance(payload, Exception):
+                raise payload
+            return payload
+
+        original = probe.fetch
+        probe.fetch = fake_fetch
+        try:
+            return probe.collect("https://oag.example/list-export",
+                                 "https://data.example/wa.json", sleep=0)
+        finally:
+            probe.fetch = original
+
+    def test_a_dropped_wa_connection_keeps_the_ca_rows(self):
+        # ConnectionResetError is an OSError but NOT a URLError, so the old
+        # enumerated tuple let it escape and abort the run after a good CA
+        # fetch, before a single report line printed.
+        rows, status = self._collect(CA_CSV, ConnectionResetError("dropped"))
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(status["CA"], "ok")
+        self.assertIn("FAILED", status["WA"])
+        self.assertIn("ConnectionResetError", status["WA"])
+
+    def test_a_malformed_ca_export_does_not_abort_the_wa_fetch(self):
+        rows, status = self._collect('"Organization Name"\n"Acme Power"\n',
+                                     WA_JSON)
+        self.assertIn("FAILED", status["CA"])
+        self.assertEqual(status["WA"], "ok")
+        self.assertEqual([r.state for r in rows], ["WA", "WA"])
+
+    def test_a_truncated_socrata_page_is_not_ok(self):
+        # Socrata returns exactly $limit rows when the dataset is larger, with
+        # no error and no marker: a truncated fetch must not read as complete.
+        original_cap = probe.WA_ROW_CAP
+        probe.WA_ROW_CAP = 2
+        try:
+            rows, status = self._collect(CA_CSV, WA_JSON)
+        finally:
+            probe.WA_ROW_CAP = original_cap
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(status["CA"], "ok")
+        self.assertIn("TRUNCATED", status["WA"])
+        self.assertIn("PARTIAL MEASUREMENT",
+                      probe.recommendation(2, {"CA": {"status": status["CA"]},
+                                               "WA": {"status": status["WA"]}}))
 
 
 class TestRecommendation(unittest.TestCase):
@@ -317,6 +521,32 @@ class TestContainment(unittest.TestCase):
                         .fetchone()[0], 0, f"{table} was written by the probe")
             finally:
                 check.close()
+
+    def test_read_only_connect_survives_a_uri_fragment_in_the_path(self):
+        """A '#' starts the fragment in a SQLite URI, so pasting the path into
+        an f-string truncated it and took ?mode=ro with it -- the connection
+        then opened READ-WRITE, silently, and the only guarantee this module
+        makes about the store was gone."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "gridsignals#1.db")
+            conn = sqlite3.connect(db_path)
+            apply_migrations(conn)
+            seed(conn)
+            conn.close()
+
+            ro = probe.read_only_connect(db_path)
+            try:
+                with self.assertRaises(sqlite3.OperationalError):
+                    ro.execute("INSERT INTO watchlist_entities "
+                               "(entity_id, name) VALUES ('EZZZ', 'Written')")
+            finally:
+                ro.close()
+
+            out = io.StringIO()
+            probe.report(db_path, fixture_rows(),
+                         state_status={"CA": "ok", "WA": "ok"}, now=NOW,
+                         out=out)
+            self.assertIn("HIT COUNT (pinned definition): 2", out.getvalue())
 
     def test_module_uses_a_read_only_connection_and_no_dml(self):
         self.assertIn("mode=ro", MODULE_SRC)
