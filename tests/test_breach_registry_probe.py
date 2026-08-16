@@ -45,17 +45,22 @@ CA_CSV = (
     '"Zephyr Bakery Collective","","05/05/2026"\n'          # off-list
 )
 
-# WA Socrata shape, including two resident/individual columns that must never
-# reach the analysis or the report (R10.6).
+# WA Socrata shape, using the dataset's REAL column names (verified 2026-08-16
+# from https://data.wa.gov/api/views/sb4j-ca4h.json): the organization is
+# `name` and the reported date is `datesubmitted`, a calendar_date carrying a
+# time component. `dateaware` describes the breach, not the notification, and
+# must not be read as the reported date. The two resident/individual columns
+# must never reach the analysis or the report (R10.6).
 PII_COUNT = "4210"
 PII_NAME = "Jane Q Public"
 WA_JSON = json.dumps([
-    {"name_of_business": "Dominion Energy, Inc.",
-     "date_reported": "2026-01-15T00:00:00.000",
-     "number_of_washingtonians_affected": PII_COUNT,
-     "individual_contact_name": PII_NAME},
-    {"name_of_business": "Zephyr Bakery Collective",
-     "date_reported": "2015-08-01T00:00:00.000"},        # outside the window
+    {"name": "Dominion Energy, Inc.",
+     "datesubmitted": "2026-01-15T00:00:00.000",
+     "dateaware": "2025-11-02T00:00:00.000",
+     "washingtoniansaffected": PII_COUNT,
+     "contactname": PII_NAME},
+    {"name": "Zephyr Bakery Collective",
+     "datesubmitted": "2015-08-01T00:00:00.000"},        # outside the window
 ])
 
 
@@ -106,20 +111,54 @@ class TestParsers(unittest.TestCase):
         with self.assertRaises(ValueError):
             probe.parse_ca_export('"Reported Date"\n"03/04/2026"\n')
 
-    def test_wa_dataset_drops_individual_fields(self):
+    def test_wa_dataset_reads_the_real_columns_and_drops_individual_fields(self):
+        """Real column names, and the calendar_date time component stripped."""
         rows = probe.parse_wa_dataset(WA_JSON)
         self.assertEqual(rows[0], probe.BreachRow("WA", "Dominion Energy, Inc.",
                                                   "2026-01-15"))
         blob = repr(rows)
         self.assertNotIn(PII_NAME, blob)
         self.assertNotIn(PII_COUNT, blob)
+        self.assertNotIn("2025-11-02", blob)   # dateaware is not a reported date
 
-    def test_wa_dataset_with_unknown_fields_raises_with_observed_keys(self):
+    def test_wa_dataset_prefers_datesubmitted_over_speculative_date_keys(self):
+        rows = probe.parse_wa_dataset(json.dumps(
+            [{"name": "Acme Power", "datesubmitted": "2026-01-15",
+              "date_reported": "2019-01-15"}]))
+        self.assertEqual(rows[0].reported_date, "2026-01-15")
+
+    def test_wa_dataset_with_unknown_org_field_raises_with_observed_keys(self):
         """A renamed Socrata column must fail loudly: a silent empty parse is
         indistinguishable from a measured zero, and the live run happens once."""
         with self.assertRaises(ValueError) as ctx:
-            probe.parse_wa_dataset('[{"entity_label": "Acme Power"}]')
+            probe.parse_wa_dataset(
+                '[{"entity_label": "Acme Power", "datesubmitted": "2026-01-15"}]')
         self.assertIn("entity_label", str(ctx.exception))
+
+    def test_wa_dataset_with_unknown_date_field_raises_with_observed_keys(self):
+        """REGRESSION (live run, 2026-08-16): with no recognised date column
+        every row parsed as undated, so 1,629 real WA rows produced
+        in_window=0 and a hit count of 0 under status=ok. A missing date half
+        of the allowlist must fail as loudly as a missing org half -- an
+        unparseable dataset is untested, not zero."""
+        payload = ('[{"name": "Acme Power", "dateaware": "2026-01-15", '
+                   '"datestart": "2026-01-01"}]')
+        with self.assertRaises(ValueError) as ctx:
+            probe.parse_wa_dataset(payload)
+        message = str(ctx.exception)
+        self.assertIn("reported-date", message)
+        self.assertIn("dateaware", message)
+        self.assertIn("name", message)
+
+
+    def test_iso_date_handles_calendar_date_and_us_formats(self):
+        # Socrata calendar_date arrives with a time component; CA renders M/D/Y.
+        self.assertEqual(probe._iso_date("2025-03-14T00:00:00.000"), "2025-03-14")
+        self.assertEqual(probe._iso_date("2025-03-14"), "2025-03-14")
+        self.assertEqual(probe._iso_date("3/4/2026"), "2026-03-04")
+        # unrecognised or absent -> undated, never guessed
+        self.assertEqual(probe._iso_date(None), "")
+        self.assertEqual(probe._iso_date("March 2026"), "")
 
 
 class TestWindow(unittest.TestCase):

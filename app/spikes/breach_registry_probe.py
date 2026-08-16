@@ -88,11 +88,12 @@ HTTP_TIMEOUT = 120
 # California DOJ/OAG breach list, CSV export. Header inspected at planning time:
 # "Organization Name","Date(s) of Breach (if known)","Reported Date".
 CA_URL = "https://oag.ca.gov/privacy/databreach/list-export"
-# Washington AG breach notifications on data.wa.gov (Socrata). The dataset id
-# was NOT verified at planning time — only that the dataset is published as
-# Socrata JSON/XML/CSV — so treat a 404 here as "WA untested", not as zero, and
-# re-run with --wa-url once the id is confirmed.
-WA_URL = "https://data.wa.gov/resource/sb4j-ce6q.json?$limit=50000"
+# Washington AG breach notifications on data.wa.gov (Socrata). Dataset id
+# sb4j-ca4h, verified 2026-08-16 against the catalog API. Treat a fetch failure
+# here as "WA untested", never as zero: a state registry only names
+# organizations that notified THAT state's residents, so an unreachable state
+# and a state with nothing to report produce the same empty list.
+WA_URL = "https://data.wa.gov/resource/sb4j-ca4h.json?$limit=50000"
 
 WINDOW_MONTHS = 24
 NEAR_MISS_LIMIT = 15
@@ -102,9 +103,14 @@ CA_ORG_HEADER = "organization name"
 CA_DATE_HEADER = "reported date"
 WA_ORG_KEYS = ("name_of_business", "business_name", "organization_name",
                "company_name", "organization", "name")
-WA_DATE_KEYS = ("date_reported_to_ag", "date_reported_to_attorney_general",
-                "date_reported", "reported_date", "date_of_notice",
-                "notice_date")
+# datesubmitted first: it is the verified WA column ("the date the notifying
+# entity submitted their notice to the Attorney General's Office"), the direct
+# analogue of CA's "Reported Date". The rest are speculative fallbacks and must
+# never outrank it. dateaware/datestart/dateend are also published and are NOT
+# reported dates — they describe the breach, not the notification.
+WA_DATE_KEYS = ("datesubmitted", "date_reported_to_ag",
+                "date_reported_to_attorney_general", "date_reported",
+                "reported_date", "date_of_notice", "notice_date")
 
 NEGATIVE_FINDING = (
     "CA+WA registries do not name watchlist entities at a usable rate; the "
@@ -124,7 +130,7 @@ def _iso_date(text):
     floating timestamps ("2024-03-01T00:00:00.000") and the US M/D/YYYY the CA
     export renders are both accepted; anything else is treated as undated and
     counted separately rather than guessed at."""
-    t = (text or "").strip()
+    t = "" if text is None else str(text).strip()
     m = _ISO_RE.match(t)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
@@ -162,11 +168,16 @@ def parse_ca_export(text):
 def parse_wa_dataset(text):
     """WA AG Socrata JSON -> BreachRow list, same two-field allowlist.
 
-    The dataset's field names were not verifiable offline, so the org/date keys
-    are chosen from the allowlists above by inspecting the records. When none
-    match, this raises with the observed keys rather than returning an empty
-    list: a silent zero from a renamed column would be indistinguishable from a
-    measured zero, and the live run happens once."""
+    The org/date keys are chosen from the allowlists above by inspecting the
+    records. When EITHER is unmatched this raises with the observed keys.
+    Both halves must fail loud, and the date half is the one that bites: a
+    missing organization column yields no rows and is obvious, while a missing
+    date column yields rows that are all undated, all out of window, and a hit
+    count of zero — under a report that still says ``status=ok``. That is a
+    silent zero wearing a measured zero's clothes, and it is exactly the
+    failure this unit exists to prevent. (Observed live: the dataset publishes
+    ``datesubmitted``, and an allowlist without it turned 1,629 real rows into
+    ``in_window=0 undated=1629``.)"""
     data = json.loads(text)
     if not isinstance(data, list):
         raise ValueError("WA dataset is not a JSON array of records")
@@ -181,6 +192,9 @@ def parse_wa_dataset(text):
     if not org_key:
         raise ValueError("WA dataset has no recognised organization field; "
                          "keys=" + repr(sorted(keys)))
+    if not date_key:
+        raise ValueError("WA dataset has no recognised reported-date field; "
+                         "keys=" + repr(sorted(keys)))
     rows = []
     for rec in data:
         if not isinstance(rec, dict):
@@ -189,9 +203,7 @@ def parse_wa_dataset(text):
         org = _clean(lowered.get(org_key))
         if not org:
             continue
-        rows.append(BreachRow("WA", org,
-                              _iso_date(lowered.get(date_key) if date_key
-                                        else "")))
+        rows.append(BreachRow("WA", org, _iso_date(lowered.get(date_key))))
     return rows
 
 
