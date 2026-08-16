@@ -12,7 +12,9 @@ Covered here: a synthesized evidence text is quarantined to the review queue
 while the run completes and its sibling signals still land; the same for a
 synthesized headline; payload-verbatim and classifier-authored text pass; a real
 leadership signal naming a CISO passes; quarantine is idempotent under --force;
-and the guard fails OPEN when it cannot read the classifier source.
+the guard fails OPEN when it cannot read the classifier source; and it also
+judges the text a version bump re-mints onto an ALREADY STORED card, leaving
+the stored wording standing when the replacement is unprovenanced.
 
 Hermetic: real migrations against in-memory SQLite, FK on, no network.
 """
@@ -99,10 +101,10 @@ class GuardTestCase(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def run_fake(self, candidates_by_event, **kwargs):
+    def run_fake(self, candidates_by_event, version="clf/1.0", **kwargs):
         return run_classifier(self.conn, "clf_test", SOURCE,
                               make_classifier(candidates_by_event),
-                              "clf/1.0", **kwargs)
+                              version, **kwargs)
 
     def signals(self):
         return self.conn.execute(
@@ -179,6 +181,48 @@ class TestQuarantine(GuardTestCase):
         self.assertEqual(row["disposed_at"], "2026-08-02T00:00:00+00:00")
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM entity_match_decisions").fetchone()[0], 0)
+
+
+class TestRefreshIsGuarded(GuardTestCase):
+    """A version bump re-mints the TEXT of a card the rule still emits, so the
+    guard runs on that rewrite too. Before the refresh path, a stored card was
+    returned on its signal_id before the guard and never judged - which is why
+    cards minted before the guard existed had never been checked at all."""
+
+    def test_unprovenanced_replacement_leaves_the_stored_text_standing(self):
+        """The old wording is worse than the new one; unprovenanced text is
+        worse than both. The card survives - it is still emitted, so it is not
+        retracted either."""
+        self.run_fake({f"{SOURCE}:1": [peer_candidate(
+            "Sector peer filed a corrected outage report", PAYLOAD_TITLE)]})
+        stored = self.signals()[0]
+
+        s = self.run_fake({f"{SOURCE}:1": [peer_candidate(
+            f"Sector peer {SYNTHESIZED} disclosed an incident",
+            PAYLOAD_TITLE)]}, version="clf/1.1")
+
+        self.assertEqual((s["quarantined"], s["signals_refreshed"]), (1, 0))
+        self.assertEqual(s["signals_retracted"], 0)
+        now = self.signals()[0]
+        self.assertEqual(now["headline"], stored["headline"])
+        self.assertEqual(now["status"], "active")
+        rows = self.quarantine_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertIn("headline", rows[0]["reason"])
+        self.assertIn(SYNTHESIZED.lower(), rows[0]["reason"])
+        # Stale text keeps the R3.7 provenance drift visible on the card.
+        self.assertEqual(self.conn.execute(
+            "SELECT DISTINCT extraction_version FROM signal_evidence "
+            "WHERE signal_id = ?", (now["signal_id"],)).fetchone()[0],
+            "clf/1.0")
+
+    def test_a_provenanced_rewording_reaches_the_stored_card(self):
+        self.run_fake({f"{SOURCE}:1": [peer_candidate(
+            "Sector peer filed a corrected outage report", PAYLOAD_TITLE)]})
+        s = self.run_fake({f"{SOURCE}:1": [peer_candidate(
+            AUTHORED, PAYLOAD_TITLE)]}, version="clf/1.1")
+        self.assertEqual((s["quarantined"], s["signals_refreshed"]), (0, 1))
+        self.assertEqual(self.signals()[0]["headline"], AUTHORED)
 
 
 class TestProvenancedTextPasses(GuardTestCase):
