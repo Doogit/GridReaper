@@ -430,13 +430,22 @@ class TestPendingRowTrust(ReviewTestBase):
         self.assertIn("not the whole record", dom)
         self.assertNotIn("Leak-site listing body text.", dom)
 
-    def test_url_channel_only_documented_gap(self):
+    def test_snippet_names_the_victim_by_design_not_by_oversight(self):
         """The permalink is withheld; the payload TITLE still names the victim.
+        This is a DECISION, not a gap - the operator ruled it 2026-08-15.
 
-        Asserted deliberately so the guarantee is not read as broader than it
-        is: this row closes the URL channel, not the snippet channel. If the
-        snippet channel is closed later, this test fails and whoever closes it
-        must restate the claim rather than inherit a stale one.
+        Different channel, different risk. A URL is a durable, copy-pasteable
+        identifier that travels: paste it anywhere and it still resolves to the
+        victim's page on the extortionist's site. The snippet is read-once prose
+        on an operator-only surface, and reading it is the entire function of
+        this queue - the reviewer's one job here is to judge whether the record
+        matches a watchlist entity, which is impossible without the name.
+
+        So the two channels are treated differently on purpose: this row closes
+        the URL channel and deliberately leaves the snippet open. Do not "fix"
+        the snippet to match the URL - that would break the only task this
+        surface exists to support, to protect an identity the reviewer is
+        already authorized to see.
         """
         self.assertIn(VICTIM_NAME, self.page())
 
