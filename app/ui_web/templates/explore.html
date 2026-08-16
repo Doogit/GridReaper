@@ -23,6 +23,9 @@
   </div>
 
   <div class="gs-tabpanel gs-tabpanel-analytics">
+    {% if analytics_freshness and analytics_freshness.aggregate_stale %}
+    <p class="gs-muted-text">Analytics aggregate stale ({{ analytics_freshness.stale_reason }}); showing live counts. Refresh with <code>{{ analytics_freshness.refresh_command }}</code>.</p>
+    {% endif %}
     {% if analytics_tables %}
     {% for table in analytics_tables %}
     <section class="gs-analytics-table">
