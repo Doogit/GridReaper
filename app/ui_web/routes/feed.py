@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse
 from app.ui import data
 from app.ui_web import render
 from app.ui_web.deps import get_db
-from app.ui_web.templating import templates
+from app.ui_web.templating import templates, write_busy_response
 
 router = APIRouter()
 
@@ -154,7 +154,9 @@ def feedback(request: Request, signal_id: str = Form(...), verdict: str = Form(.
              conn=Depends(get_db)):
     """Record one feedback row. record_feedback enforces the reason-required
     rule (R9.1); on ValueError the reason form comes back with the error and
-    nothing is written."""
+    nothing is written. A WriteBusyError (R3.2 — the writer lock stayed held) is
+    an inline warning appended beside the controls, never a 500: the write did
+    nothing, so the buttons/form stay put and the click can be retried."""
     try:
         data.record_feedback(conn, signal_id, verdict, reason_code or None, note)
     except ValueError as exc:
@@ -163,5 +165,7 @@ def feedback(request: Request, signal_id: str = Form(...), verdict: str = Form(.
             context={"signal_id": signal_id, "reason_codes": data.REASON_CODES,
                      "target_id": render.feedback_dom_id(signal_id),
                      "error": str(exc)})
+    except data.WriteBusyError as exc:
+        return write_busy_response(request, exc)
     return templates.TemplateResponse(
         request=request, name="_feedback_done.html", context={})

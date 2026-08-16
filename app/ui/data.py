@@ -22,6 +22,7 @@ import sqlite3
 import time
 from datetime import date, datetime, timezone
 from hashlib import sha256
+from urllib.parse import urlsplit
 
 from app.audit import precision
 from app.classify import ransomware as ransomware_classifier
@@ -120,20 +121,47 @@ def _parse_date(value):
 # permalink: attribution survives (R10.4) and the identity does not. ACCOUNT
 # cards are untouched — an own_incident card already names its entity, so its
 # permalink discloses nothing the card does not.
-_RANSOMWARE_VICTIM_PATH = "ransomware.live/id/"
+# The rule is a HOST rule, not a substring one. Matching "ransomware.live/id/"
+# anywhere in the lowercased string got the two shapes ingest emits right by
+# luck and everything else wrong: it missed any tracker URL where the substring
+# is broken up or absent (a port — ransomware.live:8443/id/… — or a future
+# non-/id/ victim path), missed any OTHER leak-site host entirely, and fired on
+# a URL that merely mentions the tracker in a query string, destroying an
+# innocent citation. So: parse the URL, normalise the host, compare it against
+# a named set. Exact host match plus a stripped "www." only — a suffix test
+# would be the same class of bug ("ransomware.live.evil.com").
+_LEAK_TRACKER_HOSTS = frozenset({"ransomware.live"})
+
+
+def _leak_tracker_host(url):
+    """True when ``url``'s host is a known victim-naming leak tracker.
+
+    ``urlsplit().hostname`` already lowercases the host and drops the port and
+    any userinfo; a leading ``www.`` is stripped here. A string with no scheme
+    has no host and so never matches — such a value is not a clickable URL
+    either (``render.safe_source_url`` drops non-http(s) values).
+    """
+    host = urlsplit(url).hostname or ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host in _LEAK_TRACKER_HOSTS
 
 
 def identity_safe_source_url(url, signal_scope=None):
     """Strip a per-victim leak-site permalink from a name-free card (R4.1).
 
-    Returns ``url`` unchanged unless it is a ransomware.live per-victim
-    permalink on a non-account-scoped signal, in which case the tracker's index
-    is returned in its place. Pure — no I/O — so the view layer can call it.
+    Returns ``url`` unchanged unless it points at a leak tracker
+    (``_LEAK_TRACKER_HOSTS``) on a non-account-scoped signal, in which case the
+    tracker's index is returned in its place. Pure — no I/O — so the view layer
+    can call it. This is the single chokepoint for the identity rule: it is the
+    only gate that is told the signal's scope, so it is the only one that can
+    tell an own-incident card (may keep its permalink) from a name-free peer
+    card (may not).
     """
     value = (url or "").strip()
     if not value or signal_scope in ("account", "parent"):
         return value
-    if _RANSOMWARE_VICTIM_PATH in value.lower():
+    if _leak_tracker_host(value):
         return RANSOMWARE_SOURCE_URL
     return value
 

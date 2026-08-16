@@ -369,6 +369,52 @@ class TestPeerCardSourceUrlIsIdentitySafe(unittest.TestCase):
         self.assertEqual(data.identity_safe_source_url(None, "sector"), "")
 
 
+class TestLeakTrackerHostRule(unittest.TestCase):
+    """The gate is a HOST rule, not a substring one (R4.1, defence in depth).
+
+    Matching "ransomware.live/id/" anywhere in the lowercased URL happened to
+    get the shapes ingest emits right, and got everything else wrong: a port
+    breaks the substring, a non-/id/ victim path has none of it, any other
+    leak-site host has none of it, and a URL that merely MENTIONS the tracker in
+    a query string matched. The ingest path only emits the bare /id/ form today,
+    so none of these variants is reachable in production — this table is the
+    demonstration that the rule holds for the ones that are not.
+    """
+
+    VICTIM = "Q29tbXVuaXR5IENvbm5lY3Rpb25zQHRoZWdlbnRsZW1lbg=="
+
+    def test_tracker_hosts_are_substituted_however_spelled(self):
+        for url in (
+                f"https://ransomware.live/id/{self.VICTIM}",
+                f"https://www.ransomware.live/id/{self.VICTIM}",
+                f"https://RANSOMWARE.LIVE/id/{self.VICTIM}",
+                f"https://WWW.Ransomware.Live/id/{self.VICTIM}",
+                f"https://ransomware.live:8443/id/{self.VICTIM}",
+                f"http://ransomware.live/id/{self.VICTIM}",
+                # a victim path the tracker does not use today
+                "https://www.ransomware.live/victims/Acme%20Corp",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(data.identity_safe_source_url(url, "sector"),
+                                 data.RANSOMWARE_SOURCE_URL)
+
+    def test_lookalike_hosts_are_not_substituted(self):
+        # a substring rule matched both of these; a host rule must not.
+        for url in (
+                "https://evil.com/?x=ransomware.live/id/abc",
+                f"https://ransomware.live.evil.com/id/{self.VICTIM}",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(data.identity_safe_source_url(url, "sector"),
+                                 url)
+
+    def test_account_scope_passes_the_tracker_url_through_untouched(self):
+        url = f"https://www.ransomware.live/id/{self.VICTIM}"
+        for scope in ("account", "parent"):
+            with self.subTest(scope=scope):
+                self.assertEqual(data.identity_safe_source_url(url, scope), url)
+
+
 class TestRansomwareActivityView(unittest.TestCase):
     def setUp(self):
         conn = fixture_conn(CORPUS)
