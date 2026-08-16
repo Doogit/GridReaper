@@ -89,12 +89,32 @@ class TestRansomwareActivityCounts(unittest.TestCase):
         self.assertEqual(labels, ["qilin", "thegentlemen", "incransom"])
         self.assertEqual(counts, [4, 3, 2])
 
-    def test_industries_ranked_by_volume_descending(self):
+    def test_industries_lead_with_the_watchlist_rows_then_volume(self):
+        # R8.5 subject-first: the watchlist's own industry leads even though it
+        # is the SMALLEST bucket here (1 listing against Manufacturing's 3).
+        # Volume still orders within each group.
         rows = self.activity["industries"]
-        self.assertEqual(rows[0]["label"], "Manufacturing")
-        self.assertEqual(rows[0]["count"], 3)
-        self.assertEqual([r["count"] for r in rows],
-                         sorted((r["count"] for r in rows), reverse=True))
+        peers = [r["label"] for r in rows if r["is_peer"]]
+        self.assertEqual([r["label"] for r in rows[:len(peers)]], peers)
+        self.assertEqual(sorted(peers), ["Energy & Utilities", "Oil and Gas"])
+        rest = rows[len(peers):]
+        self.assertEqual([r["count"] for r in rest],
+                         sorted((r["count"] for r in rest), reverse=True))
+
+    def test_world_volume_rank_is_kept_as_context_on_every_row(self):
+        # Reordering must not DESTROY the world ranking, only demote it: each
+        # row still carries the rank it would have had by volume alone.
+        by_rank = sorted(self.activity["industries"], key=lambda r: r["rank"])
+        self.assertEqual(by_rank[0]["label"], "Manufacturing")
+        self.assertEqual([r["rank"] for r in by_rank],
+                         list(range(1, len(by_rank) + 1)))
+        # peer_rank is the best world rank any watchlist row holds — the number
+        # the panel states as context under its lede.
+        self.assertEqual(
+            self.activity["peer_rank"],
+            min(r["rank"] for r in self.activity["industries"] if r["is_peer"]))
+        self.assertEqual(self.activity["industry_rows"],
+                         len(self.activity["industries"]))
 
     def test_unclassified_is_its_own_bucket_not_an_industry_row(self):
         self.assertEqual(self.activity["unclassified"], 1)
@@ -465,10 +485,14 @@ class TestRansomwareActivityView(unittest.TestCase):
         self.assertIn("watchlist-industry rows", caption)
 
     def test_bars_are_relative_within_their_own_list(self):
-        # Top row is full width; every row gets a visible minimum.
+        # The LARGEST row is full width; every row gets a visible minimum. The
+        # industry list is no longer volume-ordered (watchlist rows lead), so
+        # the full-width bar is the biggest count, not the first row.
         self.assertEqual(self.view["crews"][0]["bar"], 100)
         self.assertTrue(all(r["bar"] >= 2 for r in self.view["crews"]))
-        self.assertEqual(self.view["industries"][0]["bar"], 100)
+        top = max(self.view["industries"], key=lambda r: r["count"])
+        self.assertEqual(top["bar"], 100)
+        self.assertTrue(all(r["bar"] >= 2 for r in self.view["industries"]))
 
     def test_empty_activity_flags_empty_without_notes(self):
         conn = fixture_conn(())
@@ -485,6 +509,202 @@ class TestRansomwareActivityView(unittest.TestCase):
         conn.close()
         self.assertIn("1 day", view["window"])
         self.assertNotIn("1 days", view["window"])
+
+
+def day(n, event_date, activity="Manufacturing", group="qilin"):
+    """n distinct victims on one day, all in one industry."""
+    return tuple(victim(f"Co {event_date} {activity} {i}", group, activity,
+                        event_date=event_date) for i in range(n))
+
+
+# Six covered days. Interior activity RISES: the watchlist industry runs 1,1 in
+# the older interior half and 3,2 in the newer one, against a flat Manufacturing
+# background. The two boundary days are deliberately thin, as the real feed's
+# are.
+BASELINE_CORPUS = (
+    day(1, "2026-08-10")
+    + day(1, "2026-08-11") + day(1, "2026-08-11", "Energy & Utilities")
+    + day(1, "2026-08-12") + day(1, "2026-08-12", "Energy & Utilities")
+    + day(1, "2026-08-13") + day(3, "2026-08-13", "Energy & Utilities")
+    + day(1, "2026-08-14") + day(2, "2026-08-14", "Energy & Utilities")
+    + day(1, "2026-08-15")
+)
+
+# THE TRAP, as a fixture. Real activity is perfectly FLAT at 6 listings/day for
+# every whole day. The oldest covered day holds 2, not because activity was low
+# but because /v2/recentvictims returns a fixed-size slice of the newest
+# listings and the slice ran out mid-day. Splitting the six covered days down
+# the middle puts that truncated day in the PRIOR half and reports a rise.
+TRUNCATED_CORPUS = (
+    day(2, "2026-08-10")          # clipped by the feed's record cap
+    + day(6, "2026-08-11") + day(6, "2026-08-12")
+    + day(6, "2026-08-13") + day(6, "2026-08-14")
+    + day(6, "2026-08-15")        # clipped by the time of the ingest run
+)
+
+
+class TestBaselineDelta(unittest.TestCase):
+    """R8.5: a prior-window comparison that cannot manufacture a trend."""
+
+    def test_two_half_windows_yield_a_signed_delta_with_both_ns(self):
+        conn = fixture_conn(BASELINE_CORPUS)
+        activity = data.ransomware_activity(conn)
+        view = render.ransomware_activity_view(activity)
+        conn.close()
+
+        b = activity["baseline"]
+        self.assertTrue(b["available"])
+        # Boundary days excluded from BOTH halves; equal 2-day halves remain.
+        self.assertEqual(b["excluded_boundary"], ["2026-08-10", "2026-08-15"])
+        self.assertEqual(b["excluded_middle"], [])
+        self.assertEqual((b["prior_start"], b["prior_end"]),
+                         ("2026-08-11", "2026-08-12"))
+        self.assertEqual((b["current_start"], b["current_end"]),
+                         ("2026-08-13", "2026-08-14"))
+        self.assertEqual(b["half_days"], 2)
+        # Both n's, not just the difference.
+        self.assertEqual((b["prior_peer"], b["current_peer"]), (2, 5))
+        self.assertEqual((b["prior_total"], b["current_total"]), (4, 7))
+        self.assertEqual(b["peer_delta"], 3)
+        self.assertEqual(b["total_delta"], 3)
+
+        # The rendered note carries the sign AND both denominators, so the
+        # number is readable without opening the data layer.
+        note = view["baseline_note"]
+        self.assertIn("+3", note)
+        self.assertIn("5 listings", note)          # current n
+        self.assertIn("against 2 (", note)         # prior n
+        self.assertIn("7 against 4", note)         # both n's for all listings
+        self.assertIn("2026-08-13 → 2026-08-14", note)
+        self.assertIn("2026-08-11 → 2026-08-12", note)
+        self.assertEqual(view["subject_delta"], "+3")
+        self.assertTrue(view["baseline_available"])
+
+    def test_empty_prior_half_says_no_comparable_prior_window(self):
+        # Three covered days leaves one whole interior day — not enough for a
+        # half on each side. The panel must say so, not invent a rise.
+        conn = fixture_conn(day(3, "2026-08-10") + day(9, "2026-08-11")
+                            + day(9, "2026-08-12"))
+        activity = data.ransomware_activity(conn)
+        view = render.ransomware_activity_view(activity)
+        conn.close()
+
+        b = activity["baseline"]
+        self.assertFalse(b["available"])
+        self.assertIsNone(b["peer_delta"])
+        self.assertIsNone(b["total_delta"])
+        self.assertEqual(b["covered_days"], 3)
+        self.assertIn("no comparable prior window",
+                      view["baseline_note"].lower())
+        self.assertFalse(view["baseline_available"])
+        # Nothing that reads as a measured change anywhere in the lede.
+        self.assertEqual(view["subject_delta"], "")
+        self.assertNotIn("+", view["baseline_note"])
+
+    def test_truncated_oldest_day_does_not_report_a_rise(self):
+        conn = fixture_conn(TRUNCATED_CORPUS)
+        activity = data.ransomware_activity(conn)
+        view = render.ransomware_activity_view(activity)
+        conn.close()
+
+        # What a naive "split the covered window in half" would have said, from
+        # this very fixture: 2+6+6 = 14 prior against 6+6+6 = 18 current, a
+        # fabricated +4 (+29%) driven entirely by the clipped boundary day.
+        self.assertEqual(2 + 6 + 6, 14)
+        self.assertEqual(6 + 6 + 6, 18)
+        self.assertGreater(18, 14)
+
+        # THE ASSERTION THAT PINS THE TRAP, checked first so a regression to a
+        # naive split fails on the NUMBER rather than on bookkeeping.
+        b = activity["baseline"]
+        self.assertTrue(b["available"])
+        self.assertLessEqual(
+            b["total_delta"], 0,
+            "reported a rise on a flat corpus — the clipped boundary day "
+            "leaked into the prior half")
+        self.assertEqual(b["total_delta"], 0)
+        self.assertEqual((b["prior_total"], b["current_total"]), (12, 12))
+        self.assertEqual(b["excluded_boundary"], ["2026-08-10", "2026-08-15"])
+        self.assertEqual(view["subject_delta"], "no change")
+        self.assertNotIn("+", view["baseline_note"])
+        # And the exclusion is disclosed, not silent.
+        self.assertIn("2026-08-10", view["baseline_note"])
+        self.assertIn("partial days", view["baseline_note"])
+
+    def test_odd_interior_drops_the_middle_day_not_an_end(self):
+        # Five covered days leaves three interior days. Dropping an END would
+        # reintroduce the very asymmetry the boundary rule removes, so the
+        # MIDDLE day is the one held out.
+        conn = fixture_conn(day(1, "2026-08-10") + day(4, "2026-08-11")
+                            + day(9, "2026-08-12") + day(4, "2026-08-13")
+                            + day(1, "2026-08-14"))
+        activity = data.ransomware_activity(conn)
+        conn.close()
+        b = activity["baseline"]
+        self.assertEqual(b["excluded_middle"], ["2026-08-12"])
+        self.assertEqual(b["prior_start"], "2026-08-11")
+        self.assertEqual(b["current_start"], "2026-08-13")
+        self.assertEqual(b["total_delta"], 0)
+
+    def test_single_ingest_run_is_stated_in_the_byline(self):
+        conn = fixture_conn(BASELINE_CORPUS)
+        conn.execute(
+            "INSERT INTO source_runs (run_id, source_id, started_at, "
+            "finished_at, status, error_state) VALUES "
+            "('r1','ransomware_live','2026-08-15T15:59:00+00:00',"
+            "'2026-08-15T15:59:05+00:00','success','')")
+        conn.commit()
+        activity = data.ransomware_activity(conn)
+        view = render.ransomware_activity_view(activity)
+        conn.close()
+        self.assertEqual(activity["run_count"], 1)
+        self.assertIn("single ingest run of a rolling feed", view["source_line"])
+
+
+class TestR41GatesSurviveTheReordering(unittest.TestCase):
+    """Every R4.1 protection must hold after the subject-first reorder."""
+
+    def setUp(self):
+        self.conn = fixture_conn(CORPUS)
+        self.activity = data.ransomware_activity(self.conn)
+        self.view = render.ransomware_activity_view(self.activity)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_crew_floor_and_withheld_count_survive_the_reordering(self):
+        # The watchlist rows now lead the industry list; the crew list and its
+        # privacy floor are a different marginal and are untouched by it.
+        self.assertTrue(self.activity["industries"][0]["is_peer"])
+        self.assertNotIn("lonewolfcrew",
+                         [r["label"] for r in self.activity["crews"]])
+        self.assertNotIn("lonewolfcrew", json.dumps(self.activity).lower())
+        self.assertEqual(self.activity["crews_withheld"], 1)
+        self.assertEqual(self.activity["crews_withheld_listings"], 1)
+        self.assertEqual(self.activity["crew_total"], 4)
+        self.assertIn("1 further crew is not named", self.view["crew_note"])
+        self.assertIn("still counted in the total", self.view["crew_note"])
+        # The total is still the honest corpus size, withheld crews included.
+        self.assertEqual(self.activity["total"], 10)
+
+    def test_baseline_adds_no_crew_by_industry_cross_tab(self):
+        # Time is a second marginal on the INDUSTRY axis only. Nothing in the
+        # baseline may key a crew to an industry or to a day.
+        b = self.activity["baseline"]
+        for row in self.activity["crews"]:
+            self.assertEqual(set(row), {"label", "count"})
+        for row in self.activity["industries"]:
+            self.assertEqual(set(row), {"label", "count", "rank", "is_peer"})
+        for key in b:
+            self.assertNotIn("crew", key)
+        for crew in ("qilin", "thegentlemen", "incransom"):
+            self.assertNotIn(crew, json.dumps(b).lower())
+
+    def test_no_victim_domain_or_url_reaches_the_lede(self):
+        blob = json.dumps(self.view).lower()
+        for leak in ("zeta power", "zetapower.com", "ransomware.live/id",
+                     "is a company"):
+            self.assertNotIn(leak, blob, f"{leak!r} reached the view layer")
 
 
 if __name__ == "__main__":

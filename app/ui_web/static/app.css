@@ -737,6 +737,24 @@ html { interpolate-size: allow-keywords; }  /* lets height:auto animate (details
   color: var(--gs-warn-text); margin-left: 6px; }
 .gs-rw-note { font-size: 0.76rem; color: var(--gs-muted); margin: 10px 0 0;
   line-height: 1.45; }
+/* The lede: the watchlist's own row, ahead of the world tables. Marked with the
+   same warn palette as the peer band so the subject and the highlighted rows
+   below read as the same thing. */
+.gs-rw-lede { margin: 0 0 4px; padding: 12px 14px; background: var(--gs-sunken);
+  border: 1px solid var(--gs-card-border);
+  border-left: 3px solid var(--gs-warn-border); border-radius: var(--gs-radius); }
+.gs-rw-lede h2 { font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--gs-muted); margin: 0 0 6px; }
+.gs-rw-lede-figure { display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 6px 12px; margin: 0; }
+.gs-rw-lede-count { font-size: 1.6rem; font-weight: 700; color: var(--gs-warn-text);
+  font-variant-numeric: tabular-nums; line-height: 1; }
+.gs-rw-lede-of { font-size: 0.83rem; color: var(--gs-text); }
+.gs-rw-lede-delta { font-size: 0.78rem; font-weight: 600; color: var(--gs-warn-text);
+  font-family: var(--gs-mono); }
+/* An absent baseline is muted, never styled like a measured change. */
+.gs-rw-lede-delta.none, .gs-rw-nobaseline { color: var(--gs-muted);
+  font-weight: 400; font-style: italic; }
 
 .gs-map-caption { margin: 4px 0 10px; }
 .gs-map-wrap { width: 100%; overflow-x: auto; background: var(--gs-card);

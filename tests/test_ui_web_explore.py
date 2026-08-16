@@ -245,6 +245,28 @@ class TestExploreRansomwareTab(ExploreTestBase):
         dom = self.client.get("/explore").text
         self.assertIn("1 of 4 listings carry no industry", dom)
 
+    def test_watchlist_row_leads_the_panel_ahead_of_the_world_tables(self):
+        # R8.5: the persona finding was that the panel answered "who is busiest
+        # worldwide" and buried the watchlist's own row ninth. The subject block
+        # must appear BEFORE the two marginal tables in document order.
+        dom = self.client.get("/explore").text
+        self.assertIn("this panel's subject", dom)
+        self.assertLess(dom.index('class="gs-rw-lede"'),
+                        dom.index('class="gs-rw-cols"'))
+        self.assertIn("watchlist industry first", dom)
+
+    def test_baseline_state_is_stated_on_the_page(self):
+        # This fixture covers 3 days, so there is no whole interior day on each
+        # side of the partial boundaries: the page must say so rather than print
+        # a delta the corpus cannot support.
+        dom = self.client.get("/explore").text
+        self.assertIn("No comparable prior window", dom)
+        self.assertIn("clipped by the feed", dom)
+        # And no fabricated movement anywhere in the lede.
+        lede = dom[dom.index('class="gs-rw-lede"'):dom.index('class="gs-rw-cols"')]
+        self.assertIn("no prior window", lede)
+        self.assertNotIn("vs prior window", lede)
+
     def test_tab_carries_no_score_or_account_implication(self):
         dom = self.client.get("/explore").text
         self.assertIn("nothing on this tab is scored", dom.lower())

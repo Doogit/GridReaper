@@ -1290,6 +1290,68 @@ RANSOMWARE_SUBJECT_NOTE = (
     "highlighted row. Industry is the tracker's own tag on each victim.")
 
 
+def _delta_word(n):
+    """Signed change, always carrying its sign so it cannot be read as a count.
+    Zero says so in words rather than printing '+0'."""
+    if n > 0:
+        return f"+{n}"
+    if n < 0:
+        return str(n)
+    return "no change"
+
+
+def _span_label(start, end):
+    """A one-day half is a date, not a range: '2026-08-13 → 2026-08-13' invites
+    the reader to hunt for the difference between two identical dates."""
+    return start if start == end else f"{start} → {end}"
+
+
+def _ransomware_baseline_note(activity):
+    """Prior-vs-current sentence for the panel, with BOTH n's (R8.5, R6.6).
+
+    A bare delta on a corpus this thin is unreadable, so the note always states
+    the two counts and the two date ranges they cover, and names the days held
+    out of the comparison. When the corpus is too short it says "no comparable
+    prior window" and stops — an honest absence beats a fabricated rise, and the
+    partial boundary days that would fabricate it are named on the page.
+    """
+    b = activity.get("baseline") or {}
+    boundary = b.get("excluded_boundary") or []
+    if not b.get("available"):
+        covered = b.get("covered_days") or 0
+        note = (
+            "No comparable prior window: the stored corpus covers "
+            f"{covered} {'day' if covered == 1 else 'days'}, and both its "
+            "oldest and newest day are partial — the oldest is clipped by the "
+            "feed's fixed record cap, the newest by the time of the ingest run. "
+            "A comparison needs a whole day on each side of those, so no "
+            "comparison is reported rather than a number the corpus cannot "
+            "support.")
+        return note
+    half = b["half_days"]
+    span = "day" if half == 1 else "days"
+    note = (
+        f"Change vs prior window — watchlist industry: {b['current_peer']} "
+        f"listings ({_span_label(b['current_start'], b['current_end'])}) "
+        f"against {b['prior_peer']} "
+        f"({_span_label(b['prior_start'], b['prior_end'])}), "
+        f"{_delta_word(b['peer_delta'])}. "
+        f"All listings: {b['current_total']} against {b['prior_total']}, "
+        f"{_delta_word(b['total_delta'])}. Equal {half}-{span} halves.")
+    if boundary:
+        note += (
+            f" {' and '.join(boundary)} "
+            f"{'is' if len(boundary) == 1 else 'are'} excluded as partial days: "
+            "the oldest day the feed returns is clipped by its record cap and "
+            "the newest by the time of the ingest run, so counting either would "
+            "invent a trend out of how the data was fetched.")
+    middle = b.get("excluded_middle") or []
+    if middle:
+        note += (f" {', '.join(middle)} is held out as well, so the two halves "
+                 "are the same length.")
+    return note
+
+
 def _bar_pct(count, top):
     """Row width as a whole percent of the largest row in its own list."""
     if not top or count <= 0:
@@ -1362,11 +1424,34 @@ def ransomware_activity_view(activity):
     industries = list(activity.get("industries") or [])
     if unclassified:
         industries.append({"label": "No industry given", "count": unclassified,
-                           "is_peer": False, "unclassified": True})
-        industries.sort(key=lambda r: (-r["count"], r["label"]))
+                           "is_peer": False, "rank": 0, "unclassified": True})
+        # Re-sorted with is_peer as the PRIMARY key, matching data.py: inserting
+        # the unclassified bar must not undo the subject-first order.
+        industries.sort(key=lambda r: (not r.get("is_peer"), -r["count"],
+                                       r["label"]))
+
+    # World volume rank of the watchlist's own industry — stated as context
+    # under the subject, never as the panel's headline (R8.5).
+    peer_rank = activity.get("peer_rank") or 0
+    industry_rows = activity.get("industry_rows") or 0
+    subject_rank_note = ""
+    if peer_rank and industry_rows:
+        subject_rank_note = (
+            f"By raw volume that is rank {peer_rank} of {industry_rows} "
+            "industries worldwide — world ranking is context here, not the "
+            "finding.")
+
+    baseline = activity.get("baseline") or {}
+    subject_delta = (_delta_word(baseline["peer_delta"])
+                     if baseline.get("available") else "")
 
     return {
         "total": total,
+        "subject_count": peers,
+        "subject_delta": subject_delta,
+        "subject_rank_note": subject_rank_note,
+        "baseline_available": bool(baseline.get("available")),
+        "baseline_note": _ransomware_baseline_note(activity),
         "window": window,
         "source_name": activity.get("source_name") or "",
         "source_url": safe_source_url(activity.get("source_url")),
@@ -1400,18 +1485,31 @@ _RANSOMWARE_FRESHNESS = {
 
 
 def _ransomware_source_line(activity):
-    """Attribution + freshness for the panel byline (R10.4, R6.6).
+    """Attribution + freshness + coverage for the panel byline (R10.4, R6.6).
 
     Credit is a licence condition here (ransomware.live is CC-BY-4.0), so the
     source is named on the populated panel and not only in its empty state.
+
+    Coverage is stated alongside it because the window label alone is
+    misleading: a corpus assembled from ONE run of a rolling recent feed is a
+    snapshot of whatever the feed was holding at that moment, not a series
+    accumulated day by day, and the baseline delta below is only as good as that
+    provenance.
     """
     name = activity.get("source_name") or ""
     state = activity.get("source_state") or "never_run"
     last = activity.get("last_success_at") or ""
     prefix = _RANSOMWARE_FRESHNESS.get(state, "last ingested")
     if state == "never_run" or not last:
-        return f"Source: {name} · never ingested".strip()
-    return f"Source: {name} · {prefix} {last}"
+        line = f"Source: {name} · never ingested".strip()
+    else:
+        line = f"Source: {name} · {prefix} {last}"
+    runs = activity.get("run_count") or 0
+    if runs == 1:
+        line += " · coverage is a single ingest run of a rolling feed"
+    elif runs > 1:
+        line += f" · coverage accumulated over {runs} ingest runs"
+    return line
 
 
 def _state_density(state_rows):
