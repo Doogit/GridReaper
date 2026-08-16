@@ -14,3 +14,5 @@ gleif,GLEIF LEI API,api,31536000,1,approved,1,,2026-08-11
 wikidata,Wikidata API,api,31536000,1,approved,3,,2026-08-11
 the_record,The Record (Recorded Future) RSS,rss,3600,1,approved_store_only,2,,2026-08-13
 bleepingcomputer,BleepingComputer RSS,rss,3600,1,approved_store_only,2,store-only; link out only,2026-08-13
+nerc_calendar,NERC calendar of events,api,86400,1,approved,1,sequential; politeness sleep between month requests,2026-08-15
+nerc_enforcement,NERC enforcement docket (Enforcement Dispositions),page_check,604800,1,approved,1,sequential; politeness sleep between year pages,2026-08-15
