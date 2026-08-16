@@ -68,10 +68,28 @@ class PackagingContractTest(unittest.TestCase):
             "app/classify/incident.py",
             "app/classify/ransomware.py",
             "app/classify/security_rss.py",
+            "app/ingest/edgar_fulltext.py",
             "app/ingest/ransomware.py",
             "app/ingest/security_rss.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
+
+    def test_pipeline_runs_edgar_fulltext_ingest(self):
+        # The full-text source is registered in source_policies and is the
+        # recall path for filing bodies/exhibits. Registration alone is not
+        # enough: first-load/runtime ingestion must actually populate it.
+        p = self._pipeline()
+        self.assertIn("app.ingest.edgar_fulltext", p)
+        self.assertLess(
+            p.index("app.ingest.edgar"),
+            p.index("app.ingest.edgar_fulltext"),
+            "EDGAR submissions should run before full-text search on the shared SEC budget",
+        )
+        self.assertLess(
+            p.index("app.ingest.edgar_fulltext"),
+            p.index("app.classify.incident"),
+            "all EDGAR ingestion should complete before incident classification",
+        )
 
     def test_pipeline_runs_company_statement_classifier_before_scoring(self):
         # Company-statement incident cards are minted from the same press-wire

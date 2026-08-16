@@ -119,6 +119,7 @@ A fresh clone starts with **no event data** — the raw-event backfill reference
 
 ```bash
 python -m app.ingest.edgar                          # SEC EDGAR submissions
+python -m app.ingest.edgar_fulltext                 # SEC EDGAR filing bodies/exhibits (store-only)
 python -m app.ingest.federal_register               # FERC + TSA documents
 python -m app.ingest.presswire --source prnewswire  # press-wire RSS
 python -m app.ingest.presswire --source globenewswire

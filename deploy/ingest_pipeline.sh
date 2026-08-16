@@ -1,5 +1,5 @@
 #!/bin/sh
-# Canonical GridSignals data pipeline: licensing -> ingest (9 live feeds) ->
+# Canonical GridSignals data pipeline: licensing -> ingest (10 live feeds) ->
 # classify -> score -> plays -> digest. ONE ordered list, shared by the runtime
 # first-load entrypoint (deploy/entrypoint.sh) and any future in-container
 # scheduler (the cron decision). The ordering invariants below are contract-
@@ -19,6 +19,7 @@ python -m app.licensing
 
 # Live public feeds. Each is wrapped so one flaky source can't abort the run.
 python -m app.ingest.edgar             || echo "WARN: edgar ingest failed, continuing"
+python -m app.ingest.edgar_fulltext    || echo "WARN: edgar_fulltext ingest failed, continuing"
 python -m app.ingest.federal_register  || echo "WARN: federal_register ingest failed, continuing"
 python -m app.ingest.presswire --source prnewswire    || echo "WARN: prnewswire ingest failed, continuing"
 python -m app.ingest.presswire --source globenewswire || echo "WARN: globenewswire ingest failed, continuing"
