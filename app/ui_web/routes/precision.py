@@ -8,11 +8,11 @@ DOM: a rate is never a bare percentage; every rate ships with its n, an empty
 denominator reads as an honest "n/a", and below the G1 sample floor (n<20) the
 headline shows the low-n copy rather than a fabricated gauge.
 
-Reader only — this router writes nothing. It binds the same four data.py reads
-the Streamlit page uses (precision_feedback_rows, precision_audit_rows,
-precision_halflife_rows, audit_run_rows) plus the pure app.audit.precision
-functions, and reshapes them into template-ready view dicts via render.precision_*
-(the sanctioned render.py seam). UTC ISO-8601 (R10.2).
+Reader only — this router writes nothing. It takes ONE read,
+``data.precision_report``, which owns every app.audit.precision computation the
+page shows (R10.9: the view never calls the backend directly), and reshapes the
+computed dicts into template-ready view dicts via render.precision_*. UTC
+ISO-8601 (R10.2).
 """
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -27,24 +27,23 @@ router = APIRouter()
 
 @router.get("/precision", response_class=HTMLResponse)
 def precision(request: Request, conn=Depends(get_db)):
-    feedback_rows = data.precision_feedback_rows(conn)
-    audit_rows = data.precision_audit_rows(conn)
-    halflife_rows = data.precision_halflife_rows(conn)
-    run_rows = data.audit_run_rows(conn)
+    report = data.precision_report(conn)
 
     ctx = {
         "nav_active": "precision",
-        "headline": render.precision_headline_view(feedback_rows, audit_rows),
-        "g1": render.precision_g1_view(feedback_rows, audit_rows),
-        "g2": render.precision_g2_view(feedback_rows, audit_rows),
-        "spotcheck": render.precision_spotcheck_view(audit_rows, feedback_rows),
-        "useful_tables": render.precision_useful_tables(feedback_rows),
-        "auto_tables": render.precision_auto_tables(audit_rows),
-        "reason_codes": render.precision_reason_codes(feedback_rows),
+        "headline": render.precision_headline_view(report),
+        "g1": render.precision_g1_view(report["g1"]),
+        "g2": render.precision_g2_view(report["g2"]),
+        "spotcheck": render.precision_spotcheck_view(report["spotcheck"]),
+        "useful_tables": render.precision_useful_tables(
+            report["useful_by_dimension"]),
+        "auto_tables": render.precision_auto_tables(
+            report["auto_by_dimension"]),
+        "reason_codes": report["reason_codes"],
         "disagreement": render.precision_disagreement_view(
-            audit_rows, feedback_rows),
-        "halflife": render.precision_halflife_view(halflife_rows),
-        "run_history": render.precision_run_history(run_rows),
+            report["disagreement"]),
+        "halflife": render.precision_halflife_view(report["halflife"]),
+        "run_history": render.precision_run_history(report["runs"]),
     }
     return templates.TemplateResponse(
         request=request, name="precision.html", context=ctx)

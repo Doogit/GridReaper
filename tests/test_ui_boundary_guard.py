@@ -17,11 +17,26 @@ Two properties, both load-bearing:
     quietly overstate how much is left to do — and R10.9's status is readable
     straight off ``SANCTIONED_CROSSINGS`` and ``BACKWARDS_EDGES``.
 
-**R10.9 is therefore PARTIAL, with three named exceptions and one backwards
-edge, not MET.** Deciding whether ``app.db.connection``, ``app.digest`` and
-``app.audit.precision`` are inside the boundary is an architectural ruling, not
-a refactor; the exceptions below record the current answer with its rationale so
-the ruling can be made against a true inventory. See the PR body.
+**R10.9 is MET: both lists are EMPTY.** The operator's ruling (2026-08-15):
+
+  * ``app.db.connection`` is INSIDE the boundary. It is infrastructure and the
+    composition root — a connection factory plus the packaged DB path, with no
+    source adapter, parser, classifier or license-play logic in it. R10.9 is
+    about source churn not forcing UI changes; where the SQLite file lives is
+    not source churn.
+  * ``app.digest`` was NOT a backend module. It renders Jinja templates through
+    ``app.ui_web.render``, so it belongs in ``app/ui_web/`` and now lives at
+    ``app/ui_web/digest.py``. That killed the only backwards edge — and with it
+    the Jinja2 import inside the stdlib-only backend tree — and the
+    ``routes/digest.py -> app.digest`` crossing along with it.
+  * ``app.audit.precision`` is OUTSIDE and no longer crossed. The precision
+    COMPUTATIONS moved behind the read seam as ``data.precision_report``; the
+    ``render.precision_*`` helpers now only format the dicts it returns. The
+    fix is a moved computation, not a re-export: nothing in ``app/ui/data.py``
+    forwards precision's module, functions or names to the view.
+
+An empty exception list is the point. Adding an entry here is an architectural
+ruling, not a refactor — it needs the operator, not a passing test.
 """
 import ast
 import os
@@ -30,44 +45,23 @@ import unittest
 UI_PACKAGE = "app/ui_web"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# INSIDE the boundary: the UI's own package, and the read seam it is designed
-# to read the backend through (R8.1-R8.3). app.ui.data is the ONE sanctioned
-# door; it is stdlib-only and read-only apart from its declared write seams.
-INSIDE_BOUNDARY = ("app.ui_web", "app.ui")
+# INSIDE the boundary: the UI's own package, the read seam it is designed to
+# read the backend through (R8.1-R8.3), and the connection infrastructure the
+# composition root needs. app.ui.data is the ONE door to backend LOGIC; it is
+# stdlib-only and read-only apart from its declared write seams.
+INSIDE_BOUNDARY = ("app.ui_web", "app.ui", "app.db.connection")
 
 # Crossings that exist today, each with the reason it has not been closed.
 # {(relative path, imported module prefix): rationale}
-SANCTIONED_CROSSINGS = {
-    ("app/ui_web/deps.py", "app.db.connection"):
-        "FastAPI request-scoped connection dependency. Closing it means moving "
-        "connection lifecycle behind app.ui.data, which owns no lifecycle "
-        "today. Ruling needed: is app.db.connection infrastructure (inside) or "
-        "backend (outside)?",
-    ("app/ui_web/render.py", "app.audit.precision"):
-        "SANCTIONED BY DESIGN, with a recorded rationale at the import site: "
-        "precision returns computation dicts and these pure helpers reshape "
-        "them into template-ready view dicts, carrying the rate-plus-n trust "
-        "invariant to the DOM. precision.py is pure (math + datetime only, no "
-        "DB, no network). A prior plan sanctioned this deliberately; do not "
-        "reverse it silently.",
-    ("app/ui_web/routes/digest.py", "app.db.connection"):
-        "Reads DEFAULT_DB_PATH to locate the digest output directory. Same "
-        "ruling as deps.py.",
-    ("app/ui_web/routes/digest.py", "app.digest"):
-        "Reads _digest_dir - a private helper - to list generated digests. "
-        "Paired with the backwards edge below: app/digest.py already imports "
-        "app/ui_web/, so digest and the UI are mutually dependent today.",
-}
+# EMPTY: R10.9 is met. Read the module docstring before adding an entry.
+SANCTIONED_CROSSINGS = {}
 
 # Backend modules that import the UI package - the dependency running the wrong
 # way. {(relative path, imported module prefix): rationale}
-BACKWARDS_EDGES = {
-    ("app/digest.py", "app.ui_web"):
-        "app/digest.py calls render.card_view and templates.env so the digest "
-        "and the web UI render one card definition. The cost is that a backend "
-        "module imports Jinja2, which the stdlib-only backend rule otherwise "
-        "forbids. Ruling needed: is the digest part of the UI layer?",
-}
+# EMPTY: the dependency runs one way. A backend module importing app/ui_web/
+# would pull Jinja2 into the stdlib-only backend; that is what moving the digest
+# into app/ui_web/ removed.
+BACKWARDS_EDGES = {}
 
 
 def _iter_python_files(rel_dir):
@@ -166,6 +160,24 @@ class TestUiBackendBoundary(unittest.TestCase):
                 "app.classify.runner", _imported_app_modules(full),
                 f"{rel} imports the classifier directly; read "
                 "data.INCIDENT_TIERS instead (R10.9).")
+
+    def test_precision_is_computed_behind_the_data_seam(self):
+        # The anti-gaming half of closing the app.audit.precision crossing: the
+        # view formats computed dicts and must not reach the computation module
+        # by pulling it back out of the data seam (``data.precision.…`` or
+        # ``from app.ui.data import precision``) — that is the same crossing
+        # wearing a different import, and the AST guard above would not see it.
+        for full, rel in _iter_python_files(UI_PACKAGE):
+            with open(full, encoding="utf-8") as fh:
+                src = fh.read()
+            for gamed in ("data.precision.", "data import precision"):
+                self.assertNotIn(
+                    gamed, src,
+                    f"{rel} reaches app.audit.precision through app.ui.data. "
+                    "Read the computed dicts from data.precision_report and "
+                    "format them (R10.9).")
+        from app.ui import data
+        self.assertTrue(callable(data.precision_report))
 
     def test_the_data_seam_still_exports_the_tier_vocabulary(self):
         from app.ui import data

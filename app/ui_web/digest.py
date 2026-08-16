@@ -1,12 +1,17 @@
-"""Daily HTML digest generator (R8.8, R4.1, R7.12, R6.6, R10.2).
+"""Daily HTML digest generator (R8.8, R4.1, R7.12, R6.6, R10.2, R10.9).
 
 The last step of the packaged pipeline (after ``app.scoring && app.plays`` — see
-KTD2): a standalone ``python -m app.digest`` CLI, NOT wired into the per-source
-ingestion runner. It reads the freshest scored cards through the existing
-read-only data layer (``app/ui/data.py``) and the same pure card shaper the web
-UI uses (``render.card_view``), renders one self-contained HTML document
+KTD2): a standalone ``python -m app.ui_web.digest`` CLI, NOT wired into the
+per-source ingestion runner. It reads the freshest scored cards through the
+existing read-only data layer (``app/ui/data.py``) and the same pure card shaper
+the web UI uses (``render.card_view``), renders one self-contained HTML document
 (``digest.html``, no request object, no server, no CDN), and writes it to a
 dated file on disk so a human can send it (no SMTP here).
+
+It lives in ``app/ui_web/`` because it IS UI rendering (R10.9): it consumes
+``render`` and the Jinja environment, which the stdlib-only backend may not.
+Housed here, the dependency runs one way — UI reads the backend through
+``app/ui/data.py``, and nothing in the backend imports the UI.
 
 Trust invariants carried into the digest (identical to the live feed):
   * Outreach opener text appears ONLY when a card is ``customer_facing_allowed``
@@ -52,10 +57,20 @@ KEEP_DIGESTS = 30
 _REGULATORY_SCOPES = ("regulatory_calendar",)
 
 
-def _digest_dir(db_path):
+def resolve_db_path(db_path=None):
+    """The DB this run reads: explicit argument, else ``GRIDSIGNALS_DB``, else
+    the packaged default. One resolution order for the writer and the reader."""
+    return db_path or os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH
+
+
+def digest_dir(db_path=None):
     """Directory digests are written to: a ``digests/`` folder beside the DB, so
-    a throwaway test DB writes its digest next to itself, never into the repo."""
-    parent = os.path.dirname(db_path) or "."
+    a throwaway test DB writes its digest next to itself, never into the repo.
+
+    Public because the ``/digest`` route reads back what this module wrote; both
+    sides resolving the location through this one function is what keeps them
+    from drifting."""
+    parent = os.path.dirname(resolve_db_path(db_path)) or "."
     return os.path.join(parent, "digests")
 
 
@@ -122,40 +137,40 @@ def render_html(ctx):
     return templates.env.get_template("digest.html").render(ctx)
 
 
-def write_digest(html, digest_dir, generated_date):
+def write_digest(html, out_dir, generated_date):
     """Write the digest to ``digest-<date>.html`` and refresh the stable
     ``digest-latest.html`` pointer. Creates the directory if missing. Returns the
     dated file path (the primary artifact)."""
-    os.makedirs(digest_dir, exist_ok=True)
-    dated = os.path.join(digest_dir, f"digest-{generated_date}.html")
+    os.makedirs(out_dir, exist_ok=True)
+    dated = os.path.join(out_dir, f"digest-{generated_date}.html")
     with open(dated, "w", encoding="utf-8") as fh:
         fh.write(html)
     # A predictable "latest" filename so a link / route can always find the newest
     # without globbing (the route reads the newest dated file; this is a fallback).
-    shutil.copyfile(dated, os.path.join(digest_dir, "digest-latest.html"))
-    _prune_old_digests(digest_dir)
+    shutil.copyfile(dated, os.path.join(out_dir, "digest-latest.html"))
+    _prune_old_digests(out_dir)
     return dated
 
 
-def _prune_old_digests(digest_dir, keep=KEEP_DIGESTS):
+def _prune_old_digests(out_dir, keep=KEEP_DIGESTS):
     """Delete all but the newest ``keep`` dated digests (R8.8 retention). Dated
     files (``digest-YYYY-MM-DD.html``) sort chronologically by name; the stable
     ``digest-latest.html`` alias is left untouched (it does not match the glob)."""
-    dated = sorted(glob.glob(os.path.join(digest_dir, "digest-2*.html")))
+    dated = sorted(glob.glob(os.path.join(out_dir, "digest-2*.html")))
     for stale in dated[:-keep] if keep > 0 else []:
         os.remove(stale)
 
 
-def generate(db_path=None, digest_dir=None, now=None):
+def generate(db_path=None, out_dir=None, now=None):
     """Build + render + write one digest; return the written file path (R8.8)."""
-    resolved_db = db_path or os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH
+    resolved_db = resolve_db_path(db_path)
     conn = get_connection(resolved_db)
     try:
         ctx = build_context(conn, now=now)
     finally:
         conn.close()
     html = render_html(ctx)
-    out_dir = digest_dir or _digest_dir(resolved_db)
+    out_dir = out_dir or digest_dir(resolved_db)
     return write_digest(html, out_dir, ctx["generated_date"])
 
 

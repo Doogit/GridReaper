@@ -1,6 +1,6 @@
 <!doctype html>
 {# Standalone daily digest (R8.8). A self-contained HTML document written to
-   disk by app/digest.py and also served by the /digest route. It deliberately
+   disk by app/ui_web/digest.py and also served by the /digest route. It deliberately
    does NOT extend base.html (which uses url_for + loads htmx.min.js): the saved
    file must open with no server, no CDN, and no external request. All card
    styling is an inlined subset of app/ui_web/static/app.css. Every string is

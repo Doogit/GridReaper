@@ -42,7 +42,7 @@ python -m app.classify.ransomware
 python -m app.classify.security_rss
 python -m app.scoring
 python -m app.plays
-python -m app.digest || echo "WARN: digest generation failed, continuing"
+python -m app.ui_web.digest || echo "WARN: digest generation failed, continuing"
 
 # Drift log (NON-fatal). Unlike the old build-time assertion this never exits
 # nonzero: a runtime background run must not crash the container — the UI
