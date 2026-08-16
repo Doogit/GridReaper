@@ -295,6 +295,31 @@ class TestReviewAndSources(unittest.TestCase):
         self.assertEqual(r["reason"], "fuzzy_below_threshold")
         self.assertEqual(r["snippet"], "Ambiguous Utility Co filing")
         self.assertEqual(r["source_url"], "http://rev/doc")
+        # a short single-field title is the whole record (R10.5)
+        self.assertFalse(r["snippet_truncated"])
+        self.assertEqual(r["snippet_omitted_fields"], 0)
+        self.assertEqual(r["snippet_limit"], 200)
+
+    def test_review_pending_flags_a_cut_off_payload(self):
+        long_title = "A" * 250
+        self.conn.execute(
+            "UPDATE raw_events SET payload=? WHERE raw_event_id='re_rev'",
+            ('{"title": "%s"}' % long_title,))
+        r = data.review_pending(self.conn)[0]
+        self.assertTrue(r["snippet_truncated"])
+        self.assertEqual(len(r["snippet"]), 200)
+
+    def test_review_pending_counts_fields_the_snippet_drops(self):
+        # a SHORT title lifted out of a big record is not truncated, but it is
+        # still a fragment — the omitted-field count is what makes it honest
+        self.conn.execute(
+            "UPDATE raw_events SET payload=? WHERE raw_event_id='re_rev'",
+            ('{"title": "Short title", "activity": "Energy", '
+             '"group": "g", "description": "%s"}' % ("body " * 200),))
+        r = data.review_pending(self.conn)[0]
+        self.assertEqual(r["snippet"], "Short title")
+        self.assertFalse(r["snippet_truncated"])
+        self.assertEqual(r["snippet_omitted_fields"], 3)
 
     def test_source_state_classification(self):
         by_id = {r["source_id"]: r for r in data.source_health(self.conn)}

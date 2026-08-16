@@ -57,7 +57,7 @@ def review(request: Request, conn=Depends(get_db)):
 
 @router.post("/review/triage", response_class=HTMLResponse)
 def triage(request: Request, raw_event_id: str = Form(...),
-           candidate_entity_id: str = Form(...), accept: bool = Form(...),
+           candidate_entity_id: str = Form(""), accept: bool = Form(...),
            conn=Depends(get_db)):
     """Record one human triage decision (R8.2): triage_decision writes BOTH the
     entity_match_decisions row and the review_queue disposition in one

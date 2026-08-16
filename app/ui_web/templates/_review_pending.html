@@ -10,9 +10,20 @@
 {% for p in pending %}
 <div class="gs-card sev-moderate gs-review-row" id="{{ p.dom_id }}">
   <div class="gs-headline">{{ p.candidate }}{% if p.subsector %}<span class="gs-meta"> · {{ p.subsector }}</span>{% endif %}</div>
+  {% with c = p %}{% include "_badges.html" %}{% endwith %}
   <div class="gs-meta">reason: <code>{{ p.reason }}</code> · confidence {{ p.confidence }} · event {{ p.event_date }}</div>
-  {% if p.snippet %}<div class="gs-evidence">{{ p.snippet }}</div>{% endif %}
-  {% if p.source_url %}<a class="gs-source-link" href="{{ p.source_url }}" target="_blank" rel="noopener">Source</a>{% endif %}
+  {% if p.snippet %}<div class="gs-evidence">{{ p.snippet }}{% if p.snippet_truncated %}…{% endif %}</div>{% endif %}
+  {% if p.snippet_note %}<div class="gs-meta">{{ p.snippet_note }}</div>{% endif %}
+  {% if p.source_url %}<a class="gs-source-link" href="{{ p.source_url }}" target="_blank" rel="noopener">Source</a>{% if p.source_note %}<span class="gs-meta"> — {{ p.source_note }}</span>{% endif %}{% endif %}
+  {% if not p.has_candidate %}
+  <div class="gs-meta">No entity match to accept or reject — this row was routed to triage for the reason above.</div>
+  <div class="gs-feedback">
+    <button type="button" class="gs-btn"
+            hx-post="/review/triage"
+            hx-vals='{{ {"raw_event_id": p.raw_event_id, "candidate_entity_id": "", "accept": "false"} | tojson }}'
+            hx-target="#{{ p.dom_id }}" hx-swap="outerHTML">Dismiss</button>
+  </div>
+  {% else %}
   <div class="gs-feedback">
     <button type="button" class="gs-btn"
             hx-post="/review/triage"
@@ -23,6 +34,7 @@
             hx-vals='{{ {"raw_event_id": p.raw_event_id, "candidate_entity_id": p.candidate_entity_id, "accept": "false"} | tojson }}'
             hx-target="#{{ p.dom_id }}" hx-swap="outerHTML">Reject</button>
   </div>
+  {% endif %}
 </div>
 {% endfor %}
 {% else %}

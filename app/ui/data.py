@@ -340,23 +340,46 @@ def review_pending(conn):
     out = []
     for r in rows:
         d = dict(r)
-        d["snippet"] = _payload_snippet(r["payload"])
+        snippet, truncated, omitted = _payload_snippet_parts(r["payload"])
+        d["snippet"] = snippet
+        d["snippet_truncated"] = truncated
+        d["snippet_omitted_fields"] = omitted
+        d["snippet_limit"] = _PAYLOAD_SNIPPET_LIMIT
         d.pop("payload", None)
         out.append(d)
     return out
 
 
-def _payload_snippet(payload, limit=200):
+_PAYLOAD_SNIPPET_LIMIT = 200
+
+
+def _payload_snippet(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
+    return _payload_snippet_parts(payload, limit)[0]
+
+
+def _payload_snippet_parts(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
+    """``(snippet, truncated, omitted_fields)`` for one raw payload (R8.2, R10.5).
+
+    The review queue shows a fragment of a raw record, and there are TWO ways
+    the fragment is smaller than the record: the character cut (``truncated``)
+    and the field selection — a title lifted out of a JSON payload that also
+    carried a body, an activity tag and a group name. ``omitted_fields`` counts
+    the top-level keys not shown, so the caller can disclose both. Without it a
+    short title extracted from a 1 KB record renders as an apparently complete
+    line with no cut to label. Pure.
+    """
     if not payload:
-        return ""
+        return "", False, 0
     try:
         obj = json.loads(payload)
         for key in ("title", "headline", "name", "summary"):
             if isinstance(obj, dict) and (obj.get(key) or "").strip():
-                return obj[key].strip()[:limit]
+                text = obj[key].strip()
+                return text[:limit], len(text) > limit, max(len(obj) - 1, 0)
     except (ValueError, TypeError):
         pass
-    return str(payload)[:limit]
+    text = str(payload)
+    return text[:limit], len(text) > limit, 0
 
 
 def source_health(conn):
@@ -592,19 +615,27 @@ def triage_decision(conn, raw_event_id, entity_id, accept, now=None):
     """Record a human review decision (R8.2): log an entity_match_decisions row
     (decided_by='human') and update the matching review_queue row's disposition
     - both in one transaction. Accepting records the decision only; creating a
-    signal from an accepted match is deferred (documented on the page)."""
+    signal from an accepted match is deferred (documented on the page).
+
+    Some review rows are not entity candidates: a NULL candidate_entity_id means
+    the row was routed to triage for another reason. Those rows still need to be
+    dismissible, but they must not fabricate an entity_match_decisions row for a
+    nonexistent entity.
+    """
     ts = _utcnow_iso(now)
     decision = "reviewed" if accept else "rejected"
     disposition = "accepted" if accept else "rejected"
-    conn.execute(
-        "INSERT INTO entity_match_decisions (raw_event_id, entity_id, method, "
-        " confidence, matched_terms, rejected_terms, decision, decided_by, ts, "
-        " parser_version) VALUES (?, ?, 'human_review', 1.0, '[]', '[]', ?, "
-        " 'human', ?, ?)",
-        (raw_event_id, entity_id, decision, ts, TRIAGE_PARSER_VERSION))
+    entity_id = (entity_id or "").strip() or None
+    if entity_id is not None:
+        conn.execute(
+            "INSERT INTO entity_match_decisions (raw_event_id, entity_id, "
+            " method, confidence, matched_terms, rejected_terms, decision, "
+            " decided_by, ts, parser_version) VALUES (?, ?, 'human_review', "
+            " 1.0, '[]', '[]', ?, 'human', ?, ?)",
+            (raw_event_id, entity_id, decision, ts, TRIAGE_PARSER_VERSION))
     conn.execute(
         "UPDATE review_queue SET disposition = ?, disposed_at = ? "
-        "WHERE raw_event_id = ? AND candidate_entity_id = ?",
+        "WHERE raw_event_id = ? AND candidate_entity_id IS ?",
         (disposition, ts, raw_event_id, entity_id))
     conn.commit()
 
