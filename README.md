@@ -41,9 +41,11 @@ That is a property of the free public record, not of the classifiers. Measured o
 |---|---|---|
 | `own_incident` | SEC 8-K **Item 1.05** (material cybersecurity incident) | **0 filings** across 1,886 EDGAR submissions |
 | `leadership_change` | SEC 8-K **Item 5.02** filing documents | 45 of 242 documents fetched; **0** named a security executive |
-| `nerc_enforcement` | NERC enforcement dockets | 2 raw pages stored; no docket fetcher built |
+| `nerc_enforcement` | NERC enforcement dockets naming a violated CIP standard | 18 notices ingested; **2** name a watchlist entity, **0** name a CIP standard |
 
-Both empties are structural. Item 1.05 runs roughly two filings a week across ~5,000 SEC issuers nationally, so the energy slice is a couple per *year* — not per week. Item 5.02 is scoped to Section 16 officers, and a CISO is not one; a company can hire its entire security leadership without a filing. No amount of parser quality changes either number.
+All three empties are structural. Item 1.05 runs roughly two filings a week across ~5,000 SEC issuers nationally, so the energy slice is a couple per *year* — not per week. Item 5.02 is scoped to Section 16 officers, and a CISO is not one; a company can hire its entire security leadership without a filing. No amount of parser quality changes either number.
+
+The enforcement docket is now ingested rather than hypothetical, and the measurement is what settles it: of 18 notices spanning 2025-01 → 2026-07, 14 are monthly aggregate "Spreadsheet Notice of Penalty" filings naming no entity and 4 are named-entity notices covering 5 companies — of which two are on the watchlist. None names a violated CIP standard in its title, and the trigger requires one, because a play with no mapped product is a card with nothing to say. Fetching the notice body to recover the standard is the same bet as the Item 5.02 document fetch above, which returned zero; and NERC does not post redacted CIP notices publicly at all, so the CIP subset is not measurable from the public docket by design.
 
 So the account tier stays gated rather than shipped-and-empty. The feed keeps a labeled account/sector divider with the account half blank and the reason stated, the digest ranks sector cards, and account precision is reported separately so a zero denominator reads "not enough evidence yet" instead of 0%.
 
@@ -96,7 +98,9 @@ A crew is named only if it is tied to two or more distinct victims. One victim c
 
 ![Review Queue](assets/screenshots/review-queue.png)
 
-**Account 360** — per-account identifiers, relationships, gov-cloud posture, and signal timeline.
+**Account 360** — per-account identifiers, gov-cloud posture, and five tabs: Timeline, Signals, Products, Compliance Calendar and Entity Graph. Shown on the Compliance Calendar, which is the tab with sourced rows today — obligations are matched by *subsector class*, never keyed to the account, and the panel says so rather than implying this company is a registered entity. It is an **effective-date** calendar: compliance dates live in the order body, which is not in the fetched record, so none is shown or derived. The coverage line ("checked 3 stored obligations; 3 apply to subsector `iou_electric`") is deliberately falsifiable.
+
+The other tabs are empty for most accounts, each stating its own reason: Products reads only the account's *own* signals' plays, and no signal has ever carried an `entity_id`, so sector-scoped plays are deliberately not attributed here; Entity Graph shows only *sourced* relationship edges, so the seeded parent hint never appears in it.
 
 ![Account 360](assets/screenshots/account-360.png)
 
@@ -117,6 +121,7 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 | Federal Register API (FERC, TSA) | Classified — regulatory |
 | Press-wire RSS (PR Newswire, GlobeNewswire) | Classified — leadership + company-statement incidents |
 | NERC / FERC public pages | Classified — regulatory |
+| NERC enforcement docket (NP-series) + NERC events calendar | Stored — not classified; see [Coverage](#coverage) for the measured reason |
 | GDELT global news | Stored for backfill (later-stage classification) |
 | CISA KEV + NVD | Stored — known-exploited vulnerabilities |
 | Ransomware tracker (ransomware.live) | Classified — unconfirmed early-warning incidents (own/peer) |
@@ -249,7 +254,7 @@ The MVP classifies regulatory actions, leadership changes, and precision-first c
 | Admin / Config (weight + half-life tuning, source registry with add/enable/disable/guarded-remove, license-fact editor + add, staleness, config audit trail, watchlist entity manager + alias/collision editor + reset/remove) + incident evidence-tier re-tier editor on incident cards (audited `incident_tier_edits` trail) | Implemented |
 | Sector & regulatory scope tier (compliance clocks, peer incidents) | Implemented — the live weekly output |
 | Account-specific scope tier (`own_incident`, `leadership_change`, `nerc_enforcement`) | Implemented but **gated** — inputs are data-empty in the free public record; entry criteria in [Coverage](#coverage) |
-| NERC enforcement-docket fetcher (NP-series notices of penalty) | Not built — the one buildable path toward account-scope volume |
+| NERC enforcement-docket fetcher (NP-series notices of penalty) + NERC events calendar | Implemented — both ingested, neither classified yet; measured ceiling is 2 watchlist entities over 18 months, so this is no longer the account-scope lever it was scoped as (see [Coverage](#coverage)) |
 
 Later stages add combo scoring, GDELT-based classification, and a hiring/macro-trend layer.
 
