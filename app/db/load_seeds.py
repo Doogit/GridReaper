@@ -185,25 +185,33 @@ def apply_trigger_scopes(conn):
 
 
 def apply_identifiers(conn):
-    """Fill lei / wikidata_qid from the generated entity_identifiers.csv
+    """Fill cik / lei / wikidata_qid from the generated entity_identifiers.csv
     (written by app.enrich_entities). Fill-if-empty only: a non-empty value
     from the hand-verified watchlist CSV always wins over generated data.
     Duplicate generated identifiers are skipped because deterministic IDs
     must remain one-to-one for entity resolution.
-    Returns (lei_filled, qid_filled, source_rows, duplicate_skips)."""
+    Returns (cik_filled, lei_filled, qid_filled, source_rows, duplicate_skips)."""
     _, rows = read_rows(os.path.join(SEEDS_DIR, "entity_identifiers.csv"))
-    lei_filled = qid_filled = 0
+    cik_filled = lei_filled = qid_filled = 0
     duplicate_skips = 0
+    duplicate_ciks = duplicated_values(rows, "cik")
     duplicate_leis = duplicated_values(rows, "lei")
     duplicate_qids = duplicated_values(rows, "wikidata_qid")
     for row in rows:
         cur = conn.execute(
-            "SELECT lei, wikidata_qid FROM watchlist_entities "
+            "SELECT cik, lei, wikidata_qid FROM watchlist_entities "
             "WHERE entity_id = ?", (row["entity_id"],)).fetchone()
         if cur is None:
             continue
+        cik = (row.get("cik") or "").strip()
         lei = (row.get("lei") or "").strip()
         qid = (row.get("wikidata_qid") or "").strip()
+        if cik and cik in duplicate_ciks:
+            duplicate_skips += 1
+        elif cik and not (cur["cik"] or "").strip():
+            conn.execute("UPDATE watchlist_entities SET cik=? WHERE entity_id=?",
+                         (cik, row["entity_id"]))
+            cik_filled += 1
         if lei and lei in duplicate_leis:
             duplicate_skips += 1
         elif lei and not (cur["lei"] or "").strip():
@@ -217,7 +225,7 @@ def apply_identifiers(conn):
                 "UPDATE watchlist_entities SET wikidata_qid=? WHERE entity_id=?",
                 (qid, row["entity_id"]))
             qid_filled += 1
-    return lei_filled, qid_filled, len(rows), duplicate_skips
+    return cik_filled, lei_filled, qid_filled, len(rows), duplicate_skips
 
 
 def load(db_path=None):
@@ -315,9 +323,9 @@ def load(db_path=None):
         print(f"{table}: {loaded} rows loaded (source CSV had {source_m} data rows){tag}")
     print(f"entity_aliases: {len(aliases)} split from watchlist CSV")
     print(f"entity_collision_terms: {len(collisions)} split from watchlist CSV")
-    lei_n, qid_n, ident_rows, duplicate_skips = ident_stats
-    print(f"entity_identifiers: {lei_n} lei + {qid_n} wikidata_qid filled "
-          f"(source CSV had {ident_rows} rows; "
+    cik_n, lei_n, qid_n, ident_rows, duplicate_skips = ident_stats
+    print(f"entity_identifiers: {cik_n} cik + {lei_n} lei + {qid_n} wikidata_qid "
+          f"filled (source CSV had {ident_rows} rows; "
           f"{duplicate_skips} duplicate value(s) skipped)")
     print(f"trigger allowed_scopes: {scopes_updated} MVP trigger(s) set")
 
