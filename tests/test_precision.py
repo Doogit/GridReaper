@@ -357,9 +357,20 @@ class G1WaiverTests(unittest.TestCase):
         self.assertEqual(out["waiver"]["reason"], (
             "Overall: WAIVED by operator ruling 2026-08-16 — not passed. The "
             "gate's own conditions below are unmet and are shown unchanged."))
-        # Never coerced to a pass: the computed gate is still not eligible.
-        self.assertNotEqual(out["state"], "pass")
+        # Never coerced to a pass: the computed gate is still not eligible,
+        # and the state stays inside its closed three-value vocabulary.
+        self.assertIn(out["state"], ("waived", "eligible", "blocked"))
         self.assertFalse(out["eligible"])
+
+    def test_shipped_default_waives_without_an_explicit_argument(self):
+        # Every other test in this class passes waiver_active explicitly, so
+        # none of them would notice G1_WAIVER_ACTIVE being flipped. This one
+        # pins the SHIPPED default — the value production actually runs under,
+        # since data.precision_report calls g1_status with no override.
+        self.assertTrue(p.G1_WAIVER_ACTIVE)
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW)
+        self.assertEqual(out["state"], "waived")
 
     def test_waiver_records_lift_condition(self):
         # The condition that ENDS the waiver must be readable off the state, so

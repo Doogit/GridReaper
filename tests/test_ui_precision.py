@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 from app.audit import precision
 from app.db.migrate import apply_migrations
 from app.ui import data
+from app.ui_web import render
 from app.ui_web.app import app
 
 NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -410,6 +411,74 @@ class TestR911Gate(PrecisionRouteCase):
         # (no g2 cell) on Admin, i.e. the honest "no rated feedback" copy.
         _, adm = self._get_both(seed_gated_source)
         self.assertIn("no rated feedback for this source yet", adm)
+
+
+class TestG1WaiverViewBranches(unittest.TestCase):
+    """``render.precision_g1_view`` over all three overall-line states (KTD1).
+
+    The route tests above can only reach the ``waived`` branch: the shipped
+    ``G1_WAIVER_ACTIVE`` is True and ``data.precision_report`` calls
+    ``g1_status`` with no override, so every seeded route case now renders the
+    waiver. That left the ``eligible`` and blocked branches — and the
+    ``waiver is None`` fallback this PR added — with no test execution path at
+    the view layer, which is exactly the coverage the waiver's documented
+    rollback depends on. ``precision_g1_view`` takes a plain dict, so the
+    branches are pinned here directly with no DB.
+    """
+
+    @staticmethod
+    def _g1(state, waiver, eligible):
+        return {
+            "triggers": {"leadership_change": {
+                "meets": False, "useful_rate": None, "useful_n": 0,
+                "auto_accuracy": None, "auto_n": 0, "days_span": 0.0,
+                "reasons": ["n<20 rated account cards (have 0)"]}},
+            "reported_separately": {"feedback": {"rate": None, "total": 0},
+                                    "auto": {"accuracy": None, "scored": 0}},
+            "eligible": eligible,
+            "state": state,
+            "waiver": waiver,
+        }
+
+    def test_blocked_state_renders_no_waiver(self):
+        out = render.precision_g1_view(self._g1("blocked", None, False))
+        self.assertFalse(out["waived"])
+        self.assertIsNone(out["waiver_reason"])
+        self.assertIsNone(out["waiver_lift"])
+        self.assertFalse(out["eligible"])
+
+    def test_eligible_state_renders_no_waiver(self):
+        out = render.precision_g1_view(self._g1("eligible", None, True))
+        self.assertFalse(out["waived"])
+        self.assertIsNone(out["waiver_reason"])
+        self.assertIsNone(out["waiver_lift"])
+        # The pre-waiver pass path is untouched by this PR.
+        self.assertTrue(out["eligible"])
+
+    def test_waived_state_forwards_reason_and_lift(self):
+        waiver = {"date": precision.G1_WAIVER_DATE,
+                  "reason": precision.G1_WAIVER_REASON,
+                  "lift_condition": precision.G1_WAIVER_LIFT_CONDITION}
+        out = render.precision_g1_view(self._g1("waived", waiver, False))
+        self.assertTrue(out["waived"])
+        self.assertEqual(out["waiver_reason"], precision.G1_WAIVER_REASON)
+        self.assertEqual(out["waiver_lift"], precision.G1_WAIVER_LIFT_CONDITION)
+        # A waiver is a disclosure, never a pass: the computed value passes
+        # through untouched (KTD1).
+        self.assertFalse(out["eligible"])
+
+    def test_blocked_reasons_survive_every_state(self):
+        # The per-trigger BLOCKED badge and its reason line must be identical
+        # whether or not the waiver is active — the waiver discloses the failed
+        # gate, it never hides the conditions it failed.
+        for state, waiver in (("blocked", None),
+                              ("waived", {"date": "2026-08-16", "reason": "r",
+                                          "lift_condition": "l"})):
+            with self.subTest(state=state):
+                out = render.precision_g1_view(self._g1(state, waiver, False))
+                self.assertEqual(out["triggers"][0]["badge"], "BLOCKED")
+                self.assertIn("n<20 rated account cards",
+                              out["triggers"][0]["blocked"])
 
 
 if __name__ == "__main__":
