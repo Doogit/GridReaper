@@ -41,6 +41,9 @@ python -m app.classify.company_statement
 python -m app.classify.incident
 python -m app.classify.ransomware
 python -m app.classify.security_rss
+# Obligations (R8.3) derive from classified regulatory signals, not from
+# scores — so they run after the classifiers and before scoring.
+python -m app.obligations
 python -m app.scoring
 python -m app.plays
 python -m app.ui_web.digest || echo "WARN: digest generation failed, continuing"
