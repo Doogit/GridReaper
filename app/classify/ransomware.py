@@ -35,10 +35,15 @@ committing a concrete entity_id, no leak-site text ever feeds resolution.
              it.
   none     -> peer_incident (sector), but ONLY for an energy-industry victim
              (see PEER_ACTIVITIES). Off-list victim read as a class signal to
-             sector peers, and NAME-FREE in the strong sense: neither the
-             victim name NOR the attacker-controlled group string is printed
-             (a crew can name itself after its victim), so the sector card
-             leaks no company identity (R4.1).
+             sector peers. The victim IS named (operator ruling: naming is
+             acceptable wherever the card cites its source). The
+             attacker-controlled group string is still withheld - a crew can
+             name itself after its victim, and that string is authored by the
+             extortionist rather than by any source we can cite. The citation
+             also stays the tracker index rather than the victim's extortion
+             page (ui.data.identity_safe_source_url): naming a victim in our
+             own prose is not the same act as sending a reader to a criminal
+             leak site.
 
 A peer card asserts the victim is a *sector peer* of the watchlist, so that
 claim is checked rather than assumed (R4.1: never template a claim the source
@@ -88,7 +93,11 @@ from app.classify import runner as classify_runner
 from app.resolve import EntityResolver, enqueue_review, record_decision
 
 CLASSIFIER_ID = "incident_ransomware"
-PARSER_VERSION = "incident_ransomware/1.1"
+# 1.2: peer cards now NAME the victim (the attacker-controlled group string is
+# still withheld, and the citation still degrades to the tracker index). Card
+# text changed, so the version MUST move - re-classification silently no-ops on
+# an unchanged parser_version, leaving stored cards on the retired wording.
+PARSER_VERSION = "incident_ransomware/1.2"
 SOURCE_ID = "ransomware_live"
 
 # ransomware.live ``activity`` values that make an off-list victim an industry
@@ -146,8 +155,8 @@ def classify_ransomware(conn, raw):
 
     Resolve the victim name (name-only - the only identity the record carries)
     and act: matched -> own (account, decision logged); review -> queue only,
-    no card (R6.2); none -> name-free peer (sector). A record with no victim
-    name is unusable -> [].
+    no card (R6.2); none -> named peer (sector), industry-gated. A record with
+    no victim name is unusable -> [].
     """
     payload = json.loads(raw["payload"] or "{}")
     victim = (payload.get("victim") or "").strip()
@@ -197,18 +206,31 @@ def classify_ransomware(conn, raw):
     if not is_peer_industry(payload.get("activity")):
         return []
 
-    # Name-free in the strong sense - neither victim NOR the attacker-controlled
-    # group string is printed, so the card leaks no company identity (R4.1).
+    # The victim is named (operator ruling: naming is acceptable where the card
+    # cites its source), and the name is payload-derived so the R10.6 provenance
+    # guard passes. The attacker-controlled GROUP string is still withheld: it is
+    # authored by the extortionist, not by a source we can cite.
+    #
+    # The citation stays the tracker's index rather than the victim's extortion
+    # page - see ui.data.identity_safe_source_url. Naming a victim in our own
+    # prose is not the same act as sending a reader to a criminal leak site.
     evidence = [{
-        "text": f"ransomware.live lists an organization on a ransomware leak site{seen}.",
-        "locator": "source"}]
+        "text": f"ransomware.live lists \"{victim}\" on a ransomware leak "
+                f"site{seen}. Unverified: no company, regulator, or SEC "
+                f"confirmation.",
+        "locator": "victim"}]
     return [{
         "trigger_id": "peer_incident",
         "signal_scope": "sector",
         "entity_id": None,
-        "entity_name_hint": None,
+        "entity_name_hint": None,     # peer card: never re-resolved downstream
         "event_date": event_date,
-        "headline": "Sector peer listed on a ransomware leak site - unverified early warning",
+        # "Sector peer" is unhedged here on purpose: unlike the security-press
+        # path, this branch already gated on is_peer_industry above, so the
+        # industry claim IS source-supported. "Unverified" below refers to the
+        # incident (R10.5 tier), not to the peer relationship.
+        "headline": f"Sector peer {victim} listed on a ransomware leak site "
+                    "- unverified early warning",
         "evidence": evidence,
         "confidence": PEER_CONFIDENCE,
         "incident_evidence_level": TIER,

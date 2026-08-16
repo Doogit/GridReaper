@@ -32,32 +32,38 @@ victim, so the grammar is a strict gate, not a broad net):
                            up to the top-level account (R6.5).
                 review  -> enqueue only, no card (R6.2, the operator's
                            queue-only rule).
-                none    -> peer_incident (sector), NAME-FREE.
+                none    -> peer_incident (sector), NAMING the company but
+                           HEDGING the sector claim ("Possible sector peer"):
+                           off-watchlist is not evidence of shared industry.
 
   LEAK-ADJACENT (BleepingComputer only)  an item whose breach is an attacker or
               leak-site CLAIM ("claims to have breached", "listed on ... leak
               site", "data for sale", "extortion") rather than a victim
               disclosure. Per the fetcher's source policy the classifier must
               down-tier these to UNCONFIRMED_EARLY_WARNING (R7.12): outreach
-              suppressed, operator-only. These emit a NAME-FREE peer card ONLY,
-              never an own card - an attacker-chosen claim string is exactly the
-              source-controlled text that can embed a victim identity, so (more
-              conservative than ransomware.py, whose structured ``victim`` field
-              is trustworthy) this classifier never extracts a victim from a
-              leak claim. It under-attributes (a claim naming a watchlist company
-              mints a peer, not an own, card) but never mis-attributes or leaks
-              identity (R4.1). The Record is non-leak journalism (its items are
-              always corroborated), so it has no leak-adjacent path.
+              suppressed, operator-only. These emit an UNNAMED, HEDGED peer card
+              ONLY, never an own card - an attacker-chosen claim string is
+              exactly the source-controlled text that can embed a false victim
+              identity, so (more conservative than ransomware.py, whose
+              structured ``victim`` field is trustworthy) this classifier never
+              extracts a victim from a leak claim. Unnamed here is a consequence
+              of that, not a privacy policy: no company subject is ever
+              extracted on this path, so there is nothing to name without
+              guessing. The sector claim is hedged for the same reason as the
+              disclosure peer path: no industry gate runs here. It
+              under-attributes (a claim naming a watchlist company mints a peer,
+              not an own, card) but never mis-attributes (R4.1). The Record is
+              non-leak journalism (its items are always corroborated), so it has
+              no leak-adjacent path.
 
 R4.1 discipline: an own card quotes the item title verbatim (the company IS that
-account); a peer card is generic and name-free (the reported company is never
-printed) and templates no verb the source does not state.
+account); a peer card names the reported company but templates no verb the
+source does not state, and hedges the sector claim it cannot verify.
 
 RECALL NOTE (documented, not a gap): a general security feed name-matches almost
 nothing against the ~171-entity energy watchlist, so the own path emits at or
-near zero today and the name-free peer path is the reliably-firing output. This
-classifier exists for the live corpus; its behaviour is pinned by canned
-fixtures.
+near zero today and the peer path is the reliably-firing output. This classifier
+exists for the live corpus; its behaviour is pinned by canned fixtures.
 
 KNOWN LIMITATIONS (accepted, documented):
   * Grammar reads the title only (descriptions are noisier); an incident named
@@ -77,7 +83,12 @@ from app.classify import runner as classify_runner
 from app.resolve import EntityResolver, enqueue_review, record_decision
 
 CLASSIFIER_ID = "incident_security_rss"
-PARSER_VERSION = "incident_security_rss/1.0"
+# 1.2: disclosure peer cards now NAME the reported company, and both disclosure
+# and leak-adjacent peer cards HEDGE the sector claim ("Possible sector peer").
+# Card text changed, so the version MUST move - re-classification silently no-ops
+# on an unchanged parser_version, which would leave already-stored cards
+# asserting a sector they were never checked for.
+PARSER_VERSION = "incident_security_rss/1.2"
 
 # Press reporting of a disclosed incident: fuzzier than a structured SEC item
 # but firmer than a leak-site claim.
@@ -177,7 +188,7 @@ def _event_date(raw):
 
 def _disclosure_cands(conn, raw, title, company, source_tier):
     """Resolve the disclosing company (name-only) and act on the outcome.
-    Returns the candidate list (own or name-free peer), or [] when the name
+    Returns the candidate list (own or named peer), or [] when the name
     goes to review (queued, no card)."""
     resolver = EntityResolver(conn)
     res = resolver.resolve(name=company)
@@ -204,34 +215,48 @@ def _disclosure_cands(conn, raw, title, company, source_tier):
             "incident_evidence_level": source_tier,
         }]
 
-    # status == "none": off-list company -> class-level sector card, name-free.
+    # status == "none": off-list company -> class-level sector card, naming the
+    # company. Naming is allowed wherever the card cites its source (operator
+    # ruling); the name is payload-derived, so the R10.6 provenance guard passes.
+    #
+    # The SECTOR claim stays hedged. "none" means only that the name is not on
+    # the watchlist - the resolver never established that the company shares the
+    # watchlist's industry, and the live corpus proves it does not always: this
+    # branch shipped a crypto hardware-wallet vendor under a flat "Sector peer"
+    # headline. "Possible" is the strongest framing the evidence supports (R4.1).
     return [{
         "trigger_id": "peer_incident",
         "signal_scope": "sector",
         "entity_id": None,
-        "entity_name_hint": None,
+        "entity_name_hint": None,     # peer card: never re-resolved downstream
         "event_date": _event_date(raw),
-        "headline": "Sector peer disclosed a cybersecurity incident - "
-                    "security-press reported",
+        "headline": f"Possible sector peer: {company} disclosed a "
+                    "cybersecurity incident - security-press reported",
         "evidence": [{"text":
-            "Security-press reporting indicates an organization disclosed a "
-            "cybersecurity incident.", "locator": "source"}],
+            f"Security-press reporting indicates {company} disclosed a "
+            "cybersecurity incident. Industry match is unverified.",
+            "locator": "source"}],
         "confidence": PEER_CONFIDENCE,
         "incident_evidence_level": source_tier,
     }]
 
 
 def _leak_peer(raw):
-    """A BleepingComputer leak-adjacent claim -> one name-free peer card,
-    down-tiered to unconfirmed_early_warning (outreach suppressed, R7.12)."""
+    """A BleepingComputer leak-adjacent claim -> one unnamed, hedged peer card,
+    down-tiered to unconfirmed_early_warning (outreach suppressed, R7.12).
+
+    Unnamed by necessity rather than policy: this path is reached only when the
+    title failed the disclosure grammar, so there is no extracted company
+    subject to print. Naming would mean guessing one. Hedged because no industry
+    gate ran."""
     return {
         "trigger_id": "peer_incident",
         "signal_scope": "sector",
         "entity_id": None,
         "entity_name_hint": None,
         "event_date": _event_date(raw),
-        "headline": "Sector peer named in an unverified breach claim - "
-                    "early warning",
+        "headline": "Possible sector peer named in an unverified breach "
+                    "claim - early warning",
         "evidence": [{"text":
             "Security-press reporting references an unverified attacker or "
             "leak-site breach claim against an organization.",
@@ -246,9 +271,11 @@ def _classify(conn, raw, source_id, source_tier):
 
     Disclosure grammar first (victim-as-subject); if it structurally matches a
     cyber-incident sentence the item is spoken for (a card, or a queued review).
-    Otherwise, for BleepingComputer only, a leak-adjacent claim mints a name-free
-    unconfirmed peer. Everything else (generic CVE / malware / policy news) is
-    dropped.
+    Otherwise, for BleepingComputer only, a leak-adjacent claim mints an
+    unnamed, hedged unconfirmed peer - unnamed because that path never matched
+    the disclosure grammar, so no company subject was ever extracted to name;
+    hedged because no industry gate ran. Everything else (generic CVE / malware
+    / policy news) is dropped.
     """
     payload = json.loads(raw["payload"] or "{}")
     title = _clean_text(payload.get("title"))

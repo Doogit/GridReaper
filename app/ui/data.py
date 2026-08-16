@@ -116,25 +116,26 @@ def _parse_date(value):
         return None
 
 
-# -- name-free peer cards must not link a per-victim leak-site URL (R4.1) ----
+# -- sector cards must not link a per-victim leak-site URL --------------------
 #
+# ⚠️ THE RATIONALE FOR THIS GATE CHANGED. It is no longer an identity rule.
+# Peer cards now NAME the victim (operator ruling: naming is acceptable wherever
+# the card cites its source), so "the card would otherwise leak an identity" is
+# no longer why this exists and must not be re-derived from the old comment.
+#
+# What survives is a DESTINATION rule: do not send a reader to an extortionist.
 # ransomware.live's permalink path is literally base64("<Victim>@<crew>"), so
 # https://www.ransomware.live/id/Q29tbXVuaXR5IENvbm5lY3Rpb25zQHRoZWdlbnRsZW1lbg==
-# decodes to "Community Connections@thegentlemen". A sector peer card is
-# name-free by construction — its evidence says "an organization" — and then
-# the framework attaches the raw event's URL, which names that organization one
-# line below. The card body honoured R4.1; its own Source link defeated it.
-#
-# The Explore Ransomware Activity panel makes this materially worse, which is
-# why it is fixed here rather than deferred: that panel states the peer set's
-# exact cardinality ("2 of 100 listings are in the watchlist's own industry —
-# the only rows that mint sector-peer cards"), so a reader who can see the peer
-# cards can map the highlighted row onto specific companies with certainty.
+# decodes to "Community Connections@thegentlemen" — a criminal leak page
+# republishing the victim's stolen data. Naming a victim in our own prose, with
+# a citation, is not the same act as driving traffic to the crew extorting them.
+# This is the one distinction the PRD itself draws (R10.5 separates leak-site
+# evidence from press evidence); legitimate press permalinks are unrestricted.
 #
 # Sector cards therefore link the tracker's index instead of the per-victim
-# permalink: attribution survives (R10.4) and the identity does not. ACCOUNT
-# cards are untouched — an own_incident card already names its entity, so its
-# permalink discloses nothing the card does not.
+# permalink: attribution survives (R10.4) and the destination stays lawful.
+# ACCOUNT cards are untouched — an own_incident card's permalink is reached only
+# for a watchlist entity the operator is already working.
 # The rule is a HOST rule, not a substring one. Matching "ransomware.live/id/"
 # anywhere in the lowercased string got the two shapes ingest emits right by
 # luck and everything else wrong: it missed any tracker URL where the substring
@@ -162,15 +163,15 @@ def _leak_tracker_host(url):
 
 
 def identity_safe_source_url(url, signal_scope=None):
-    """Strip a per-victim leak-site permalink from a name-free card (R4.1).
+    """Redirect a per-victim leak-site permalink to the tracker index.
 
     Returns ``url`` unchanged unless it points at a leak tracker
     (``_LEAK_TRACKER_HOSTS``) on a non-account-scoped signal, in which case the
     tracker's index is returned in its place. Pure — no I/O — so the view layer
-    can call it. This is the single chokepoint for the identity rule: it is the
-    only gate that is told the signal's scope, so it is the only one that can
-    tell an own-incident card (may keep its permalink) from a name-free peer
-    card (may not).
+    can call it. This is the single chokepoint for the leak-destination rule: it
+    is the only gate that is told the signal's scope, so it is the only one that
+    can tell an own-incident card (may keep its permalink) from a sector card
+    (may not). Press permalinks are never touched at any scope.
     """
     value = (url or "").strip()
     if not value or signal_scope in ("account", "parent"):
