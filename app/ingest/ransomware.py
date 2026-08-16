@@ -8,6 +8,28 @@ feed (evidence_rank 3): raw_events only, NO classification, NO cards here.
 Data credit: victim data from ransomware.live (https://www.ransomware.live),
 licensed CC-BY-4.0 (R10.4 attribution).
 
+HISTORY IS AVAILABLE, and this endpoint is a CHOICE, not a limit. Spiked with
+read-only GETs on 2026-08-16: /v2/recentvictims returns a fixed 100-record slice
+of the newest listings (5 days of coverage), while GET /v2/victims/{year}/{month}
+returns a whole month — ~914 records for 2026/07, same record shape. A
+month-walking backfill is therefore possible and is what would turn the Explore
+panel's baseline delta into a real number; it is not run from here because
+backfill scope is the operator's call.
+
+Two facts a backfill must plan around, both observed on that 2026/07 response:
+
+  * NEITHER date field is confined to the requested month, so the month
+    parameter cannot be trusted as a date filter. 'attackdate' ran
+    2024-05-20 → 2026-07-31 (victims disclosed in July whose attack was years
+    earlier) and 'discovered' ran 2026-07-01 → 2026-08-16 (spilling past the
+    month end). Which field the API buckets on was NOT established — one
+    response cannot settle it — so a backfill must bucket by whichever field it
+    stores as event_date itself rather than assume the API did.
+  * The API rate-limits harder than the recent endpoint suggests: a 4th GET
+    within roughly a minute returned HTTP 429 TOO MANY REQUESTS. A 12-month
+    walk needs a politeness sleep between months and must treat 429 as retry,
+    not as end-of-data.
+
 The API returns no stable per-victim id, so events omit source_native_id and
 the runner keys them by sha256 of the payload; json.dumps(sort_keys=True)
 makes that payload deterministic so unchanged records dedupe to 'seen'.

@@ -2657,6 +2657,118 @@ def _is_unclassified_activity(activity):
     return " ".join((activity or "").split()).lower() in UNCLASSIFIED_ACTIVITIES
 
 
+# -- baseline delta: the boundary-day trap (R8.5, R6.6) ----------------------
+#
+# A "change vs prior window" number on a trust panel must not be manufactured
+# out of how the feed happens to be fetched. BOTH ENDS of the covered window are
+# PARTIAL DAYS, for two independent reasons:
+#
+#   * the OLDEST covered day is clipped by the FEED. /v2/recentvictims returns a
+#     fixed-size slice of the newest listings (100 records in the stored
+#     corpus), so whichever day the slice runs out on is truncated, not quiet —
+#     the live corpus holds 7 listings on its oldest day against 14-38 on the
+#     interior days.
+#   * the NEWEST covered day is clipped by the CLOCK. The run that stored the
+#     corpus finished mid-afternoon UTC on its own last event_date, so that day
+#     holds only part of a day's listings.
+#
+# Splitting the covered window down the middle therefore drops a truncated day
+# into the PRIOR half every single time and reports "rising" by construction, on
+# the one panel whose entire purpose is trust. Both boundary days are excluded
+# from both halves. When the remaining interior spans an odd number of days the
+# MIDDLE day is excluded too, so the halves stay equal-length and the discard
+# stays symmetric — trimming an end instead would reintroduce exactly the bias
+# this avoids. Fewer than two whole interior days means NO baseline at all: the
+# view says "no comparable prior window" rather than printing a number the
+# corpus cannot support.
+#
+# Time is a second marginal on the INDUSTRY axis ONLY. It is never crossed with
+# the crew axis; crew-by-anything is what re-identifies, and the R4.1 note above
+# still holds without exception.
+#
+# HISTORY EXISTS UPSTREAM — spiked with read-only GETs, 2026-08-16.
+# ransomware.live v2 does expose historical listings, at
+# GET /v2/victims/{year}/{month}: 2026/07 returned ~914 listings against the
+# 100-record cap of /v2/recentvictims. See app/ingest/ransomware.py for what a
+# backfill over that endpoint has to plan around — neither of its date fields is
+# confined to the month requested.
+# The stored corpus is still a single run of the RECENT endpoint, so the split
+# below is written to work over a multi-month corpus and simply reports no
+# comparable prior window until a backfill lands. Backfilling is the operator's
+# call, not this read's.
+BASELINE_MIN_INTERIOR_DAYS = 2
+
+
+def _baseline_split(days):
+    """Split covered days into equal prior/current halves (see the note above).
+
+    ``days`` is the sorted list of distinct ISO days the corpus covers. Returns
+    ``(prior, current, boundary, middle)`` as day lists. ``prior``/``current``
+    come back empty when the corpus is too short for an honest comparison —
+    that is a real answer, not a failure.
+    """
+    if not days:
+        return [], [], [], []
+    boundary = [days[0]] if len(days) == 1 else [days[0], days[-1]]
+    interior = days[1:-1]
+    if len(interior) < BASELINE_MIN_INTERIOR_DAYS:
+        return [], [], boundary, []
+    half = len(interior) // 2
+    return (interior[:half], interior[len(interior) - half:], boundary,
+            interior[half:len(interior) - half])
+
+
+def _ransomware_baseline(day_total, day_peer):
+    """Prior-vs-current counts over equal halves of the corpus, or an honest
+    'unavailable' when the covered span is too short (R8.5, R6.6).
+
+    Both n's are returned, never just the difference: a delta with no
+    denominators is unreadable on a corpus this thin.
+
+    ``subject_available`` is a SECOND, narrower floor for the watchlist row.
+    The corpus-wide floor only asks whether two whole interior days exist; it
+    says nothing about whether the watchlist's own industry appeared on any of
+    them. On the live corpus it does not — the watchlist holds 2 listings in
+    100 and both fall on excluded boundary days — so the subject would compare
+    0 against 0 and the lede would render the word "no change". That is not a
+    fabricated rise, but it is a fabricated FINDING: "no change" reads as a
+    measured result when the denominator is zero on both sides. The subject
+    delta is withheld unless at least one watchlist listing lands in one half.
+    """
+    days = sorted(day_total)
+    prior, current, boundary, middle = _baseline_split(days)
+    base = {
+        "covered_days": len(days),
+        "excluded_boundary": boundary,
+        "excluded_middle": middle,
+    }
+    if not prior:
+        base.update({
+            "available": False, "subject_available": False, "half_days": 0,
+            "prior_start": "", "prior_end": "",
+            "current_start": "", "current_end": "",
+            "prior_total": 0, "current_total": 0, "total_delta": None,
+            "prior_peer": 0, "current_peer": 0, "peer_delta": None,
+        })
+        return base
+    prior_total = sum(day_total[d] for d in prior)
+    current_total = sum(day_total[d] for d in current)
+    prior_peer = sum(day_peer.get(d, 0) for d in prior)
+    current_peer = sum(day_peer.get(d, 0) for d in current)
+    base.update({
+        "available": True,
+        "subject_available": (prior_peer + current_peer) > 0,
+        "half_days": len(prior),
+        "prior_start": prior[0], "prior_end": prior[-1],
+        "current_start": current[0], "current_end": current[-1],
+        "prior_total": prior_total, "current_total": current_total,
+        "total_delta": current_total - prior_total,
+        "prior_peer": prior_peer, "current_peer": current_peer,
+        "peer_delta": current_peer - prior_peer,
+    })
+    return base
+
+
 def ransomware_activity(conn, now=None):
     """Aggregate leak-site activity for the Explore Ransomware tab (R8.5, R4.1).
 
@@ -2666,10 +2778,20 @@ def ransomware_activity(conn, now=None):
 
         {'total', 'window_start', 'window_end', 'window_days',
          'source_name', 'source_url', 'last_success_at', 'source_state',
+         'run_count',
          'crews': [{'label','count'}],        # >= CREW_MIN_VICTIMS only
          'crews_withheld', 'crews_withheld_listings', 'crew_total',
-         'industries': [{'label','count','is_peer'}],
-         'peer_listings', 'unclassified'}
+         'industries': [{'label','count','rank','is_peer'}],
+         'peer_listings', 'peer_rank', 'industry_rows', 'unclassified',
+         'baseline': {...}}
+
+    ``industries`` leads with the watchlist's OWN industry rows, then falls back
+    to descending volume. The panel's subject is the watchlist; world volume
+    rank is context, and is carried per row as ``rank`` so it stays readable
+    without being the ordering. ``baseline`` is the prior-window comparison
+    described in the note above; ``run_count`` is how many ingest runs the
+    corpus was assembled from, which is what tells the reader a one-run corpus
+    is a rolling-feed snapshot rather than an accumulated series.
 
     ``now`` is injectable so the freshness classification is deterministic in
     tests (R10.2 UTC ISO-8601 throughout).
@@ -2699,10 +2821,21 @@ def ransomware_activity(conn, now=None):
             source_row = candidate
             break
 
+    # How many ingest runs the corpus came from. One run of a rolling recent
+    # feed is a snapshot, not a series, and the byline has to say so.
+    run_count = conn.execute(
+        "SELECT COUNT(*) FROM source_runs WHERE source_id = ?",
+        (RANSOMWARE_SOURCE_ID,)).fetchone()[0]
+
     crew_counts = {}
     crew_victims = {}
     industry_counts = {}
     dates = []
+    # Per-day tallies feed the baseline split only. Listings with no usable
+    # event_date cannot be placed on the timeline, so they are counted in the
+    # total but sit out the comparison rather than landing in an arbitrary half.
+    day_total = {}
+    day_peer = {}
     unclassified = 0
     for row in rows:
         try:
@@ -2715,6 +2848,7 @@ def ransomware_activity(conn, now=None):
         event_date = (row["event_date"] or "")[:10]
         if event_date:
             dates.append(event_date)
+            day_total[event_date] = day_total.get(event_date, 0) + 1
 
         crew = " ".join((payload.get("group") or "").split())
         if crew:
@@ -2728,6 +2862,11 @@ def ransomware_activity(conn, now=None):
             unclassified += 1
         else:
             industry_counts[activity] = industry_counts.get(activity, 0) + 1
+            # Same predicate as the row flag below, so the baseline compares
+            # exactly the rows the panel highlights (an unknown industry is
+            # never a peer, so it never enters this tally).
+            if event_date and ransomware_classifier.is_peer_industry(activity):
+                day_peer[event_date] = day_peer.get(event_date, 0) + 1
 
     # Descending by count, then label, so equal counts render deterministically.
     # The naming gate is distinct victims, not raw listings: upstream revisions
@@ -2739,15 +2878,24 @@ def ransomware_activity(conn, now=None):
     withheld = [n for k, n in crew_counts.items()
                 if len(crew_victims.get(k, set())) < CREW_MIN_VICTIMS]
 
+    # SUBJECT FIRST (R8.5). Ranking the industries purely by volume buried the
+    # watchlist's own row ninth on the real corpus, which made the panel answer
+    # "who is busiest worldwide" — a question nobody opens this tab with. The
+    # watchlist rows lead; volume order still governs within each group, and the
+    # world rank each row would have had is carried as `rank` so the context is
+    # kept rather than discarded.
+    by_volume = sorted(industry_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     industries = [
-        {"label": k, "count": n,
+        {"label": k, "count": n, "rank": i + 1,
          "is_peer": ransomware_classifier.is_peer_industry(k)}
-        for k, n in sorted(industry_counts.items(),
-                           key=lambda kv: (-kv[1], kv[0]))
+        for i, (k, n) in enumerate(by_volume)
     ]
+    industries.sort(key=lambda r: (not r["is_peer"], -r["count"], r["label"]))
 
     return {
         "total": len(rows),
+        "run_count": run_count,
+        "baseline": _ransomware_baseline(day_total, day_peer),
         "window_start": min(dates) if dates else "",
         "window_end": max(dates) if dates else "",
         "window_days": _window_days(dates),
@@ -2764,6 +2912,9 @@ def ransomware_activity(conn, now=None):
         "crews_withheld_listings": sum(withheld),
         "industries": industries,
         "peer_listings": sum(r["count"] for r in industries if r["is_peer"]),
+        "peer_rank": min((r["rank"] for r in industries if r["is_peer"]),
+                         default=0),
+        "industry_rows": len(industries),
         "unclassified": unclassified,
     }
 

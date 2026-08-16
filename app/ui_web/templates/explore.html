@@ -88,6 +88,24 @@
        persona pass, so it is on the page rather than left to the column head. #}
     <p class="gs-rw-subject">{{ ransomware.subject_note }}</p>
 
+    {# SUBJECT FIRST (R8.5): the watchlist's own industry, its count and its
+       change, lead the panel. World volume ranking sits underneath as context.
+       Every number here is a marginal on the industry axis — never crossed with
+       the crew axis (R4.1). #}
+    <section class="gs-rw-lede">
+      <h2>Watchlist industry — this panel's subject</h2>
+      <p class="gs-rw-lede-figure">
+        <span class="gs-rw-lede-count">{{ ransomware.subject_count }}</span>
+        <span class="gs-rw-lede-of">of {{ ransomware.total }} listings</span>
+        <span class="gs-rw-lede-delta{% if not ransomware.subject_delta %} none{% endif %}">{{ ransomware.subject_delta_note }}</span>
+      </p>
+      <p class="gs-rw-note">{{ ransomware.peer_note }}</p>
+      <p class="gs-rw-note{% if not ransomware.baseline_available %} gs-rw-nobaseline{% endif %}">{{ ransomware.baseline_note }}</p>
+      {% if ransomware.subject_rank_note %}
+      <p class="gs-rw-note">{{ ransomware.subject_rank_note }}</p>
+      {% endif %}
+    </section>
+
     <div class="gs-rw-cols">
       <section class="gs-rw-col">
         <h2>Most active crews</h2>
@@ -104,7 +122,7 @@
       </section>
 
       <section class="gs-rw-col">
-        <h2>Industries hit — victims worldwide</h2>
+        <h2>Industries hit — victims worldwide, watchlist industry first</h2>
         {% for row in ransomware.industries %}
         <div class="gs-rw-row{% if row.is_peer %} peer{% endif %}{% if row.unclassified %} unclassified{% endif %}">
           <span class="gs-rw-label">{{ row.label }}{% if row.is_peer %} <span class="gs-rw-peer-tag">peer</span>{% endif %}</span>
@@ -112,7 +130,6 @@
           <span class="gs-rw-rail"><span class="gs-rw-fill" style="--fill: {{ row.bar }}%"></span></span>
         </div>
         {% endfor %}
-        <p class="gs-rw-note">{{ ransomware.peer_note }}</p>
         {% if ransomware.industry_note %}
         <p class="gs-rw-note">{{ ransomware.industry_note }}</p>
         {% endif %}
