@@ -187,6 +187,10 @@ class TestLeakAdjacent(SecurityRssTestCase):
         for text in (peer["headline"], ev):
             self.assertNotIn("Acme", text)
             self.assertNotIn("Ransomware gang", text)
+        self.assertTrue(peer["headline"].startswith("Possible sector peer"),
+                        peer["headline"])
+        self.assertFalse(peer["headline"].startswith("Sector peer"),
+                         peer["headline"])
 
     def test_the_record_has_no_leak_path(self):
         """The Record is non-leak journalism: a leak-claim headline that fails
