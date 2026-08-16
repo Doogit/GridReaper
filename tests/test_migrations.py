@@ -118,5 +118,50 @@ class TestWatchlistAdminColsMigration(unittest.TestCase):
         self.assertIsNotNone(version)
 
 
+class TestScoringConfigVersionMigration(unittest.TestCase):
+    """0011 signals.scoring_config_version (R3.7)."""
+
+    def _conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
+        return conn
+
+    def test_0011_adds_scoring_config_version_to_signals(self):
+        conn = self._conn()
+        ran = apply_migrations(conn)
+        self.assertIn("0011_scoring_config_version", ran)
+        cols = {r["name"]: r for r in conn.execute(
+            "PRAGMA table_info(signals)")}
+        self.assertIn("scoring_config_version", cols)
+        col = cols["scoring_config_version"]
+        # nullable, no default: a pre-versioning signal stays NULL and reads
+        # "pre-versioning" rather than being backfilled with a guess.
+        self.assertEqual(col["notnull"], 0)
+        self.assertIsNone(col["dflt_value"])
+
+    def test_existing_signal_defaults_to_null(self):
+        conn = self._conn()
+        apply_migrations(conn)
+        conn.execute("INSERT INTO triggers (trigger_id, name, base_strength, "
+                     "decay_half_life_days) VALUES ('t1','T',4,90)")
+        conn.execute(
+            "INSERT INTO signals (signal_id, trigger_id, signal_scope, "
+            " event_date, status) VALUES ('s1','t1','sector','2026-08-01',"
+            " 'active')")
+        row = conn.execute("SELECT scoring_config_version FROM signals "
+                           "WHERE signal_id = 's1'").fetchone()
+        self.assertIsNone(row["scoring_config_version"])
+
+    def test_reapply_is_noop(self):
+        conn = self._conn()
+        apply_migrations(conn)
+        self.assertEqual(apply_migrations(conn), [])
+        version = conn.execute(
+            "SELECT version FROM schema_migrations "
+            "WHERE version = '0011_scoring_config_version'").fetchone()
+        self.assertIsNotNone(version)
+
+
 if __name__ == "__main__":
     unittest.main()

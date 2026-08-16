@@ -7,6 +7,11 @@ covers every lookup key). Covers exact formula math, half-life curve points,
 neutral fallback for unknown weight keys, the regulatory_calendar
 applicability path, the decay flip at DECAY_THRESHOLD, idempotency with an
 injected clock, and that dismissed/decayed rows are never touched.
+
+TestScoringConfigVersion covers R3.7 reproducibility: the config token hashes
+BOTH tuning tables (scoring_weights and the triggers base_strength /
+decay_half_life_days columns), moves for every knob the scorer reads, and is
+stamped on active rows so a stored score names the tuning that produced it.
 """
 import csv
 import os
@@ -15,7 +20,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.db.migrate import apply_migrations
-from app.scoring import DECAY_THRESHOLD, rescore
+from app.scoring import DECAY_THRESHOLD, rescore, scoring_config_version
 
 NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -276,6 +281,147 @@ class TestSeedCsvCoverage(unittest.TestCase):
                          {"account", "sector", "regulatory_calendar"})
         self.assertGreater(scope["account"], scope["sector"])
         self.assertGreater(scope["sector"], scope["regulatory_calendar"])
+
+
+class TestScoringConfigVersion(unittest.TestCase):
+    """R3.7: a stored score names the tuning that produced it, and the token
+    moves for EVERY knob the scorer reads - both scoring_weights and the
+    triggers columns (base_strength, decay_half_life_days)."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def version(self):
+        return scoring_config_version(self.conn)
+
+    def stored(self, signal_id="s1"):
+        return self.conn.execute(
+            "SELECT score, score_base, score_decay, score_account_fit, "
+            " score_scope_fit, scoring_config_version, status FROM signals "
+            "WHERE signal_id = ?", (signal_id,)).fetchone()
+
+    def test_token_is_deterministic_16_hex(self):
+        first = self.version()
+        self.assertRegex(first, r"^[0-9a-f]{16}$")
+        self.assertEqual(first, self.version())
+
+    def test_weight_edit_moves_the_token(self):
+        before = self.version()
+        self.conn.execute("UPDATE scoring_weights SET weight = 1.3 "
+                          "WHERE weight_kind = 'subsector' AND key = 'iou_electric'")
+        self.assertNotEqual(before, self.version())
+
+    def test_half_life_edit_moves_the_token(self):
+        """The KTD3 correction: half-life lives in triggers, not
+        scoring_weights. Hashing scoring_weights alone would miss this."""
+        before = self.version()
+        self.conn.execute("UPDATE triggers SET decay_half_life_days = 45 "
+                          "WHERE trigger_id = 't_lead'")
+        self.assertNotEqual(before, self.version())
+
+    def test_base_strength_edit_moves_the_token(self):
+        before = self.version()
+        self.conn.execute("UPDATE triggers SET base_strength = 5 "
+                          "WHERE trigger_id = 't_lead'")
+        self.assertNotEqual(before, self.version())
+
+    def test_unrelated_edit_leaves_the_token_alone(self):
+        before = self.version()
+        self.conn.execute("UPDATE triggers SET name = 'Leadership change' "
+                          "WHERE trigger_id = 't_lead'")
+        self.conn.execute("UPDATE scoring_weights SET notes = 'tuned' "
+                          "WHERE weight_kind = 'scope' AND key = 'account'")
+        self.assertEqual(before, self.version())
+
+    def test_integer_and_real_spellings_hash_identically(self):
+        """SQLite affinity lets 4 and 4.0 both land in base_strength; the same
+        tuning must not produce two tokens."""
+        self.conn.execute("UPDATE triggers SET base_strength = 4 "
+                          "WHERE trigger_id = 't_lead'")
+        as_int = self.version()
+        self.conn.execute("UPDATE triggers SET base_strength = 4.0 "
+                          "WHERE trigger_id = 't_lead'")
+        self.assertEqual(as_int, self.version())
+
+    def test_rescore_stamps_the_current_token(self):
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertEqual(self.stored()["scoring_config_version"], self.version())
+
+    def test_prior_score_stays_reproducible_after_a_weight_change(self):
+        """The proving test: mutate one weight, re-score, and the version token
+        changes while the pre-change score is still explained exactly by the
+        components stored with its own token."""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        old = dict(self.stored())
+        self.assertAlmostEqual(old["score"], 4.4)
+        self.assertAlmostEqual(
+            old["score_base"] * old["score_decay"]
+            * old["score_account_fit"] * old["score_scope_fit"], old["score"])
+
+        self.conn.execute("UPDATE scoring_weights SET weight = 0.5 "
+                          "WHERE weight_kind = 'subsector' AND key = 'iou_electric'")
+        rescore(self.conn, now=NOW)
+        new = dict(self.stored())
+
+        self.assertNotEqual(old["scoring_config_version"],
+                            new["scoring_config_version"])
+        self.assertAlmostEqual(new["score"], 2.0)
+        self.assertAlmostEqual(
+            new["score_base"] * new["score_decay"]
+            * new["score_account_fit"] * new["score_scope_fit"], new["score"])
+        # the captured pre-change row still multiplies out to its own score:
+        # "which config produced 4.4?" is now answerable from the row alone.
+        self.assertAlmostEqual(
+            old["score_base"] * old["score_decay"]
+            * old["score_account_fit"] * old["score_scope_fit"], 4.4)
+
+    def test_half_life_change_moves_both_score_and_token(self):
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(90))
+        rescore(self.conn, now=NOW)
+        old = dict(self.stored())
+        self.assertAlmostEqual(old["score"], 2.2)
+        self.conn.execute("UPDATE triggers SET decay_half_life_days = 45 "
+                          "WHERE trigger_id = 't_lead'")
+        rescore(self.conn, now=NOW)
+        new = dict(self.stored())
+        self.assertAlmostEqual(new["score"], 1.1)
+        self.assertNotEqual(old["scoring_config_version"],
+                            new["scoring_config_version"])
+
+    def test_non_active_rows_keep_their_stale_token(self):
+        """Documented, intended gap: rescore() only touches active rows, so a
+        dismissed signal keeps the token it was last scored under (NULL here,
+        never scored) rather than being restamped with today's tuning."""
+        add_signal(self.conn, "s_dis", "t_lead", "account", "E_IOU",
+                   days_ago(0), status="dismissed", score=3.0)
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        self.assertIsNone(self.stored("s_dis")["scoring_config_version"])
+        self.assertEqual(self.stored("s_dis")["score"], 3.0)
+        self.assertIsNotNone(self.stored("s1")["scoring_config_version"])
+
+    def test_admin_weight_edit_path_moves_the_token(self):
+        """data.update_weight rescores; the stamped token must move with it."""
+        from app.ui import data
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        before = self.stored()["scoring_config_version"]
+        data.update_weight(self.conn, "subsector", "iou_electric", 0.5,
+                           reason="tuning", now=NOW)
+        self.assertNotEqual(before, self.stored()["scoring_config_version"])
+
+    def test_admin_half_life_edit_path_moves_the_token(self):
+        from app.ui import data
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        before = self.stored()["scoring_config_version"]
+        data.update_half_life(self.conn, "t_lead", 45, reason="tuning", now=NOW)
+        self.assertNotEqual(before, self.stored()["scoring_config_version"])
 
 
 if __name__ == "__main__":

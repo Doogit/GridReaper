@@ -295,6 +295,31 @@ class TestReviewAndSources(unittest.TestCase):
         self.assertEqual(r["reason"], "fuzzy_below_threshold")
         self.assertEqual(r["snippet"], "Ambiguous Utility Co filing")
         self.assertEqual(r["source_url"], "http://rev/doc")
+        # a short single-field title is the whole record (R10.5)
+        self.assertFalse(r["snippet_truncated"])
+        self.assertEqual(r["snippet_omitted_fields"], 0)
+        self.assertEqual(r["snippet_limit"], 200)
+
+    def test_review_pending_flags_a_cut_off_payload(self):
+        long_title = "A" * 250
+        self.conn.execute(
+            "UPDATE raw_events SET payload=? WHERE raw_event_id='re_rev'",
+            ('{"title": "%s"}' % long_title,))
+        r = data.review_pending(self.conn)[0]
+        self.assertTrue(r["snippet_truncated"])
+        self.assertEqual(len(r["snippet"]), 200)
+
+    def test_review_pending_counts_fields_the_snippet_drops(self):
+        # a SHORT title lifted out of a big record is not truncated, but it is
+        # still a fragment — the omitted-field count is what makes it honest
+        self.conn.execute(
+            "UPDATE raw_events SET payload=? WHERE raw_event_id='re_rev'",
+            ('{"title": "Short title", "activity": "Energy", '
+             '"group": "g", "description": "%s"}' % ("body " * 200),))
+        r = data.review_pending(self.conn)[0]
+        self.assertEqual(r["snippet"], "Short title")
+        self.assertFalse(r["snippet_truncated"])
+        self.assertEqual(r["snippet_omitted_fields"], 3)
 
     def test_source_state_classification(self):
         by_id = {r["source_id"]: r for r in data.source_health(self.conn)}
@@ -528,6 +553,139 @@ class TestExploreData(unittest.TestCase):
         self.assertEqual(data.explore_facility_points(empty), [])
         self.assertEqual(data.explore_state_density(empty), [])
         empty.close()
+
+
+# -- R3.7 provenance + its R4.1 privacy gate ---------------------------------
+
+# The real shape on this corpus: raw_event_id = "{source_id}:{native_id}" and an
+# RSS classifier's native_id is the item guid, i.e. the article link — whose slug
+# names the breached company.
+VICTIM = "trezor"
+VICTIM_RAW_EVENT_ID = (
+    "bleepingcomputer:https://www.bleepingcomputer.com/news/security/"
+    "trezor-discloses-data-breach-affecting-nearly-14-000-customers/")
+
+
+def provenance_conn():
+    """A raw event whose id embeds a victim-naming URL, classified by two
+    co-tenant classifiers on one source (the case that makes the classifier_id
+    join load-bearing), plus one account-scoped and one sector-scoped signal."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON;")
+    apply_migrations(conn)
+    conn.execute("INSERT INTO triggers (trigger_id, name, base_strength, "
+                 "decay_half_life_days) VALUES ('t_inc','Incident',5,120)")
+    conn.execute("INSERT INTO watchlist_entities (entity_id, name) "
+                 "VALUES ('E_ACME','Acme Energy')")
+    conn.execute("INSERT INTO source_policies (source_id, name, enabled, ttl, "
+                 "access_method, evidence_rank) VALUES "
+                 "('bleepingcomputer','BleepingComputer',1,3600,'rss',3)")
+    conn.execute("INSERT INTO source_runs (run_id, source_id, started_at, "
+                 "status, parser_version) VALUES "
+                 "('run1','bleepingcomputer', ?, 'success', "
+                 "'security_rss_fetch/2.0')", (iso(NOW),))
+    conn.execute(
+        "INSERT INTO raw_events (raw_event_id, source_id, run_id, event_date, "
+        "payload, url) VALUES (?, 'bleepingcomputer','run1', ?, '{}', "
+        "'https://www.bleepingcomputer.com/news/security/trezor-discloses/')",
+        (VICTIM_RAW_EVENT_ID, days_ago_date(1)))
+    for sid, scope, entity in (("S_PEER", "sector", None),
+                               ("S_OWN", "account", "E_ACME")):
+        conn.execute(
+            "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+            "signal_scope, trigger_id, event_date, headline, evidence_snippet, "
+            "source_url, confidence, evidence_quality, "
+            "customer_facing_allowed, score, status) "
+            "VALUES (?,?,?,?, 't_inc', ?, 'An organization in the sector "
+            "disclosed a breach','An organization disclosed a breach',"
+            "'https://example.test/x', 0.8, 'IR', 0, 3.0, 'active')",
+            (sid, VICTIM_RAW_EVENT_ID, entity, scope, days_ago_date(1)))
+        conn.execute(
+            "INSERT INTO signal_evidence (signal_id, raw_event_id, "
+            "evidence_text, evidence_locator, evidence_rank, "
+            "extraction_version) VALUES (?, ?, 'An organization disclosed a "
+            "breach.', 'item', 3, 'incident_security_rss/1.0')",
+            (sid, VICTIM_RAW_EVENT_ID))
+    # Two classifiers bookkeep the SAME raw event; only one owns these signals.
+    conn.executemany(
+        "INSERT INTO classified_events (raw_event_id, classifier_id, "
+        "parser_version, processed_at, signals_emitted) VALUES (?,?,?,?,1)",
+        [(VICTIM_RAW_EVENT_ID, "incident_security_rss",
+          "incident_security_rss/1.1", iso(NOW)),
+         (VICTIM_RAW_EVENT_ID, "company_statement",
+          "company_statement/9.9", iso(NOW + timedelta(hours=1)))])
+    conn.commit()
+    return conn
+
+
+class TestIdentitySafeRawEventRef(unittest.TestCase):
+    """R4.1 gate on the R3.7 reference: a name-free card must not print an id
+    that names the victim."""
+
+    def test_account_scope_passes_the_id_through(self):
+        for scope in ("account", "parent"):
+            ref = data.identity_safe_raw_event_ref(VICTIM_RAW_EVENT_ID, scope)
+            self.assertEqual(ref["ref"], VICTIM_RAW_EVENT_ID)
+            self.assertFalse(ref["hashed"])
+
+    def test_non_account_scopes_are_hashed(self):
+        for scope in ("sector", "subsector", "regulatory_calendar", None):
+            ref = data.identity_safe_raw_event_ref(VICTIM_RAW_EVENT_ID, scope)
+            self.assertTrue(ref["hashed"])
+            self.assertRegex(ref["ref"], r"^[0-9a-f]{16}$")
+            self.assertNotIn(VICTIM, ref["ref"])
+            self.assertNotIn("http", ref["ref"])
+
+    def test_hash_is_stable_and_distinguishing(self):
+        a = data.identity_safe_raw_event_ref(VICTIM_RAW_EVENT_ID, "sector")
+        b = data.identity_safe_raw_event_ref(VICTIM_RAW_EVENT_ID, "sector")
+        c = data.identity_safe_raw_event_ref("other:evt", "sector")
+        self.assertEqual(a["ref"], b["ref"])
+        self.assertNotEqual(a["ref"], c["ref"])
+
+    def test_missing_id_is_empty_not_a_hash_of_nothing(self):
+        for value in (None, "", "   "):
+            self.assertEqual(data.identity_safe_raw_event_ref(value, "sector"),
+                             {"ref": "", "hashed": False})
+
+
+class TestSignalProvenance(unittest.TestCase):
+    """R3.7: signal_detail carries both parser versions."""
+
+    def setUp(self):
+        self.conn = provenance_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_classifier_version_comes_from_the_owning_classifier(self):
+        prov = data.signal_detail(self.conn, "S_PEER")["provenance"]
+        # NOT company_statement/9.9 — that co-tenant processed the same raw
+        # event but did not mint this signal.
+        self.assertEqual(prov["classifier_id"], "incident_security_rss")
+        self.assertEqual(prov["classifier_parser_version"],
+                         "incident_security_rss/1.1")
+        self.assertEqual(prov["extraction_version"],
+                         "incident_security_rss/1.0")
+
+    def test_fetch_version_comes_from_the_source_run(self):
+        prov = data.signal_detail(self.conn, "S_OWN")["provenance"]
+        self.assertEqual(prov["fetch_parser_version"], "security_rss_fetch/2.0")
+
+    def test_unbookkept_signal_reports_none_not_a_guess(self):
+        conn = fixture_conn()
+        try:
+            prov = data.signal_detail(conn, "S_ACC1")["provenance"]
+            self.assertIsNone(prov["classifier_parser_version"])
+            self.assertIsNone(prov["fetch_parser_version"])
+        finally:
+            conn.close()
+
+    def test_scoring_config_version_is_selected_onto_the_card_row(self):
+        signal = data.signal_detail(self.conn, "S_OWN")["signal"]
+        self.assertIn("scoring_config_version", signal.keys())
+        self.assertIsNone(signal["scoring_config_version"])
 
 
 if __name__ == "__main__":

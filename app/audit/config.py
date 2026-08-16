@@ -33,12 +33,14 @@ DEFAULT_MODEL_ID = os.environ.get("GRIDSIGNALS_AUDIT_MODEL", "claude-haiku-4-5")
 # audit_runs.budget_spent; an unknown model falls back to the Haiku rate so cost
 # is never silently treated as zero.
 #
-# claude-sonnet-5 is on a promotional $2/$10 through 2026-08-31 and reverts to
-# the standard $3/$15 on 2026-09-01. Haiku (the default model, so the only one
-# that prices live spend today) and Opus 4.8 have no scheduled change.
+# claude-sonnet-5 launched with promotional $2/$10 pricing through 2026-08-31,
+# but Anthropic made that price permanent on 2026-08-10; the previously planned
+# $3/$15 increase on 2026-09-01 no longer applies. Haiku (the default model, so
+# the only one that prices live spend today) and Opus 4.8 have no scheduled
+# change.
 PRICING_SCHEDULE_PER_MTOK = {
     "claude-haiku-4-5": [("", 1.00, 5.00)],
-    "claude-sonnet-5": [("", 2.00, 10.00), ("2026-09-01", 3.00, 15.00)],
+    "claude-sonnet-5": [("", 2.00, 10.00)],
     "claude-opus-4-8": [("", 5.00, 25.00)],
 }
 _FALLBACK_PRICE = (1.00, 5.00)

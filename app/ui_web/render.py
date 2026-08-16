@@ -290,6 +290,26 @@ def review_row_dom_id(raw_event_id, candidate_entity_id):
     return f"gs-rq-{digest}"
 
 
+# A review row is BY DEFINITION unadjudicated — the resolver could not settle
+# the match and no human has ruled yet — so the badge is a constant, not a tier
+# joined from review_queue (which carries no tier column) (R8.2, R10.5).
+REVIEW_UNCONFIRMED_BADGE = {
+    "cls": "gs-badge unconfirmed",
+    "title": ("Unconfirmed candidate — the resolver could not settle this "
+              "match and no human has adjudicated it yet (R10.5)"),
+    "text": "unconfirmed candidate",
+}
+
+# ``review_queue.candidate_entity_id`` is nullable, and a NULL means a different
+# question. A resolver near-match asks "is this the right company?"; a row with
+# no candidate was routed to triage for another reason entirely (e.g. the R10.6
+# provenance quarantine) and asks "read the reason". Rendering them identically
+# is the same defect the badge exists to fix, so the label is explicit and the
+# accept/reject controls — which would write an entity_match_decisions row for
+# an entity that does not exist — are withheld.
+REVIEW_NO_CANDIDATE_LABEL = "No candidate entity — flagged for review"
+
+
 def review_pending_view(item):
     """Shape one review_pending() row for _review_pending_row.html (R8.2).
 
@@ -298,24 +318,71 @@ def review_pending_view(item):
     fabricated matched/rejected terms), formatted confidence, evidence snippet,
     and an http(s)-only source link. Raw ids ride in POST data, never the DOM id.
     The template autoescapes every string here.
+
+    ``candidate_entity_id`` is nullable: a row with no candidate is labelled as
+    such (never a blank name) and offers no accept/reject, because there is no
+    match to accept — see REVIEW_NO_CANDIDATE_LABEL.
+
+    Three trust guards (R10.5, R4.1): a constant unconfirmed badge so a named
+    candidate cannot read as confirmed; a labelled truncation so a cut-off
+    payload cannot read as the whole record; and the source link routed through
+    ``data.identity_safe_source_url`` — a review row has no signal scope, so a
+    ransomware.live per-victim permalink (base64 victim name) is replaced by the
+    tracker index the same way a name-free sector card's is.
     """
     raw_event_id = item["raw_event_id"]
     candidate_entity_id = item["candidate_entity_id"]
     conf = item.get("confidence")
     conf_txt = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
     subsector = item.get("subsector")
+    raw_url = item.get("source_url")
+    safe_url = data.identity_safe_source_url(raw_url)
+    substituted = bool(raw_url) and safe_url != (raw_url or "").strip()
     return {
         "dom_id": review_row_dom_id(raw_event_id, candidate_entity_id),
         "raw_event_id": raw_event_id,
         "candidate_entity_id": candidate_entity_id,
-        "candidate": item.get("candidate_name") or candidate_entity_id,
+        "has_candidate": bool(candidate_entity_id),
+        "candidate": (item.get("candidate_name") or candidate_entity_id
+                      if candidate_entity_id else REVIEW_NO_CANDIDATE_LABEL),
         "subsector": subsector or "",
         "reason": item.get("reason") or "unknown",
         "confidence": conf_txt,
         "event_date": item.get("event_date") or "n/a",
         "snippet": item.get("snippet") or "",
-        "source_url": safe_source_url(item.get("source_url")),
+        "snippet_truncated": bool(item.get("snippet_truncated")),
+        "snippet_note": review_snippet_note(item),
+        "badges": [REVIEW_UNCONFIRMED_BADGE],
+        "source_url": safe_source_url(safe_url),
+        # R10.4: a substituted link must not read as a working citation for the
+        # claim beside it — say that the permalink was withheld.
+        "source_note": ("tracker index — per-victim permalink withheld (R4.1)"
+                        if substituted else ""),
     }
+
+
+def review_snippet_note(item):
+    """Disclose how much smaller the shown snippet is than the raw record.
+
+    Two independent shortfalls, either of which lets a fragment read as the
+    whole record (R10.5): the character cut, and the field selection — one
+    title lifted out of a payload that also carried a body and metadata. A
+    short title extracted from a 1 KB record has no cut to label, so counting
+    the unshown fields is what makes that case honest. Empty string when the
+    snippet IS the record. Pure.
+    """
+    truncated = bool(item.get("snippet_truncated"))
+    omitted = item.get("snippet_omitted_fields") or 0
+    limit = item.get("snippet_limit")
+    if truncated and omitted:
+        return (f"Extract: 1 of {omitted + 1} fields in the raw record, cut at "
+                f"{limit} characters — not the whole record.")
+    if truncated:
+        return f"Extract truncated at {limit} characters — not the whole record."
+    if omitted:
+        return (f"Extract: 1 of {omitted + 1} fields in the raw record — not "
+                "the whole record.")
+    return ""
 
 
 def source_health_view(row, state):
@@ -791,6 +858,34 @@ def timeline_rows(signals):
             for s in signals]
 
 
+def provenance_view(signal, provenance):
+    """The R3.7 reproducibility block: which raw event, which classifier
+    version, which fetcher version, which scoring config, and when scored.
+
+    The raw event reference goes through data.identity_safe_raw_event_ref, so a
+    non-account card shows a sha256 digest and never the stored id — on this
+    corpus that id embeds the source article URL, whose slug names the breached
+    company, and this block renders on the feed, Account 360 and /card/ alike.
+
+    A signal scored before migration 0011 has no scoring_config_version; it
+    reads "pre-versioning" rather than being backfilled with today's token,
+    which would be a fabricated provenance claim.
+    """
+    ref = data.identity_safe_raw_event_ref(
+        _row_get(signal, "raw_event_id"), _row_get(signal, "signal_scope"))
+    prov = provenance or {}
+    return {
+        "raw_event_ref": ref["ref"],
+        "raw_event_hashed": ref["hashed"],
+        "classifier_version": (prov.get("classifier_parser_version")
+                               or prov.get("extraction_version")),
+        "fetch_version": prov.get("fetch_parser_version"),
+        "scoring_config_version": (_row_get(signal, "scoring_config_version")
+                                   or "pre-versioning"),
+        "scored_at": _row_get(signal, "scored_at") or "never scored",
+    }
+
+
 def card_view(detail, legend):
     """Assemble everything _card.html needs from a signal_detail() dict.
 
@@ -897,6 +992,8 @@ def card_view(detail, legend):
         # before any play/snapshot exists (R7.12).
         "outreach_withheld": (
             (not show_outreach) and (bool(snapshots) or unconfirmed)),
+        # R3.7: everything needed to reproduce this score, victim-name-free.
+        "provenance": provenance_view(signal, detail.get("provenance")),
     }
 
 

@@ -50,6 +50,21 @@
   </details>
   {% endif %}
 
+  {# R3.7 reproducibility: which raw event, which parser versions, which scoring
+     config, and when. Collapsed — it is an audit affordance, not headline copy.
+     The raw event reference is already hashed for non-account scopes by
+     render.provenance_view (the id embeds the source URL), so nothing here can
+     name a victim. #}
+  {% if c.provenance %}
+  <details class="gs-evidence-exp">
+    <summary>Provenance</summary>
+    <div class="gs-meta">raw event{% if c.provenance.raw_event_hashed %} (hashed){% endif %}: {{ c.provenance.raw_event_ref or "unrecorded" }}</div>
+    <div class="gs-meta">classifier version: {{ c.provenance.classifier_version or "unrecorded" }}</div>
+    <div class="gs-meta">fetch version: {{ c.provenance.fetch_version or "unrecorded" }}</div>
+    <div class="gs-meta">scoring config: {{ c.provenance.scoring_config_version }} · scored at {{ c.provenance.scored_at }}</div>
+  </details>
+  {% endif %}
+
   {% if c.incident_cleared_note %}
   <div class="gs-cleared-note" role="note">{{ c.incident_cleared_note }}</div>
   {% endif %}
