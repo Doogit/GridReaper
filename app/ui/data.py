@@ -879,9 +879,10 @@ def triage_decision(conn, raw_event_id, entity_id, accept, now=None, sleep=None)
     signal from an accepted match is deferred (documented on the page).
 
     Some review rows are not entity candidates: a NULL candidate_entity_id means
-    the row was routed to triage for another reason. Those rows still need to be
-    dismissible, but they must not fabricate an entity_match_decisions row for a
-    nonexistent entity.
+    the row was routed to triage for another reason - the R10.6 provenance guard
+    quarantines a raw event that way when its text needs operator review. Those
+    rows still need to be dismissible, but they must not fabricate an
+    entity_match_decisions row for a nonexistent entity.
 
     A busy database is retried with bounded backoff (R3.2).
     """
