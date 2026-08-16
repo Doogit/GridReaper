@@ -34,7 +34,7 @@ from fastapi.responses import HTMLResponse
 from app.ui import data
 from app.ui_web import render
 from app.ui_web.deps import get_db
-from app.ui_web.templating import templates
+from app.ui_web.templating import templates, write_busy_response
 
 router = APIRouter()
 
@@ -78,8 +78,16 @@ def triage(request: Request, raw_event_id: str = Form(...),
            conn=Depends(get_db)):
     """Record one human triage decision (R8.2): triage_decision writes BOTH the
     entity_match_decisions row and the review_queue disposition in one
-    transaction. The pending row is swapped out for a confirmation line."""
-    data.triage_decision(conn, raw_event_id, candidate_entity_id, accept=accept)
+    transaction. The pending row is swapped out for a confirmation line.
+
+    A WriteBusyError (R3.2 — the writer lock stayed held) is an inline warning
+    appended INTO the row rather than a 500: neither table was written, so the
+    row is still pending and must keep its Accept/Reject buttons to retry."""
+    try:
+        data.triage_decision(conn, raw_event_id, candidate_entity_id,
+                             accept=accept)
+    except data.WriteBusyError as exc:
+        return write_busy_response(request, exc)
     return templates.TemplateResponse(
         request=request, name="_triage_done.html",
         context={"accepted": accept})

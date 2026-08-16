@@ -98,7 +98,14 @@ def card_key(signal_id):
 
 
 def safe_source_url(url):
-    """Return an HTTP(S) source URL, or None for non-clickable schemes."""
+    """Return an HTTP(S) source URL, or None for non-clickable schemes.
+
+    Scheme guard only. The R4.1 identity rule (a name-free card must not link a
+    per-victim leak-tracker permalink) is NOT applied here and must not be: it
+    needs the signal's scope to tell an own-incident card from a peer card, and
+    this helper is not given one. Callers pipe the URL through
+    ``data.identity_safe_source_url`` first — that is the single chokepoint.
+    """
     value = (url or "").strip()
     if not value:
         return None

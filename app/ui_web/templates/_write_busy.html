@@ -1,0 +1,6 @@
+{# A sanctioned UI write could not get the SQLite writer lock (R3.2). Returned
+   with HX-Reswap: beforeend so it is APPENDED beside the control the operator
+   clicked instead of replacing it: nothing typed is lost, the pending row is
+   not consumed, and the same button retries. Message text comes from
+   data.WriteBusyError verbatim — it already says nothing was saved. #}
+<div class="gs-fb-error" role="status">{{ error }}</div>
