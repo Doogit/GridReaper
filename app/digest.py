@@ -18,10 +18,10 @@ Trust invariants carried into the digest (identical to the live feed):
 Timestamps are UTC ISO-8601 (R10.2); the generation time is stamped in the
 header and the footer.
 
-Layout decision (Open Question #1 — deferred to Kevin): the digest leads with the
-top account-scoped signals by score (the most likely outreach targets), then a
-labeled divider, then Sector and Regulatory sections. Path/retention default:
-``<db-dir>/digests/digest-YYYY-MM-DD.html`` (UTC date), plus a stable
+Layout decision (Open Question #1 — deferred to the operator): the digest leads
+with the top account-scoped signals by score (the most likely outreach targets),
+then a labeled divider, then Sector and Regulatory sections. Path/retention
+default: ``<db-dir>/digests/digest-YYYY-MM-DD.html`` (UTC date), plus a stable
 ``digest-latest.html`` copy so a server / link can always resolve "the latest".
 Retention prunes dated files to the newest ``KEEP_DIGESTS`` writes.
 """
@@ -38,7 +38,7 @@ from app.ui_web.templating import templates
 
 # How many account-scoped cards lead the digest. A digest is a curated top slice,
 # not the whole feed; the rest stays in the app. (Open Question #1: lead count is
-# a UX call for Kevin — this is a sensible default, easy to change.)
+# a UX call for the operator — this is a sensible default, easy to change.)
 TOP_ACCOUNT_CARDS = 8
 
 # Retention: keep the newest KEEP_DIGESTS dated files; older ones are pruned on

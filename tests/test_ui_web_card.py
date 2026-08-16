@@ -267,7 +267,7 @@ class TestProvenanceLine(ProvenanceBase):
 
 
 class TestDigestNeverLeaksTheRawEventId(ProvenanceBase):
-    """The digest is the file Kevin hand-sends; it is shaped by the same
+    """The digest is the file the operator hand-sends; it is shaped by the same
     render.card_view, so the gate is asserted against the real artifact."""
 
     def setUp(self):

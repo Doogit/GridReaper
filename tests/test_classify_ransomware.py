@@ -202,7 +202,7 @@ class TestPeerIndustryGate(RansomwareTestCase):
         self.assertEqual(self.run_it()["signals_new"], 5)
 
     def test_foreign_energy_victim_still_a_peer(self):
-        """Kevin's ruling: peers are same-industry regardless of region."""
+        """Operator ruling: peers are same-industry regardless of region."""
         add_victim(self.conn, 1, "Obscure Osaka Power", country="JP",
                    activity="Energy & Utilities")
         self.assertEqual(self.run_it()["signals_new"], 1)
@@ -232,7 +232,8 @@ class TestPeerIndustryGate(RansomwareTestCase):
 class TestCollisionReview(RansomwareTestCase):
     def test_ambiguous_victim_goes_to_review_no_card(self):
         """R6.2/R6.3: a bare collision term never auto-fires; it queues for
-        review and mints no card at all (Kevin's queue-only decision)."""
+        review and mints no card at all (the operator's queue-only
+        decision)."""
         add_victim(self.conn, 1, "Dominion")
         s = self.run_it()
         self.assertEqual((s["signals_new"], s["review_enqueued"]), (0, 1))

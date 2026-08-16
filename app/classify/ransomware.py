@@ -30,8 +30,9 @@ committing a concrete entity_id, no leak-site text ever feeds resolution.
              top-level account (R6.5). The own card may name the entity (it IS
              that account) and quotes the sourced group name.
   review   -> ambiguous / collision / below-threshold (R6.2/R6.3). Enqueued for
-             a human and NO card is minted (Kevin's queue-only rule). Enqueued
-             here so the framework never gets a chance to re-resolve it.
+             a human and NO card is minted (the operator's queue-only rule).
+             Enqueued here so the framework never gets a chance to re-resolve
+             it.
   none     -> peer_incident (sector), but ONLY for an energy-industry victim
              (see PEER_ACTIVITIES). Off-list victim read as a class signal to
              sector peers, and NAME-FREE in the strong sense: neither the
@@ -47,7 +48,7 @@ does not support). ransomware.live tracks victims across every industry - in a
 whole feed as peers made 97 of 104 stored signals a sector claim the source
 never made. The tracker's own ``activity`` tag is the check.
 
-Industry only: geography is deliberately NOT filtered (Kevin's ruling). A
+Industry only: geography is deliberately NOT filtered (operator ruling). A
 utility in another country is still an industry peer of a US utility; the
 sector lesson travels, the jurisdiction does not have to. Size/revenue would
 be a defensible second axis but the record carries no size field, so it is
@@ -164,8 +165,9 @@ def classify_ransomware(conn, raw):
 
     if res.status == "review":
         # Ambiguous / collision / below-threshold: never auto-fire (R6.2) and,
-        # per Kevin's queue-only rule, never mint a peer card either. Enqueue
-        # here so no injected leak-site context can upgrade it downstream.
+        # per the operator's queue-only rule, never mint a peer card either.
+        # Enqueue here so no injected leak-site context can upgrade it
+        # downstream.
         _enqueue_review_once(conn, raw["raw_event_id"], res)
         return []
 

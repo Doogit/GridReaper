@@ -13,8 +13,8 @@ tests inject a canned client (no network, ever) and the CLI passes a real
 ``AuditClient``.
 
 Provenance: ``seeds/audit_goldens.csv`` is generated-for-review
-(``reviewed_by='generated-for-review'``) and awaits Kevin's review; it does not
-alter the hand-verified seeds.
+(``reviewed_by='generated-for-review'``) and awaits the operator's review; it
+does not alter the hand-verified seeds.
 """
 import json
 import sys

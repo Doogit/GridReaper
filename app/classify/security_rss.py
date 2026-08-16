@@ -30,7 +30,8 @@ victim, so the grammar is a strict gate, not a broad net):
                 matched -> own_incident (account); decision logged (R6.4), the
                            framework validates the entity is active and rolls it
                            up to the top-level account (R6.5).
-                review  -> enqueue only, no card (R6.2, Kevin's queue-only rule).
+                review  -> enqueue only, no card (R6.2, the operator's
+                           queue-only rule).
                 none    -> peer_incident (sector), NAME-FREE.
 
   LEAK-ADJACENT (BleepingComputer only)  an item whose breach is an attacker or
@@ -183,8 +184,9 @@ def _disclosure_cands(conn, raw, title, company, source_tier):
 
     if res.status == "review":
         # Ambiguous / collision / below-threshold: never auto-fire (R6.2) and,
-        # per Kevin's queue-only rule, never mint a peer card either. Enqueue
-        # here so no injected headline context can upgrade it downstream.
+        # per the operator's queue-only rule, never mint a peer card either.
+        # Enqueue here so no injected headline context can upgrade it
+        # downstream.
         _enqueue_review_once(conn, raw["raw_event_id"], res)
         return []
 
