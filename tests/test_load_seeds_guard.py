@@ -195,6 +195,52 @@ class TestSourceRegistryReloadGuard(unittest.TestCase):
         self.assertNotEqual(reverted, "JUNK_TYPO")
 
 
+class TestDeregisteredSourceGuard(unittest.TestCase):
+    """`ransomlook` was deregistered: it advertised a capability with no
+    fetcher module behind it. A fresh load must not create it, and a reload
+    must not resurrect it. The flip side of Pattern B (no seed-scoped DELETE)
+    is that dropping the CSV row does NOT remove an already-loaded row from an
+    existing DB - that is an operator action via the Admin source registry."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.db = os.path.join(self.tmpdir, "dereg.db")
+
+    def _source_ids(self):
+        conn = sqlite3.connect(self.db)
+        try:
+            return [r[0] for r in conn.execute(
+                "SELECT source_id FROM source_policies")]
+        finally:
+            conn.close()
+
+    def test_ransomlook_absent_and_fulltext_registered_across_reloads(self):
+        load(db_path=self.db)
+        first = self._source_ids()
+        load(db_path=self.db)          # loader stays idempotent after the edit
+        second = self._source_ids()
+
+        self.assertNotIn("ransomlook", first)
+        self.assertNotIn("ransomlook", second)
+        self.assertEqual(sorted(first), sorted(second))
+        # sec_edgar_fulltext keeps its registration - it now has a fetcher.
+        self.assertEqual(second.count("sec_edgar_fulltext"), 1)
+
+    def test_reload_does_not_resurrect_a_manually_removed_row(self):
+        load(db_path=self.db)
+        conn = sqlite3.connect(self.db)
+        conn.execute("INSERT INTO source_policies (source_id, name, enabled) "
+                     "VALUES ('ransomlook', 'RansomLook API', 1)")
+        conn.commit()
+        conn.execute("DELETE FROM source_policies WHERE source_id='ransomlook'")
+        conn.commit()
+        conn.close()
+
+        load(db_path=self.db)
+        self.assertNotIn("ransomlook", self._source_ids())
+
+
 class TestMissingSeedFileFailsLoudly(unittest.TestCase):
     """R4.5: a missing seed/reference file MUST fail the seed job with a clear
     operator-facing error.

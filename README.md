@@ -111,12 +111,13 @@ The MVP target source set — all free and accessed read-only (GET / RSS / JSON 
 | Source | Role |
 |---|---|
 | SEC EDGAR — 8-K / 10-K filings + submissions API | Classified — leadership + regulatory |
+| SEC EDGAR full-text search | Stored — filing *bodies* (incl. exhibits) mentioning a watchlist entity (later-stage classification) |
 | Federal Register API (FERC, TSA) | Classified — regulatory |
 | Press-wire RSS (PR Newswire, GlobeNewswire) | Classified — leadership + company-statement incidents |
 | NERC / FERC public pages | Classified — regulatory |
 | GDELT global news | Stored for backfill (later-stage classification) |
 | CISA KEV + NVD | Stored — known-exploited vulnerabilities |
-| Ransomware tracker (ransomware.live) | Classified — unconfirmed early-warning incidents (own/peer) (RansomLook seeded, deferred) |
+| Ransomware tracker (ransomware.live) | Classified — unconfirmed early-warning incidents (own/peer) |
 | Security-press RSS (The Record, BleepingComputer) | Classified — cyber-incident reporting (own/peer, per-source evidence tier) |
 | EIA API | Stored — plant geo/capacity for backfill (typed facility projection later) |
 | GLEIF + Wikidata | Entity resolution — LEI / QID anchoring |
@@ -156,6 +157,7 @@ A fresh clone starts with **no event data** — the raw-event backfill reference
 
 ```bash
 python -m app.ingest.edgar                          # SEC EDGAR submissions
+python -m app.ingest.edgar_fulltext                 # SEC EDGAR filing bodies/exhibits (store-only)
 python -m app.ingest.federal_register               # FERC + TSA documents
 python -m app.ingest.presswire --source prnewswire  # press-wire RSS
 python -m app.ingest.presswire --source globenewswire
