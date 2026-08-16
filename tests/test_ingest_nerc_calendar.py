@@ -8,7 +8,7 @@ forward-looking month window, and idempotent re-fetch.
 import json
 import sqlite3
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from app.db.migrate import apply_migrations
@@ -49,7 +49,7 @@ RESPONSE = {"year": 2026, "month": 9, "monthAndYearDisplay": "September 2026",
 def _fallback_date():
     """NO_TZ_BLOCK carries no timezone block, so its date falls back to the
     requested calendar month - which fetch_events derives from today."""
-    today = datetime.now(timezone.utc).date()
+    today = date(2026, 9, 1)
     return f"{today.year:04d}-{today.month:02d}-14"
 
 
@@ -111,13 +111,15 @@ class FetchEventsTest(unittest.TestCase):
             return RESPONSE
 
         with mock.patch.object(nerc_calendar, "_get_json", fake_get), \
+                mock.patch.object(nerc_calendar, "_today",
+                                  lambda: date(2026, 9, 1)), \
                 mock.patch.object(nerc_calendar.time, "sleep"):
             events = list(nerc_calendar.fetch_events(None, window_days, limit))
         return events, urls
 
     def test_one_request_per_month_with_query(self):
         _, urls = self._events(window_days=0)
-        today = datetime.now(timezone.utc).date()
+        today = date(2026, 9, 1)
         self.assertEqual(len(urls), 1)
         self.assertIn(f"year={today.year}", urls[0])
         self.assertIn(f"month={today.month}", urls[0])
@@ -126,6 +128,23 @@ class FetchEventsTest(unittest.TestCase):
         events, _ = self._events()
         self.assertEqual([e["event_date"] for e in events],
                          ["2026-09-10", _fallback_date(), "2026-09-21"])
+
+    def test_current_month_past_events_are_skipped(self):
+        response = {"allItems": [
+            _item("past", "03", [_tz("2026-08-03T10:00:00Z", True)]),
+            _item("today", "16", [_tz("2026-08-16T10:00:00Z", True)]),
+            _item("future", "20", [_tz("2026-08-20T10:00:00Z", True)]),
+        ]}
+
+        with mock.patch.object(nerc_calendar, "_today",
+                               lambda: date(2026, 8, 16)), \
+                mock.patch.object(nerc_calendar, "_get_json",
+                                  lambda url, retries=2: response), \
+                mock.patch.object(nerc_calendar.time, "sleep"):
+            events = list(nerc_calendar.fetch_events(None, 0, None))
+
+        self.assertEqual([e["source_native_id"] for e in events],
+                         ["/events/today", "/events/future"])
 
     def test_limit(self):
         events, _ = self._events(limit=2)
@@ -154,6 +173,8 @@ class RunSourceIntegrationTest(unittest.TestCase):
     def _run(self):
         with mock.patch.object(nerc_calendar, "_get_json",
                                lambda url, retries=2: RESPONSE), \
+                mock.patch.object(nerc_calendar, "_today",
+                                  lambda: date(2026, 9, 1)), \
                 mock.patch.object(nerc_calendar.time, "sleep"):
             return runner.run_source(
                 self.conn, "nerc_calendar", nerc_calendar.fetch_events,

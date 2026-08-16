@@ -121,13 +121,17 @@ def fetch_events(conn, window_days, limit):
     if limit is not None and limit <= 0:
         return
     yielded = 0
+    today = _today().isoformat()
     for index, (year, month) in enumerate(months_ahead(window_days)):
         if index:
             time.sleep(MONTH_SLEEP_S)
         query = urllib.parse.urlencode({"year": year, "month": month})
         data = _get_json(f"{EVENTS_API}?{query}")
         for item in data.get("allItems") or []:
-            yield calendar_event(year, month, item)
+            event = calendar_event(year, month, item)
+            if event["event_date"] and event["event_date"] < today:
+                continue
+            yield event
             yielded += 1
             if limit is not None and yielded >= limit:
                 return
