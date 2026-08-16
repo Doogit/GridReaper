@@ -59,6 +59,7 @@ class PackagingContractTest(unittest.TestCase):
             "app/db/load_seeds.py",
             "app/first_load.py",
             "app/licensing.py",
+            "app/obligations.py",
             "app/scoring.py",
             "app/plays.py",
             "app/ui_web/digest.py",
