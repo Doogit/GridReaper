@@ -64,13 +64,15 @@ The FastAPI + HTMX interface in its default light theme (a dark and a system the
 
 **Signal Feed** — scored, sourced cards with the score decomposition, evidence/scope badges, license-play chips, and a customer-facing-gated outreach draft. Account-scoped cards sit above a labeled sector/regulatory divider — here the account half is empty, for the measured reason in [Coverage](#coverage), and the feed says so instead of padding.
 
+Peer cards **name the company** when a source names it, and the evidence tier decides what may be done with that name: a security-press-corroborated incident is cleared for customer-facing outreach and carries a draft, while an unverified leak-site listing is shown to the operator with outreach withheld and a "no company, regulator, or SEC confirmation" warning. Both states are visible in the feed below.
+
 ![Signal Feed](assets/screenshots/signal-feed.png)
 
-**Explore** — trigger, scope, and incident-tier analytics over all sourced signals, an evidence-safe watchlist map, and aggregate ransomware leak-site activity. The map plots a facility only with a stored owner match at ≥0.85 confidence; with nothing over that bar it shades signal volume by state and says so, rather than inferring points.
+**Explore** — trigger, scope, and incident-tier analytics over all sourced signals, and aggregate ransomware leak-site activity.
 
 ![Explore — Trigger Analytics](assets/screenshots/explore-analytics.png)
 
-![Explore — Watchlist Map](assets/screenshots/explore-map.png)
+A third tab holds an evidence-safe watchlist map, which plots a facility only with a stored owner match at ≥0.85 confidence. It is **not screenshotted here because it has nothing to plot yet**: the EIA fetcher is store-only, and the typed `raw_events` → `facility_assets` projection it would read is not built, so ~20,000 stored plant records cannot reach it. That is a missing projection, not facilities failing the confidence bar — the map renders its own empty state saying so rather than inferring points.
 
 The Ransomware Activity tab counts raw leak-site listings rather than signals, over the window the stored data actually spans (ransomware.live is a rolling recent feed, so that window is days, not months). These are ransomware victims worldwide — not watchlist companies, which are energy-only. The panel **leads with the watchlist's own industry row** and its change against the prior window; world volume ranking sits underneath as context, since "who is busiest worldwide" is not the question the tab exists to answer. Only an energy-industry victim supports the "sector peer" claim a card would make, so the other listings never mint a card, and this tab is where they stay visible as threat context: unscored, attributed to no account, credited to the source.
 
@@ -255,6 +257,7 @@ The MVP classifies regulatory actions, leadership changes, and precision-first c
 | Sector & regulatory scope tier (compliance clocks, peer incidents) | Implemented — the live weekly output |
 | Account-specific scope tier (`own_incident`, `leadership_change`, `nerc_enforcement`) | Implemented but **gated** — inputs are data-empty in the free public record; entry criteria in [Coverage](#coverage) |
 | NERC enforcement-docket fetcher (NP-series notices of penalty) + NERC events calendar | Implemented — both ingested, neither classified yet; measured ceiling is 2 watchlist entities over 18 months, so this is no longer the account-scope lever it was scoped as (see [Coverage](#coverage)) |
+| Typed `raw_events` → `facility_assets` projection (EIA plant records → owner-matched, geo-located facilities) | **Not built** — the Explore watchlist map and its ≥0.85 owner-confidence gate are implemented and read this table, so the map has nothing to plot until the projection exists |
 
 Later stages add combo scoring, GDELT-based classification, and a hiring/macro-trend layer.
 
