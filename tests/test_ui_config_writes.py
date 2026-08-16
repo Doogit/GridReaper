@@ -1,4 +1,4 @@
-"""Config-write helper tests (R8.7 Admin/Config; R3.3, R7.4, R8.1).
+"""Config-write helper tests (R8.7 Admin/Config; R3.2, R3.3, R7.4, R8.1).
 
 Hermetic: real migrations against in-memory SQLite, FK on, fixture rows. Covers
 the three writers (update_weight, update_half_life, set_source_enabled), their
@@ -7,6 +7,9 @@ never-DELETE guarantee (regression gate b), and the audit-tail / source-policy
 reads. The single-writer lock (config_write_conn) is exercised in
 test_ui_admin.py against a temp-file DB; here we call the helpers with a passed
 connection so the DB assertions stay hermetic.
+
+Also covers R3.2's bounded exponential backoff on the two lock-free sanctioned
+writes (record_feedback, triage_decision) - see TestWriteBackoff.
 """
 import sqlite3
 import unittest
@@ -350,6 +353,166 @@ class TestConfigReads(unittest.TestCase):
         self.assertEqual(rows[0]["source_id"], "edgar")
         self.assertIn("state", rows[0])
         self.assertIn("g2", rows[0])          # None (no rated feedback) is fine
+
+
+# -- R3.2 bounded backoff on the sanctioned feedback / review writes ----------
+
+LOCKED = "database is locked"
+
+
+class _BusyConn:
+    """Connection stand-in whose first ``fail_times`` commits raise SQLite's
+    'database is locked'. Records statements, commits and rollbacks so a test
+    can assert a retry never half-applies a multi-statement write."""
+
+    def __init__(self, fail_times, message=LOCKED):
+        self.remaining = fail_times
+        self.message = message
+        self.executed = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def execute(self, sql, *args):
+        self.executed.append(sql)
+
+    def commit(self):
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise sqlite3.OperationalError(self.message)
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+class _FlakyConn:
+    """Wraps a REAL connection and makes its first ``fail_times`` commits raise
+    'database is locked' (without committing), so an end-to-end test can prove
+    the row lands exactly once after a retry."""
+
+    def __init__(self, conn, fail_times):
+        self._conn = conn
+        self.remaining = fail_times
+
+    def commit(self):
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise sqlite3.OperationalError(LOCKED)
+        self._conn.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class _Sleeper:
+    """Injected stand-in for time.sleep: records the waits instead of taking
+    them, so the retry schedule is asserted without spending 650ms."""
+
+    def __init__(self):
+        self.waits = []
+
+    def __call__(self, seconds):
+        self.waits.append(seconds)
+
+
+def triage_fixture_conn():
+    """fixture_conn plus the rows triage_decision needs (R8.2)."""
+    conn = fixture_conn()
+    conn.execute("INSERT INTO watchlist_entities (entity_id, name, active) "
+                 "VALUES ('E_DARK','Dark Muni Co',1)")
+    conn.execute(
+        "INSERT INTO raw_events (raw_event_id, source_id, event_date, payload, "
+        " url) VALUES ('re_rev','edgar','2026-08-01','{}','http://x/1')")
+    conn.execute(
+        "INSERT INTO review_queue (raw_event_id, candidate_entity_id, reason, "
+        " confidence, created_at, disposition) VALUES "
+        "('re_rev','E_DARK','fuzzy_below_threshold',0.82,'2026-08-01','pending')")
+    conn.commit()
+    return conn
+
+
+class TestWriteBackoff(unittest.TestCase):
+    """R3.2: feedback and review-queue writes are the two operator writes that
+    do NOT take the ingestion lock, so a concurrent run used to surface a raw
+    'database is locked'. They now retry with bounded exponential backoff and
+    fail with a named, legible error once the waits are spent."""
+
+    def test_locked_twice_then_success_writes_silently(self):
+        conn, sleeper = _BusyConn(fail_times=2), _Sleeper()
+        data._commit_with_backoff(conn, lambda: conn.execute("INSERT 1"),
+                                  "your feedback", sleeper)
+        self.assertEqual(conn.commits, 1)
+        self.assertEqual(sleeper.waits, [0.05, 0.15])
+
+    def test_success_path_never_sleeps(self):
+        conn, sleeper = _BusyConn(fail_times=0), _Sleeper()
+        data._commit_with_backoff(conn, lambda: conn.execute("INSERT 1"),
+                                  "your feedback", sleeper)
+        self.assertEqual(sleeper.waits, [])
+        self.assertEqual(conn.rollbacks, 0)
+
+    def test_locked_four_times_raises_a_named_error_not_a_traceback(self):
+        conn, sleeper = _BusyConn(fail_times=4), _Sleeper()
+        with self.assertRaises(data.WriteBusyError) as ctx:
+            data._commit_with_backoff(conn, lambda: conn.execute("INSERT 1"),
+                                      "your feedback", sleeper)
+        message = str(ctx.exception)
+        self.assertIn("your feedback", message)
+        self.assertIn("nothing was saved", message)
+        self.assertIn("try again", message)
+        # bounded: exactly the configured waits, then stop
+        self.assertEqual(sleeper.waits, list(data.WRITE_RETRY_DELAYS_S))
+        self.assertEqual(conn.commits, 0)
+        # the raw sqlite error is preserved as the cause, not swallowed
+        self.assertIsInstance(ctx.exception.__cause__, sqlite3.OperationalError)
+
+    def test_every_failed_attempt_rolls_back_first(self):
+        # triage_decision writes two statements; a retry must not half-apply.
+        conn, sleeper = _BusyConn(fail_times=2), _Sleeper()
+        data._commit_with_backoff(conn, lambda: conn.execute("INSERT 1"),
+                                  "this triage decision", sleeper)
+        self.assertEqual(conn.rollbacks, 2)
+
+    def test_a_real_sql_error_is_not_retried(self):
+        # not a lock: a genuine SQL fault must surface immediately, unwrapped.
+        conn = _BusyConn(fail_times=1, message="no such table: feedback")
+        sleeper = _Sleeper()
+        with self.assertRaises(sqlite3.OperationalError) as ctx:
+            data._commit_with_backoff(conn, lambda: conn.execute("INSERT 1"),
+                                      "your feedback", sleeper)
+        self.assertNotIsInstance(ctx.exception, data.WriteBusyError)
+        self.assertEqual(sleeper.waits, [])
+
+    def test_record_feedback_lands_exactly_once_after_retries(self):
+        conn = fixture_conn()
+        sleeper = _Sleeper()
+        data.record_feedback(_FlakyConn(conn, fail_times=2), "s_active",
+                             "useful", now=NOW, sleep=sleeper)
+        rows = conn.execute(
+            "SELECT signal_id, verdict FROM feedback").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["verdict"], "useful")
+        self.assertEqual(sleeper.waits, [0.05, 0.15])
+
+    def test_triage_decision_lands_exactly_once_after_retries(self):
+        conn = triage_fixture_conn()
+        data.triage_decision(_FlakyConn(conn, fail_times=2), "re_rev", "E_DARK",
+                             accept=True, now=NOW, sleep=_Sleeper())
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) FROM entity_match_decisions "
+            "WHERE raw_event_id='re_rev'").fetchone()[0], 1)
+        self.assertEqual(conn.execute(
+            "SELECT disposition FROM review_queue WHERE raw_event_id='re_rev' "
+            "AND candidate_entity_id='E_DARK'").fetchone()[0], "accepted")
+
+    def test_validation_still_rejects_before_any_retry(self):
+        # R9.1 is unchanged: a bad verdict never reaches the retry loop.
+        conn, sleeper = _BusyConn(fail_times=4), _Sleeper()
+        with self.assertRaises(ValueError):
+            data.record_feedback(conn, "s_active", "bogus", now=NOW,
+                                 sleep=sleeper)
+        self.assertEqual(conn.executed, [])
+        self.assertEqual(sleeper.waits, [])
 
 
 if __name__ == "__main__":
