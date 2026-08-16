@@ -17,6 +17,7 @@ Two layers, both hermetic (real migrations, FK on, no network):
    headline gauge, G1 account-only slicing, tables, reason codes, disagreement,
    half-life, and run history.
 """
+import html
 import os
 import sqlite3
 import tempfile
@@ -25,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+from app.audit import precision
 from app.db.migrate import apply_migrations
 from app.ui import data
 from app.ui_web.app import app
@@ -332,6 +334,43 @@ class TestPopulatedState(PrecisionRouteCase):
         self.assertIn("audit run history", text)
         # framing caption still present
         self.assertIn("NOT validated sales lift", text)
+
+
+class TestG1Waiver(PrecisionRouteCase):
+    """The R9.4 Gate G1 operator waiver as the page renders it (KTD1).
+
+    The waiver banner is a disclosure, so the page must say "waived AND not
+    passed" while leaving the gate's own unmet conditions on screen unchanged —
+    and it must never say ELIGIBLE.
+    """
+    def test_waiver_banner_renders_with_its_reason(self):
+        text = html.unescape(self._get(seed_empty))
+        # The exact operator-ruling sentence, verbatim, in the DOM.
+        self.assertIn(precision.G1_WAIVER_REASON, text)
+        self.assertIn("WAIVED by operator ruling 2026-08-16", text)
+        self.assertIn("not passed", text)
+        # The recorded lift condition travels with it.
+        self.assertIn(precision.G1_WAIVER_LIFT_CONDITION, text)
+
+    def test_waived_page_keeps_blocked_badges_and_never_says_eligible(self):
+        text = html.unescape(self._get(seed_empty))
+        # Per-trigger evidence untouched: both primary triggers still BLOCKED
+        # with their blocked: reason lines.
+        self.assertIn("BLOCKED", text)
+        self.assertIn("blocked:", text)
+        for trigger in precision.DEFAULT_PRIMARY_TRIGGERS:
+            self.assertIn(trigger, text)
+        # A waived gate is never a passed gate.
+        self.assertNotIn("ELIGIBLE", text)
+
+    def test_waived_page_renders_no_zero_denominator_percentage(self):
+        # Standing R8.6 rule: an empty denominator reads n/a with its n, never
+        # a fabricated 0%.
+        text = html.unescape(self._get(seed_empty))
+        self.assertIn("n/a (0 rated)", text)
+        self.assertNotIn("0% (n=0)", text)
+        self.assertNotIn("useful-rate: 0%", text)
+        self.assertNotIn("auto-accuracy: 0%", text)
 
 
 class TestR911Gate(PrecisionRouteCase):

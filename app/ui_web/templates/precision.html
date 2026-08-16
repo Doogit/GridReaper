@@ -50,7 +50,13 @@
   {% endif %}
 </div>
 {% endfor %}
-{% if g1.eligible %}
+{# Three-way overall line (KTD1). A waiver is a DISCLOSURE, never a pass: the
+   per-trigger BLOCKED badges and blocked reasons above render unchanged under
+   it, and the waived branch never says ELIGIBLE. #}
+{% if g1.waived %}
+<div class="gs-gov-caution"><strong>{{ g1.waiver_reason }}</strong></div>
+<div class="gs-meta">Waiver lifts: {{ g1.waiver_lift }}.</div>
+{% elif g1.eligible %}
 <div class="gs-meta">Overall: <strong>ELIGIBLE</strong> — both primary triggers meet the gate.</div>
 {% else %}
 <div class="gs-meta">Overall: <strong>not eligible</strong> — see blocked reasons above.</div>

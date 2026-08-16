@@ -540,7 +540,13 @@ def precision_g1_view(g1):
     """Gate G1 per primary account trigger + the reported-separately block
     (R9.4). Rates are pre-formatted with their n; sector / regulatory /
     unconfirmed cards are reported apart so they can't inflate account
-    precision."""
+    precision.
+
+    The overall line is three-way (KTD1): ``waived`` (the recorded operator
+    ruling — a disclosure, never a pass), ``eligible``, or blocked. Under a
+    waiver the per-trigger BLOCKED badges and blocked reasons render UNCHANGED:
+    the waiver discloses that the gate was not passed, it never hides the
+    conditions it failed."""
     triggers = []
     for tid, m in g1["triggers"].items():
         triggers.append({
@@ -555,9 +561,13 @@ def precision_g1_view(g1):
         })
     rep = g1["reported_separately"]
     fb, au = rep["feedback"], rep["auto"]
+    waiver = g1["waiver"]
     return {
         "triggers": triggers,
         "eligible": g1["eligible"],
+        "waived": g1["state"] == "waived",
+        "waiver_reason": waiver["reason"] if waiver else None,
+        "waiver_lift": waiver["lift_condition"] if waiver else None,
         "reported_useful": rate_with_n(fb["rate"], fb["total"]),
         "reported_auto": rate_with_n(au["accuracy"], au["scored"], "scored"),
     }

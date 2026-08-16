@@ -72,6 +72,32 @@ G1_AUTO_ACCURACY_MIN = 0.80
 G1_MIN_DAYS = 30
 G1_MIN_RATED = 20
 
+# R9.4 Gate G1 operator waiver — the RECORD of the ruling lives here (KTD1).
+#
+# G1 needs >= 20 rated account-specific cards over >= 30 days. There have never
+# been any account-specific cards and never any ratings, so the gate is
+# unreachable, not slow. The operator waived it by explicit ruling on
+# ``G1_WAIVER_DATE``.
+#
+# The waiver is a DISCLOSURE, never a pass: ``g1_status`` reports a distinct
+# ``"waived"`` state that no computation can produce, ``eligible`` keeps its
+# real (False) computed value, and the useful-rate / auto-accuracy keep
+# computing and reporting their real denominators underneath. A product whose
+# trust posture is "every rate shown with its sample size" must not display a
+# gate as met on a denominator of zero.
+#
+# ``G1_WAIVER_LIFT_CONDITION`` records what ENDS the waiver. It is recorded, not
+# enforced: whether the lift is automatic or a hand ruling is an open question,
+# so ``g1_status`` never falls back to the computed state on its own.
+G1_WAIVER_ACTIVE = True
+G1_WAIVER_DATE = "2026-08-16"
+G1_WAIVER_REASON = (
+    f"Overall: WAIVED by operator ruling {G1_WAIVER_DATE} — not passed. The "
+    "gate's own conditions below are unmet and are shown unchanged.")
+G1_WAIVER_LIFT_CONDITION = (
+    f"spent once any primary account trigger reaches {G1_MIN_RATED} rated "
+    "cards; from then on the real computed state governs")
+
 # G2 thresholds (R9.5). ``G2_THRESHOLD`` is the PRD's 40% precision floor.
 # ``G2_MIN_N`` is our sample-size floor for *recommending* a demotion: below
 # it, precision is too noisy to act on, so demote_recommended stays False with
@@ -629,7 +655,8 @@ def _days_span(timestamps, now):
 
 
 def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
-              min_days=G1_MIN_DAYS, min_rated=G1_MIN_RATED):
+              min_days=G1_MIN_DAYS, min_rated=G1_MIN_RATED,
+              waiver_active=G1_WAIVER_ACTIVE):
     """Gate G1 (Stage 1 -> 2) status per primary account-level trigger (R9.4).
 
     ONLY account-specific rated cards (entity_id present AND signal_scope in
@@ -653,9 +680,21 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
                                   "auto": {...auto overall shape...}},
           "eligible": bool,
           "blocked_reasons": [...],
+          "state": "waived" | "eligible" | "blocked",
+          "waiver": {"date", "reason", "lift_condition"} | None,
         }
 
     ``eligible`` is True only when every primary trigger ``meets``.
+
+    THE WAIVER (KTD1). When ``waiver_active`` (defaults to the recorded
+    ``G1_WAIVER_ACTIVE`` ruling), ``state`` is ``"waived"`` and ``waiver``
+    carries the ruling date, its one-line reason, and the condition that would
+    end it. ``"waived"`` is NOT reachable by computation — only by the recorded
+    waiver — and it is not a pass: ``eligible``, every per-trigger cell, and
+    ``blocked_reasons`` all keep their real computed values so the gate's unmet
+    conditions stay visible underneath the waiver. The lift condition is
+    RECORDED, not ENFORCED: a waived gate stays waived even once a trigger
+    reaches ``min_rated``.
     """
     now_dt = _now(now)
     triggers = list(primary_triggers) if primary_triggers else list(
@@ -727,6 +766,17 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
                 blocked_reasons.append(f"{tid}: {reason}")
     eligible = all(per_trigger[tid]["meets"] for tid in triggers)
 
+    if waiver_active:
+        state = "waived"
+        waiver = {
+            "date": G1_WAIVER_DATE,
+            "reason": G1_WAIVER_REASON,
+            "lift_condition": G1_WAIVER_LIFT_CONDITION,
+        }
+    else:
+        state = "eligible" if eligible else "blocked"
+        waiver = None
+
     return {
         "triggers": per_trigger,
         "reported_separately": {
@@ -735,6 +785,8 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
         },
         "eligible": eligible,
         "blocked_reasons": blocked_reasons,
+        "state": state,
+        "waiver": waiver,
     }
 
 
