@@ -3,8 +3,9 @@
 Hermetic: real migrations against in-memory SQLite, FK on, fake classifiers
 returning canned candidates. Covers bookkeeping, idempotent re-runs, version
 bump reprocessing, the review-queue path (a low-confidence candidate never
-becomes a signal), parent rollup, evidence rows, scope gating, and per-event
-error containment.
+becomes a signal), parent rollup, evidence rows, scope gating, per-event
+error containment, and the text refresh a version bump applies to cards the
+corrected rule still emits.
 """
 import json
 import sqlite3
@@ -436,6 +437,134 @@ class TestRetraction(unittest.TestCase):
         s = self.run_one({f"{SOURCE}:1": [account_candidate()]}, force=True)
         self.assertEqual((s["signals_retracted"], s["signals_restored"]), (0, 0))
         self.assertEqual(self.status(), "active")
+
+
+SIGNAL_ID = f"t_lead:{SOURCE}:1:EA1"
+
+
+def corrected_candidate():
+    """The same event, same deterministic signal_id, reworded - the case
+    retraction cannot see, because the rule still emits the card."""
+    return account_candidate(
+        headline="Acme Utilities named a new CISO",
+        evidence=[{"text": "Acme Utilities appointed a CISO in August",
+                   "locator": "body"}])
+
+
+class TestTextRefresh(unittest.TestCase):
+    """R3.7: retraction takes back what a corrected rule no longer emits.
+    Refresh covers the other half - a card it STILL emits, worded differently.
+    Insert-or-skip returned on the existing signal_id before the INSERT, so
+    stored card text was immutable and a wording fix reached only cards minted
+    after it."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def run_one(self, candidates_by_event, version="clf/1.0", **kwargs):
+        return run_classifier(
+            self.conn, "clf_test", SOURCE,
+            make_classifier(candidates_by_event), version, **kwargs)
+
+    def card(self):
+        return self.conn.execute(
+            "SELECT * FROM signals WHERE signal_id = ?",
+            (SIGNAL_ID,)).fetchone()
+
+    def evidence(self):
+        return self.conn.execute(
+            "SELECT evidence_text, evidence_locator, evidence_rank, "
+            " extraction_version FROM signal_evidence WHERE signal_id = ? "
+            "ORDER BY rowid", (SIGNAL_ID,)).fetchall()
+
+    def test_a_version_bump_rewrites_the_stored_card(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        s = self.run_one({f"{SOURCE}:1": [corrected_candidate()]},
+                         version="clf/1.1")
+        self.assertEqual((s["signals_new"], s["signals_existing"],
+                          s["signals_refreshed"]), (0, 1, 1))
+        card = self.card()
+        self.assertEqual(card["headline"], "Acme Utilities named a new CISO")
+        self.assertEqual(card["evidence_snippet"],
+                         "Acme Utilities appointed a CISO in August")
+        ev = self.evidence()
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["evidence_text"],
+                         "Acme Utilities appointed a CISO in August")
+        self.assertEqual(ev[0]["evidence_locator"], "body")
+        self.assertEqual(ev[0]["evidence_rank"], 2)   # still from the policy
+        self.assertEqual(ev[0]["extraction_version"], "clf/1.1")
+
+    def test_the_same_version_rewrites_nothing_even_under_force(self):
+        """Staleness is a version bump, exactly as for classified_events
+        bookkeeping. A reworded rule that forgot to bump does not churn the
+        store."""
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        s = self.run_one({f"{SOURCE}:1": [corrected_candidate()]}, force=True)
+        self.assertEqual(s["signals_refreshed"], 0)
+        self.assertEqual(self.card()["headline"], "Acme Utilities names new CISO")
+
+    def test_a_refresh_restates_the_text_and_nothing_else(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        self.conn.execute(
+            "UPDATE signals SET score = 42.5, status = 'superseded' "
+            "WHERE signal_id = ?", (SIGNAL_ID,))
+        s = self.run_one({f"{SOURCE}:1": [corrected_candidate()]},
+                         version="clf/1.1")
+        self.assertEqual(s["signals_refreshed"], 1)
+        card = self.card()
+        self.assertEqual(card["headline"], "Acme Utilities named a new CISO")
+        # ...while every pipeline/operator verdict about it survives untouched.
+        self.assertEqual(card["score"], 42.5)
+        self.assertEqual(card["status"], "superseded")
+        self.assertEqual(card["confidence"], 0.9)
+        self.assertEqual(card["entity_id"], "EA1")
+
+    def test_a_dismissed_card_is_never_reworded(self):
+        """Same rule as retraction: the operator judged THAT text, and a rule
+        change does not get to restate what they judged."""
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        self.conn.execute("UPDATE signals SET status = 'dismissed' "
+                          "WHERE signal_id = ?", (SIGNAL_ID,))
+        s = self.run_one({f"{SOURCE}:1": [corrected_candidate()]},
+                         version="clf/1.1")
+        self.assertEqual(s["signals_refreshed"], 0)
+        self.assertEqual(self.card()["headline"], "Acme Utilities names new CISO")
+        self.assertEqual(self.evidence()[0]["extraction_version"], "clf/1.0")
+
+    def test_a_retracted_card_is_reworded_and_restored_together(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        self.run_one({}, version="clf/1.1")             # rule stops emitting
+        self.assertEqual(self.card()["status"], "retracted")
+        s = self.run_one({f"{SOURCE}:1": [corrected_candidate()]},
+                         version="clf/1.2")
+        self.assertEqual((s["signals_refreshed"], s["signals_restored"]), (1, 1))
+        card = self.card()
+        self.assertEqual(card["status"], "active")
+        self.assertEqual(card["headline"], "Acme Utilities named a new CISO")
+
+    def test_evidence_rows_are_replaced_not_appended(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate(evidence=[
+            {"text": "Acme Utilities appointed a CISO", "locator": "title"},
+            {"text": "Acme Utilities named a security chief",
+             "locator": "body"}])]})
+        self.assertEqual(len(self.evidence()), 2)
+        s = self.run_one({f"{SOURCE}:1": [corrected_candidate()]},
+                         version="clf/1.1")
+        self.assertEqual(s["signals_refreshed"], 1)
+        self.assertEqual(len(self.evidence()), 1)
+
+    def test_rerunning_the_refreshed_version_refreshes_nothing(self):
+        self.run_one({f"{SOURCE}:1": [account_candidate()]})
+        self.run_one({f"{SOURCE}:1": [corrected_candidate()]},
+                     version="clf/1.1")
+        s = self.run_one({f"{SOURCE}:1": [corrected_candidate()]},
+                         version="clf/1.1", force=True)
+        self.assertEqual(s["signals_refreshed"], 0)
+        self.assertEqual(len(self.evidence()), 1)
 
 
 if __name__ == "__main__":

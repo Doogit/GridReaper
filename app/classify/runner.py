@@ -53,6 +53,18 @@ a parser_version bump self-correcting - see app/classify/ransomware.py 1.0 ->
           operator's own judgment, and a rule change does not get to restate
           it. Every other status yields to retraction.
 
+REFRESH (R3.7). Retraction covers what a corrected rule no longer emits. It
+does NOT cover the other half: a card the rule STILL emits, only worded
+differently. That card keeps its deterministic signal_id, so insert-or-skip
+returned before both the INSERT and the guard below, and its stored text was
+immutable - a wording fix reached only cards minted after it. So a run also
+re-mints the TEXT of any card it emits whose stored version is not the version
+the run mints at, rewriting headline, evidence_snippet and the signal_evidence
+rows and nothing else. status, score, confidence and the incident tier are left
+as stored: this restates how a card READS, never what was concluded about it. A
+'dismissed' card is skipped for the same reason retraction skips it. See
+_refresh_stored_text.
+
 PROVENANCE (R10.6). "No PII beyond executive names in public filings/press. No
 person-level enrichment." Until now that held by OMISSION - the classifiers
 happen to quote or hand-write their text, and nothing checked. The guard below
@@ -71,8 +83,10 @@ diff; anything else has no traceable origin, which IS person-level enrichment.
              review_queue (raw_event_id logged) and mints no signal. It never
              raises: for a cron-driven single-operator tool a guard that can
              stop the pipeline is worse than the risk it prevents, so every
-             other candidate in the same run still lands. Signals already
-             stored are skipped before the guard and never re-judged.
+             other candidate in the same run still lands. A stored card is
+             re-judged only when REFRESH above would rewrite its text, and a
+             violation then leaves the stored text standing rather than
+             replacing it with unprovenanced text.
   scope      headline too, not just evidence - it is written by the same INSERT,
              is rendered more prominently, and security_rss.py fills it with
              verbatim source text.
@@ -323,9 +337,13 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
 
     signal_id = (f"{cand['trigger_id']}:{raw['raw_event_id']}:"
                  f"{entity_id or cand['signal_scope']}")
-    if conn.execute("SELECT 1 FROM signals WHERE signal_id = ?",
-                    (signal_id,)).fetchone():
+    stored = conn.execute("SELECT status FROM signals WHERE signal_id = ?",
+                          (signal_id,)).fetchone()
+    if stored:
         counts["signals_existing"] += 1
+        _refresh_stored_text(conn, raw, cand, evidence, evidence_rank,
+                             parser_version, vocabulary, counts, signal_id,
+                             stored["status"], confidence)
         return signal_id
 
     # R10.6: past this point the candidate becomes a stored, rendered card.
@@ -346,6 +364,16 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
          cand.get("headline") or "", evidence[0]["text"],
          raw["url"] or "", round(confidence, 4), trig["evidence_quality"],
          incident_level, customer_facing))
+    _write_evidence(conn, signal_id, raw, evidence, evidence_rank,
+                    parser_version)
+    counts["signals_new"] += 1
+    return signal_id
+
+
+def _write_evidence(conn, signal_id, raw, evidence, evidence_rank,
+                    parser_version):
+    """Write one signal's evidence rows, stamped with the version that minted
+    them. Shared by the insert and the refresh path so the two cannot drift."""
     for e in evidence:
         conn.execute(
             "INSERT INTO signal_evidence (signal_id, raw_event_id, "
@@ -353,8 +381,65 @@ def _process_candidate(conn, resolver, raw, cand, evidence_rank,
             " extraction_version) VALUES (?, ?, ?, ?, ?, ?)",
             (signal_id, raw["raw_event_id"], e["text"],
              e.get("locator", "") or "", evidence_rank, parser_version))
-    counts["signals_new"] += 1
-    return signal_id
+
+
+def _refresh_stored_text(conn, raw, cand, evidence, evidence_rank,
+                         parser_version, vocabulary, counts, signal_id,
+                         status, confidence):
+    """Re-mint the TEXT of a card an OLDER parser_version stored (R3.7, R10.6).
+
+    Insert-or-skip made stored card text immutable. A corrected rule
+    reprocessed the event, rebuilt the same deterministic signal_id, and
+    returned before both the INSERT and the R10.6 guard - so a wording fix
+    reached only cards minted after it, and the guard never judged a card
+    minted before the guard existed. Retraction did not cover this: it acts on
+    signals the run NO LONGER emits, and a reworded card is still emitted.
+
+    Rewrites headline, evidence_snippet and the signal_evidence rows, and
+    NOTHING else. status, score, confidence, entity_id and the incident tier
+    are left exactly as stored: this restates how the card reads, never what
+    the pipeline or the operator concluded about it.
+
+    stale    Staleness is version INEQUALITY, not ordering: the run mints at
+             the current version, so any other stored version is by definition
+             not it. Comparing with '<' would call "1.10" older than "1.9".
+    respect  A 'dismissed' card is never touched - same rule as retraction: the
+             operator judged that text, and a rule change does not get to
+             restate what they judged. 'retracted' and 'superseded' ARE
+             refreshed; both stay rendered (a retracted one is about to be
+             restored by this very run, since the run emitted it).
+    guard    R10.6 runs here, on text that is about to be stored - the point
+             the insert path guards. A violation quarantines and leaves the
+             STORED text standing: the old wording is worse than the new, but
+             unprovenanced text is worse than both.
+    visible  A refresh closes the classifier_parser_version/extraction_version
+             drift that signal_provenance reports (R3.7). A skip or a
+             quarantine leaves it open, which is the honest reading: that
+             card's text is not what the current rule would write.
+    """
+    if status == "dismissed":
+        return
+    stored_versions = {r[0] for r in conn.execute(
+        "SELECT DISTINCT extraction_version FROM signal_evidence "
+        "WHERE signal_id = ?", (signal_id,))}
+    if stored_versions == {parser_version}:
+        return
+
+    unprovenanced = unprovenanced_text(cand, evidence, vocabulary)
+    if unprovenanced is not None:
+        _quarantine(conn, raw, unprovenanced[0], unprovenanced[1], confidence)
+        counts["quarantined"] += 1
+        return
+
+    conn.execute(
+        "UPDATE signals SET headline = ?, evidence_snippet = ? "
+        "WHERE signal_id = ?",
+        (cand.get("headline") or "", evidence[0]["text"], signal_id))
+    conn.execute("DELETE FROM signal_evidence WHERE signal_id = ?",
+                 (signal_id,))
+    _write_evidence(conn, signal_id, raw, evidence, evidence_rank,
+                    parser_version)
+    counts["signals_refreshed"] += 1
 
 
 def _classifier_prefix(parser_version):
@@ -437,7 +522,8 @@ def run_classifier(conn, classifier_id, source_id, classify_fn,
     rows = conn.execute(sql, params).fetchall()
 
     counts = {"events_processed": 0, "events_errored": 0, "signals_new": 0,
-              "signals_existing": 0, "review_enqueued": 0,
+              "signals_existing": 0, "signals_refreshed": 0,
+              "review_enqueued": 0,
               "dropped_scope": 0, "dropped_no_evidence": 0,
               "dropped_no_entity": 0, "quarantined": 0,
               "signals_retracted": 0, "signals_restored": 0}
@@ -543,6 +629,7 @@ def cli(classifier_id, sources, parser_version, description):
                         f"processed={s['events_processed']} "
                         f"signals_new={s['signals_new']} "
                         f"signals_existing={s['signals_existing']} "
+                        f"signals_refreshed={s['signals_refreshed']} "
                         f"review={s['review_enqueued']} "
                         f"dropped_scope={s['dropped_scope']} "
                         f"dropped_no_evidence={s['dropped_no_evidence']} "
