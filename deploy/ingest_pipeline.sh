@@ -43,6 +43,15 @@ python -m app.classify.ransomware
 python -m app.classify.security_rss
 python -m app.scoring
 python -m app.plays
+# Nightly precomputed aggregates (R8.10). AFTER plays / BEFORE digest: the
+# aggregate is a claim about the store as of a moment, so it must be taken
+# after the last step that mints or re-statuses signals, and before the digest
+# so the digest never reads a set of counts older than the cards beside them.
+# NON-fatal (unlike the classify -> score -> plays chain): the reader
+# (app/ui/data.py) refuses to serve a stale aggregate, so a failed refresh
+# degrades to a live recompute, not to wrong numbers. A derived optimization
+# must never be the reason the digest does not get written.
+python -m app.aggregates || echo "WARN: aggregate refresh failed, continuing"
 python -m app.ui_web.digest || echo "WARN: digest generation failed, continuing"
 
 # Drift log (NON-fatal). Unlike the old build-time assertion this never exits

@@ -61,6 +61,7 @@ class PackagingContractTest(unittest.TestCase):
             "app/licensing.py",
             "app/scoring.py",
             "app/plays.py",
+            "app/aggregates.py",
             "app/ui_web/digest.py",
             "app/classify/regulatory.py",
             "app/classify/leadership.py",
@@ -163,6 +164,28 @@ class PackagingContractTest(unittest.TestCase):
         self.assertGreater(
             p.index("app.ui_web.digest"), p.index("app.plays"),
             "digest must run after plays",
+        )
+
+    def test_pipeline_refreshes_aggregates_between_plays_and_digest(self):
+        # R8.10 nightly aggregates. The refresh must run after the last step
+        # that mints or re-statuses signals (plays closes the chain) and before
+        # the digest, so the digest never reads counts older than the cards
+        # beside them. Non-fatal on purpose: a derived optimization must not be
+        # the reason the digest is skipped, and the reader falls back to a live
+        # recompute rather than serving a stale aggregate.
+        p = self._pipeline()
+        self.assertIn("app.aggregates", p, "pipeline dropped the R8.10 aggregate refresh")
+        self.assertGreater(
+            p.index("app.aggregates"), p.index("app.plays"),
+            "aggregates must be refreshed after plays",
+        )
+        self.assertLess(
+            p.index("app.aggregates"), p.index("app.ui_web.digest"),
+            "aggregates must be refreshed before the digest reads them",
+        )
+        self.assertRegex(
+            p, r"python -m app\.aggregates \|\| echo",
+            "the aggregate refresh must be non-fatal (the digest still runs)",
         )
 
     def test_pipeline_runs_licensing_before_plays(self):

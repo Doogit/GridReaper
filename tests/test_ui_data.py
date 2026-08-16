@@ -11,6 +11,7 @@ import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from app import aggregates
 from app.db.migrate import apply_migrations
 from app.ui import data
 
@@ -887,6 +888,188 @@ class TestSignalProvenance(unittest.TestCase):
         signal = data.signal_detail(self.conn, "S_OWN")["signal"]
         self.assertIn("scoring_config_version", signal.keys())
         self.assertIsNone(signal["scoring_config_version"])
+
+
+# -- R8.10: the aggregate reader -------------------------------------------
+
+class TestAnalyticsCountsReader(unittest.TestCase):
+    """A stale aggregate is never served, and never served silently.
+
+    The load-bearing property of the R8.10 unit. Every path below asserts BOTH
+    halves: the numbers handed back are the store's current truth, and the
+    envelope tells the reader what the precomputed layer is doing.
+    """
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _tamper(self, count=999):
+        """Overwrite the stored counts with a value the live store can never
+        produce. If a later assertion sees this number, a stale aggregate WAS
+        served — which is the failure this whole unit exists to prevent."""
+        self.conn.execute("UPDATE signal_aggregates SET count = ?", (count,))
+
+    def _stored_counts(self):
+        return {(r["dimension"], r["key"]): r["count"] for r in
+                self.conn.execute("SELECT dimension, key, count "
+                                  "FROM signal_aggregates")}
+
+    def test_fresh_aggregate_is_served_with_its_own_as_of(self):
+        aggregates.refresh(self.conn, now=NOW)
+        result = data.analytics_counts(self.conn, now=NOW)
+        self.assertEqual(result["served_from"], "aggregate")
+        self.assertFalse(result["aggregate_stale"])
+        self.assertIsNone(result["stale_reason"])
+        self.assertEqual(result["as_of"], NOW.isoformat())
+        self.assertEqual(result["aggregate_as_of"], NOW.isoformat())
+        self.assertTrue(result["as_of"].endswith("+00:00"))   # R10.2
+
+    def test_fresh_aggregate_equals_the_live_computation(self):
+        aggregates.refresh(self.conn, now=NOW)
+        self.assertEqual(data.analytics_counts(self.conn, now=NOW)["counts"],
+                         data.explore_analytics_counts(self.conn))
+
+    def test_stale_aggregate_is_never_served_after_the_store_moves(self):
+        # THE proving test. Refresh, then retract a signal: the row COUNT is
+        # unchanged, so only the basis fingerprint catches it.
+        aggregates.refresh(self.conn, now=NOW)
+        self.conn.execute(
+            "UPDATE signals SET status = 'retracted' WHERE signal_id = 'S_ACC1'")
+        self._tamper()
+        result = data.analytics_counts(self.conn, now=NOW)
+
+        # 1. the numbers are today's truth, not the stored ones
+        live = data.explore_analytics_counts(self.conn)
+        self.assertEqual(result["counts"], live)
+        self.assertNotIn(999, [row["count"] for rows in
+                               result["counts"].values() for row in rows])
+        self.assertIn(999, self._stored_counts().values())  # tamper still there
+
+        # 2. and the reader is told, with the reason and how far behind it is
+        self.assertEqual(result["served_from"], "live")
+        self.assertTrue(result["aggregate_stale"])
+        self.assertEqual(result["stale_reason"], "basis_changed")
+        self.assertEqual(result["aggregate_as_of"], NOW.isoformat())
+        self.assertEqual(result["refresh_command"], "python -m app.aggregates")
+
+    def test_operator_retier_alone_invalidates_the_aggregate(self):
+        # No new row, no status flip — only an R8.7 re-tier, which moves the
+        # incident_tier bucket. A row-count basis would serve stale counts here.
+        aggregates.refresh(self.conn, now=NOW)
+        self.conn.execute(
+            "UPDATE signals SET incident_evidence_level = 'corroborated' "
+            "WHERE signal_id = 'S_ACC1'")
+        self.conn.execute(
+            "INSERT INTO incident_tier_edits (signal_id, old_level, new_level, "
+            " old_cfa, new_cfa, ts) VALUES ('S_ACC1','confirmed',"
+            "'corroborated',1,0,?)", (iso(NOW),))
+        self._tamper()
+        result = data.analytics_counts(self.conn, now=NOW)
+        self.assertEqual(result["stale_reason"], "basis_changed")
+        self.assertEqual(result["counts"],
+                         data.explore_analytics_counts(self.conn))
+
+    def test_never_refreshed_store_reads_live_and_says_so(self):
+        result = data.analytics_counts(self.conn, now=NOW)
+        self.assertEqual(result["served_from"], "live")
+        self.assertEqual(result["stale_reason"], "missing")
+        self.assertIsNone(result["aggregate_as_of"])
+        self.assertEqual(result["counts"],
+                         data.explore_analytics_counts(self.conn))
+
+    def test_aggregate_past_the_nightly_window_expires(self):
+        # Store untouched, so the basis still matches — only age is wrong. The
+        # refresh silently not running is a real failure mode and must not read
+        # as "fresh" forever.
+        aggregates.refresh(self.conn, now=NOW)
+        later = NOW + timedelta(seconds=data.AGGREGATE_MAX_AGE_SECONDS + 1)
+        self._tamper()
+        result = data.analytics_counts(self.conn, now=later)
+        self.assertEqual(result["stale_reason"], "expired")
+        self.assertEqual(result["counts"],
+                         data.explore_analytics_counts(self.conn))
+        # just inside the window it is still servable
+        edge = NOW + timedelta(seconds=data.AGGREGATE_MAX_AGE_SECONDS - 1)
+        self.assertFalse(
+            data.analytics_counts(self.conn, now=edge)["aggregate_stale"])
+
+    def test_future_dated_stamp_is_not_extra_fresh(self):
+        aggregates.refresh(self.conn, now=NOW + timedelta(days=2))
+        result = data.analytics_counts(self.conn, now=NOW)
+        self.assertEqual(result["stale_reason"], "expired")
+        self.assertEqual(result["served_from"], "live")
+
+    def test_unreadable_stamp_is_not_servable(self):
+        aggregates.refresh(self.conn, now=NOW)
+        self.conn.execute("UPDATE aggregate_state SET computed_at = 'nonsense'")
+        self._tamper()
+        result = data.analytics_counts(self.conn, now=NOW)
+        self.assertEqual(result["stale_reason"], "unreadable_stamp")
+        self.assertEqual(result["counts"],
+                         data.explore_analytics_counts(self.conn))
+
+    def test_a_different_status_filter_is_never_answered_from_the_aggregate(self):
+        # The nightly refresh precomputes active-only; answering an all-status
+        # question from it would be a wrong answer wearing a fresh stamp.
+        aggregates.refresh(self.conn, now=NOW)
+        self._tamper()
+        statuses = ("active", "decayed")
+        result = data.analytics_counts(self.conn, statuses=statuses, now=NOW)
+        self.assertEqual(result["stale_reason"], "status_filter_unsupported")
+        self.assertEqual(result["counts"],
+                         data.explore_analytics_counts(self.conn, statuses))
+        # and the default filter is still served from the aggregate
+        self.assertEqual(
+            data.analytics_counts(self.conn, now=NOW)["served_from"],
+            "aggregate")
+
+    def test_computed_and_empty_is_not_never_computed(self):
+        empty = sqlite3.connect(":memory:")
+        empty.row_factory = sqlite3.Row
+        empty.execute("PRAGMA foreign_keys=ON")
+        apply_migrations(empty)
+        try:
+            self.assertEqual(
+                data.analytics_counts(empty, now=NOW)["stale_reason"],
+                "missing")
+            aggregates.refresh(empty, now=NOW)
+            result = data.analytics_counts(empty, now=NOW)
+            self.assertEqual(result["served_from"], "aggregate")
+            self.assertFalse(result["aggregate_stale"])
+            self.assertEqual(result["counts"],
+                             {"trigger": [], "scope": [], "incident_tier": []})
+            self.assertEqual(result["aggregate_as_of"], NOW.isoformat())
+        finally:
+            empty.close()
+
+    def test_memo_is_request_scoped_not_process_global(self):
+        # Inside one request the second read is answered from the memo...
+        aggregates.refresh(self.conn, now=NOW)
+        memo = {}
+        first = data.analytics_counts(self.conn, now=NOW, memo=memo)
+        self.conn.execute(
+            "UPDATE signals SET status = 'retracted' WHERE signal_id = 'S_ACC1'")
+        self.assertIs(data.analytics_counts(self.conn, now=NOW, memo=memo),
+                      first)
+        # ...and the NEXT request, with its own memo, sees the change. Nothing
+        # is cached across requests, so a refresh can never be shadowed.
+        fresh = data.analytics_counts(self.conn, now=NOW, memo={})
+        self.assertTrue(fresh["aggregate_stale"])
+        self.assertEqual(fresh["counts"],
+                         data.explore_analytics_counts(self.conn))
+
+    def test_memo_keys_on_the_status_filter(self):
+        aggregates.refresh(self.conn, now=NOW)
+        memo = {}
+        default = data.analytics_counts(self.conn, now=NOW, memo=memo)
+        other = data.analytics_counts(self.conn, statuses=("active", "decayed"),
+                                      now=NOW, memo=memo)
+        self.assertEqual(default["served_from"], "aggregate")
+        self.assertEqual(other["served_from"], "live")
+        self.assertEqual(len(memo), 2)
 
 
 if __name__ == "__main__":
