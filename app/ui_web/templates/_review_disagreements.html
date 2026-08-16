@@ -1,0 +1,22 @@
+{# Judge/human disagreement queue (R8.2, R9.11), driven by
+   render.disagreement_item_view() rows. The SAME computation the Precision page
+   reports, surfaced here as work rather than as a rate. A QA signal, not ground
+   truth — the judge rates objective facts, the human rates usefulness, so some
+   disagreement is expected. Nothing here changes a verdict. Cards linked by
+   card_key, never raw signal_id (KTD2). All text autoescaped. #}
+<h2 class="gs-account-name">Judge / human disagreements ({{ disagreements|length }})</h2>
+<p class="gs-muted-text">Signals the audit judge and you rated differently, out of {{ disagreement_comparable }} with both a judge verdict and a human rating. A QA signal, not ground truth — the judge rates objective facts, you rate usefulness, so some disagreement is expected.</p>
+
+{% if disagreements %}
+{% for d in disagreements %}
+<div class="gs-card sev-moderate">
+  <div class="gs-headline"><a href="/card/{{ d.key }}">{{ d.headline }}</a></div>
+  <div class="gs-meta">{{ d.entity }} · {{ d.trigger }} · {{ d.event_date }} · {{ d.scope }} · source {{ d.source_id }}</div>
+  <div class="gs-meta">judge: <code>{{ d.judge }}</code> · human: <code>{{ d.human }}</code></div>
+</div>
+{% endfor %}
+{% elif disagreement_comparable %}
+<div class="gs-empty">0 disagreements over {{ disagreement_comparable }} comparable signal(s) — the judge and you agreed on every signal that has both verdicts.</div>
+{% else %}
+<div class="gs-empty">0 comparable signals — nothing yet carries BOTH a judge verdict and a human rating, so there is nothing to compare. This is an empty denominator, not agreement.</div>
+{% endif %}

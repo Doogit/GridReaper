@@ -178,6 +178,176 @@ def add_signal(conn, sid, entity_id, scope, trigger_id, event_date, headline,
          headline, "http://src", 0.9, "IR", cfa, score, status))
 
 
+class TestDuplicateCandidates(unittest.TestCase):
+    """R8.2: proposals for the operator to judge — never an auto-merge."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_base_fixture_proposes_nothing(self):
+        # S_ACC1/S_ACC2 share entity+trigger but are 5 days apart (> 3)
+        self.assertEqual(data.duplicate_candidates(self.conn), [])
+
+    def test_near_date_pair_appears_once_with_both_ids(self):
+        add_signal(self.conn, "S_DUP", "E_ACME", "account", "t_lead",
+                   days_ago_date(6), "Acme names new CISO (reprint)", cfa=1)
+        pairs = data.duplicate_candidates(self.conn)
+        self.assertEqual(len(pairs), 1)
+        p = pairs[0]
+        self.assertEqual({p["signal_a"], p["signal_b"]}, {"S_ACC1", "S_DUP"})
+        self.assertEqual(p["bases"], ["entity_trigger_date"])
+        self.assertEqual(p["day_gap"], 1)
+        self.assertEqual(p["entity_name"], "Acme Energy")
+
+    def test_gap_beyond_window_is_not_proposed(self):
+        add_signal(self.conn, "S_FAR", "E_ACME", "account", "t_lead",
+                   days_ago_date(9), "Acme names new CISO (late)", cfa=1)
+        # 4 days from S_ACC1, 1 day from S_ACC2 -> only the S_ACC2 pair
+        pairs = data.duplicate_candidates(self.conn)
+        self.assertEqual([{p["signal_a"], p["signal_b"]} for p in pairs],
+                         [{"S_ACC2", "S_FAR"}])
+
+    def test_unparseable_date_is_not_asserted_near(self):
+        add_signal(self.conn, "S_NODATE", "E_ACME", "account", "t_lead",
+                   "", "Acme undated", cfa=1)
+        self.assertEqual(data.duplicate_candidates(self.conn), [])
+
+    def test_content_hash_lineage_across_two_raw_events(self):
+        for rid in ("re_h1", "re_h2"):
+            self.conn.execute(
+                "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+                "payload, url, content_hash) VALUES (?,'sp_ok',?,'{}','http://h',"
+                "'HASH1')", (rid, days_ago_date(20)))
+        for sid, rid in (("S_H1", "re_h1"), ("S_H2", "re_h2")):
+            self.conn.execute(
+                "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+                "signal_scope, trigger_id, event_date, headline, status) "
+                "VALUES (?,?,'E_ACME','account','t_reg',?,?, 'active')",
+                (sid, rid, days_ago_date(20), f"same content {sid}"))
+        pairs = data.duplicate_candidates(self.conn)
+        self.assertEqual(len(pairs), 1)
+        # strongest lineage first
+        self.assertEqual(pairs[0]["bases"], ["content_hash",
+                                             "entity_trigger_date"])
+        self.assertEqual(pairs[0]["content_hash"], "HASH1")
+        self.assertEqual(pairs[0]["basis_rank"], 0)
+
+    def test_content_hash_pairs_outrank_date_proximity_pairs(self):
+        # a date-proximity pair, newer than the content_hash pair below it
+        add_signal(self.conn, "S_NEAR", "E_ACME", "account", "t_lead",
+                   days_ago_date(6), "Acme names new CISO (reprint)", cfa=1)
+        for rid in ("re_h1", "re_h2"):
+            self.conn.execute(
+                "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+                "payload, url, content_hash) VALUES (?,'sp_ok',?,'{}',"
+                "'http://h','HASH1')", (rid, days_ago_date(300)))
+        for sid, rid in (("S_H1", "re_h1"), ("S_H2", "re_h2")):
+            self.conn.execute(
+                "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+                "signal_scope, trigger_id, event_date, headline, status) "
+                "VALUES (?,?,'E_SUB','account','t_reg',?,?, 'active')",
+                (sid, rid, days_ago_date(300), sid))
+        pairs = data.duplicate_candidates(self.conn)
+        # the OLDER content_hash-backed pair still sorts above the newer
+        # date-proximity-only pair
+        self.assertEqual([p["basis_rank"] for p in pairs], [0, 1])
+        self.assertIn("content_hash", pairs[0]["bases"])
+        self.assertEqual(pairs[1]["bases"], ["entity_trigger_date"])
+
+    def test_scores_are_carried_so_the_double_count_is_visible(self):
+        add_signal(self.conn, "S_DUP2", "E_ACME", "account", "t_lead",
+                   days_ago_date(6), "Acme CISO reprint", cfa=1, score=2.9)
+        self.conn.execute("UPDATE signals SET score=3.4 "
+                          "WHERE signal_id='S_ACC1'")
+        p = data.duplicate_candidates(self.conn)[0]
+        self.assertEqual({p["score_a"], p["score_b"]}, {3.4, 2.9})
+
+    def test_two_signals_off_one_raw_event_are_not_a_pair(self):
+        # different triggers on the SAME record is not a duplicate pair
+        self.conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+            "payload, url, content_hash) VALUES ('re_one','sp_ok',?,'{}',"
+            "'http://o','HASH2')", (days_ago_date(20),))
+        for sid, trig in (("S_O1", "t_lead"), ("S_O2", "t_reg")):
+            self.conn.execute(
+                "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+                "signal_scope, trigger_id, event_date, headline, status) "
+                "VALUES (?, 're_one','E_SUB','account',?,?,?, 'active')",
+                (sid, trig, days_ago_date(20), sid))
+        self.assertEqual(data.duplicate_candidates(self.conn), [])
+
+    def test_decayed_signal_is_not_proposed(self):
+        # S_DEAD shares entity+trigger with S_ACC1 but is decayed
+        add_signal(self.conn, "S_NEARDEAD", "E_ACME", "account", "t_lead",
+                   days_ago_date(401), "Old exec note reprint", status="decayed")
+        self.assertEqual(data.duplicate_candidates(self.conn), [])
+
+    def test_basis_labels_do_not_read_as_equally_strong(self):
+        weak = data.duplicate_basis_label("entity_trigger_date", 2)
+        strong = data.duplicate_basis_label("content_hash")
+        self.assertIn("2 day(s) apart", weak)
+        self.assertIn("may be two distinct events", weak)
+        self.assertIn("the same underlying record", strong)
+
+
+class TestJudgeHumanDisagreements(unittest.TestCase):
+    """R8.2/R9.11: the Precision computation surfaced as a work queue."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _audit(self, signal_id, check_type, result):
+        self.conn.execute(
+            "INSERT INTO audit (signal_id, check_type, result, ts) "
+            "VALUES (?,?,?,?)", (signal_id, check_type, result, iso(NOW)))
+
+    def _feedback(self, signal_id, verdict, reason=None):
+        self.conn.execute(
+            "INSERT INTO feedback (signal_id, verdict, reason_code, ts) "
+            "VALUES (?,?,?,?)", (signal_id, verdict, reason, iso(NOW)))
+
+    def test_empty_store_is_an_empty_denominator_not_agreement(self):
+        d = data.judge_human_disagreements(self.conn)
+        self.assertEqual(d["comparable"], 0)
+        self.assertEqual(d["items"], [])
+
+    def test_agreement_is_comparable_but_not_work(self):
+        self._audit("S_ACC1", "entity_match", "pass")
+        self._feedback("S_ACC1", "useful")
+        d = data.judge_human_disagreements(self.conn)
+        self.assertEqual(d["comparable"], 1)
+        self.assertEqual(d["agree"], 1)
+        self.assertEqual(d["items"], [])
+
+    def test_disagreement_surfaces_as_an_item_with_both_verdicts(self):
+        self._audit("S_ACC1", "evidence_support", "fail")
+        self._feedback("S_ACC1", "useful")
+        d = data.judge_human_disagreements(self.conn)
+        self.assertEqual(d["disagree"], 1)
+        self.assertEqual(len(d["items"]), 1)
+        item = d["items"][0]
+        self.assertEqual(item["signal_id"], "S_ACC1")
+        self.assertEqual(item["judge"], "negative")
+        self.assertEqual(item["human"], "positive")
+        # enriched from signals so the operator can act without a lookup
+        self.assertEqual(item["headline"], "Acme names new CISO")
+        self.assertEqual(item["entity_name"], "Acme Energy")
+        self.assertEqual(item["source_id"], "sp_ok")
+
+    def test_one_sided_signal_is_not_comparable(self):
+        self._audit("S_ACC1", "entity_match", "fail")   # judge only
+        self._feedback("S_ACC2", "not_useful", "duplicate")  # human only
+        d = data.judge_human_disagreements(self.conn)
+        self.assertEqual(d["comparable"], 0)
+        self.assertEqual(d["items"], [])
+
+
 class TestFeed(unittest.TestCase):
     def setUp(self):
         self.conn = fixture_conn()

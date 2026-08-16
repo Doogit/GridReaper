@@ -23,6 +23,7 @@ import time
 from datetime import date, datetime, timezone
 from hashlib import sha256
 
+from app.audit import precision
 from app.classify import ransomware as ransomware_classifier
 from app.classify import regulatory as regulatory_classifier
 from app.classify.runner import INCIDENT_TIERS, customer_facing_for_tier
@@ -406,6 +407,169 @@ def _payload_snippet_parts(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
         pass
     text = str(payload)
     return text[:limit], len(text) > limit, 0
+
+
+# Two signals are duplicate CANDIDATES, never duplicates. Nothing here merges,
+# dismisses, supersedes or scores anything: the operator judges, this layer only
+# proposes (R8.2). Both lineages are deliberately coarse and stated on the row so
+# a proposal can be rejected on its face.
+DUPLICATE_NEAR_DAYS = 3
+# The two lineages are NOT equally strong, and a render that shows them
+# identically trains the operator to ignore the section: a shared content_hash
+# is the same underlying record, while same-account-same-trigger-within-N-days
+# routinely pairs two genuinely distinct events (a VP departing and their
+# successor being named). The label says which one is talking, and
+# ``_DUP_BASIS_RANK`` floats the strong lineage to the top.
+_DUP_BASIS_LABELS = {
+    "content_hash": ("identical raw content_hash on two raw events — the same "
+                     "underlying record"),
+    "entity_trigger_date": ("same account and trigger type, {gap} day(s) apart "
+                            "— may be two distinct events"),
+}
+_DUP_BASIS_RANK = {"content_hash": 0, "entity_trigger_date": 1}
+
+
+def duplicate_candidates(conn, near_days=DUPLICATE_NEAR_DAYS,
+                         statuses=("active",)):
+    """Pairs of signals an operator may want to judge as duplicates (R8.2).
+
+    Two lineages, unioned and reported per pair with the basis that produced it:
+
+    * **entity + trigger + near date** — same non-NULL ``entity_id`` and
+      ``trigger_id`` within ``near_days``. A pair whose dates do not parse is
+      NOT proposed: nearness that cannot be computed is not asserted.
+    * **content_hash** — two DISTINCT ``raw_events`` carrying the same non-empty
+      ``content_hash`` (R10.4's dedupe key), each with a signal. Same raw event
+      is excluded: two triggers off one record are not a duplicate pair.
+
+    The lineages are not equally strong, so ordering puts every content_hash
+    pair above every date-proximity pair, newest-first within each. Each pair
+    appears once, with ``(signal_a, signal_b)`` in stable ``signal_id`` order,
+    carrying every basis that produced it. Read-only.
+    """
+    statuses = tuple(statuses)
+    ph = _placeholders(len(statuses))
+    cols = (
+        " s1.signal_id AS signal_a, s2.signal_id AS signal_b, "
+        " s1.headline AS headline_a, s2.headline AS headline_b, "
+        " s1.event_date AS event_date_a, s2.event_date AS event_date_b, "
+        " s1.signal_scope AS scope_a, s2.signal_scope AS scope_b, "
+        " s1.score AS score_a, s2.score AS score_b, "
+        " s1.entity_id AS entity_id, e.name AS entity_name, "
+        " s1.trigger_id AS trigger_id, t.name AS trigger_name ")
+    joins = (" LEFT JOIN watchlist_entities e ON e.entity_id = s1.entity_id "
+             " LEFT JOIN triggers t ON t.trigger_id = s1.trigger_id ")
+
+    by_pair = {}
+
+    def _collect(rows, basis):
+        for r in rows:
+            row = dict(r)
+            d = by_pair.setdefault((row["signal_a"], row["signal_b"]), {})
+            # a pair found by both lineages keeps the columns each one carries
+            # (only the content_hash query selects content_hash)
+            for key, value in row.items():
+                if d.get(key) is None:
+                    d[key] = value
+            d.setdefault("bases", [])
+            if basis not in d["bases"]:
+                d["bases"].append(basis)
+
+    _collect(conn.execute(
+        f"SELECT {cols} FROM signals s1 JOIN signals s2 "
+        " ON s2.entity_id = s1.entity_id AND s2.trigger_id = s1.trigger_id "
+        " AND s2.signal_id > s1.signal_id "
+        f"{joins} "
+        "WHERE s1.entity_id IS NOT NULL AND s1.trigger_id IS NOT NULL "
+        f" AND s1.status IN ({ph}) AND s2.status IN ({ph}) "
+        " AND ABS(JULIANDAY(s2.event_date) - JULIANDAY(s1.event_date)) <= ?",
+        list(statuses) + list(statuses) + [near_days]).fetchall(),
+        "entity_trigger_date")
+
+    _collect(conn.execute(
+        f"SELECT {cols}, r1.content_hash AS content_hash "
+        "FROM signals s1 "
+        " JOIN raw_events r1 ON r1.raw_event_id = s1.raw_event_id "
+        " JOIN raw_events r2 ON r2.content_hash = r1.content_hash "
+        "  AND r2.raw_event_id <> r1.raw_event_id "
+        " JOIN signals s2 ON s2.raw_event_id = r2.raw_event_id "
+        "  AND s2.signal_id > s1.signal_id "
+        f"{joins} "
+        "WHERE r1.content_hash IS NOT NULL AND r1.content_hash <> '' "
+        f" AND s1.status IN ({ph}) AND s2.status IN ({ph})",
+        list(statuses) + list(statuses)).fetchall(),
+        "content_hash")
+
+    out = list(by_pair.values())
+    for d in out:
+        d.setdefault("content_hash", None)
+        d["day_gap"] = _day_gap(d["event_date_a"], d["event_date_b"])
+        d["bases"].sort(key=lambda b: _DUP_BASIS_RANK.get(b, 99))
+        # the strongest lineage backing this pair; drives ordering so the
+        # same-record proposals are not buried under coincidental proximity
+        d["basis_rank"] = min(_DUP_BASIS_RANK.get(b, 99) for b in d["bases"])
+    # newest-first, then a stable pass that floats the strong lineage to the top
+    out.sort(key=lambda d: (max(d["event_date_a"] or "", d["event_date_b"] or ""),
+                            d["signal_a"]), reverse=True)
+    out.sort(key=lambda d: d["basis_rank"])
+    return out
+
+
+def _day_gap(date_a, date_b):
+    """Whole days between two event dates, or None when either will not parse."""
+    a, b = _parse_date(date_a), _parse_date(date_b)
+    return None if a is None or b is None else abs((b - a).days)
+
+
+def duplicate_basis_label(basis, day_gap=None):
+    """Human label for one duplicate-candidate basis; the gap is stated so the
+    operator can reject a proposal without opening either card."""
+    template = _DUP_BASIS_LABELS.get(basis, basis)
+    return template.format(gap="?" if day_gap is None else day_gap)
+
+
+def judge_human_disagreements(conn):
+    """Judge-vs-human disagreements as a triage work queue (R8.2, R9.11).
+
+    Reuses the Precision page's computation verbatim
+    (``precision.judge_human_disagreement``) rather than restating it, so the
+    queue and the metric can never diverge. A signal is comparable only when it
+    has BOTH a judge verdict (entity_match / evidence_support) AND a human
+    rating; only the DISAGREEING items are work, but ``comparable`` ships with
+    them so an empty queue reads as 'nothing to compare yet', not 'nothing is
+    wrong'. Disagreement is a QA signal, not ground truth - the judge rates
+    objective facts and the human rates usefulness, so some disagreement is
+    expected. Nothing here changes a verdict; the operator judges.
+    """
+    computed = precision.judge_human_disagreement(
+        precision_audit_rows(conn), precision_feedback_rows(conn))
+    items = [i for i in computed["items"] if i["judge"] != i["human"]]
+    detail = {}
+    if items:
+        ids = [i["signal_id"] for i in items]
+        rows = conn.execute(
+            "SELECT s.signal_id, s.headline, s.event_date, s.signal_scope, "
+            " s.status, s.entity_id, e.name AS entity_name, "
+            " t.name AS trigger_name, re.source_id AS source_id "
+            "FROM signals s "
+            "LEFT JOIN watchlist_entities e ON e.entity_id = s.entity_id "
+            "LEFT JOIN triggers t ON t.trigger_id = s.trigger_id "
+            "LEFT JOIN raw_events re ON re.raw_event_id = s.raw_event_id "
+            f"WHERE s.signal_id IN ({_placeholders(len(ids))})", ids).fetchall()
+        detail = {r["signal_id"]: dict(r) for r in rows}
+    out = []
+    for item in items:
+        d = dict(detail.get(item["signal_id"], {}))
+        d.update(item)
+        out.append(d)
+    out.sort(key=lambda d: (d.get("event_date") or "", d["signal_id"]),
+             reverse=True)
+    return {
+        "comparable": computed["comparable"],
+        "agree": computed["agree"],
+        "disagree": computed["disagree"],
+        "items": out,
+    }
 
 
 def source_health(conn):

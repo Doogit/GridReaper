@@ -293,6 +293,84 @@ class TestPendingMatches(ReviewTestBase):
         self.assertNotIn('id="re_rev"', dom)
 
 
+def seed_triage_items(conn):
+    """A near-duplicate pair and one judge/human disagreement (R8.2)."""
+    _base(conn)
+    _facts(conn)
+    conn.execute("INSERT INTO triggers (trigger_id, name, base_strength, "
+                 "decay_half_life_days) VALUES ('t_lead','Leadership',4,90)")
+    for sid, date, headline in [
+            ("S_ONE", days_ago_date(5), "Dark Muni names new CISO"),
+            ("S_TWO", days_ago_date(6), "Dark Muni names new CISO (reprint)")]:
+        conn.execute(
+            "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+            "signal_scope, trigger_id, event_date, headline, status) VALUES "
+            "(?, 're_rev','E_DARK','account','t_lead',?,?, 'active')",
+            (sid, date, headline))
+    # S_ONE: judge says fail, human says useful -> a disagreement item
+    conn.execute("INSERT INTO audit (signal_id, check_type, result, ts) "
+                 "VALUES ('S_ONE','evidence_support','fail', ?)", (iso(NOW),))
+    conn.execute("INSERT INTO feedback (signal_id, verdict, ts) "
+                 "VALUES ('S_ONE','useful', ?)", (iso(NOW),))
+
+
+class TestTriageDuplicates(ReviewTestBase):
+    seed = staticmethod(seed_triage_items)
+
+    def test_pair_appears_once_with_both_cards_linked(self):
+        dom = self.page()
+        self.assertIn("Duplicate candidates (1)", dom)
+        self.assertIn(f'/card/{render.card_key("S_ONE")}', dom)
+        self.assertIn(f'/card/{render.card_key("S_TWO")}', dom)
+        self.assertIn("1 day(s) apart", dom)
+        # a weak-lineage pair must not read as a finding
+        self.assertIn("may be two distinct events", dom)
+        # raw signal ids never reach the DOM (KTD2)
+        self.assertNotIn("S_ONE", dom)
+
+    def test_both_scores_are_shown_so_the_double_count_is_visible(self):
+        dom = self.page()
+        section = dom.split("Duplicate candidates")[1].split("Judge / human")[0]
+        self.assertEqual(section.count("score "), 2)
+
+    def test_source_health_precedes_the_proposal_sections(self):
+        # the two operational questions stay together at the top
+        dom = self.page()
+        self.assertLess(dom.index("Source health"),
+                        dom.index("Duplicate candidates"))
+
+    def test_no_merge_or_dismiss_action_is_offered(self):
+        dom = self.page()
+        section = dom.split("Duplicate candidates")[1].split("Judge / human")[0]
+        # the section offers reading, not acting: no button, form or write verb
+        for markup in ("<button", "<form", "hx-post"):
+            self.assertNotIn(markup, section)
+
+
+class TestTriageDisagreements(ReviewTestBase):
+    seed = staticmethod(seed_triage_items)
+
+    def test_disagreement_is_an_item_with_both_verdicts(self):
+        dom = self.page()
+        self.assertIn("Judge / human disagreements (1)", dom)
+        self.assertIn("judge: <code>negative</code>", dom)
+        self.assertIn("human: <code>positive</code>", dom)
+        self.assertIn(f'/card/{render.card_key("S_ONE")}', dom)
+
+
+class TestTriageEmptyStates(ReviewTestBase):
+    seed = staticmethod(seed_empty)
+
+    def test_both_sections_render_honest_empty_states(self):
+        dom = self.page()
+        self.assertIn("Duplicate candidates (0)", dom)
+        self.assertIn("0 duplicate candidates", dom)
+        self.assertIn("Judge / human disagreements (0)", dom)
+        # an empty denominator must not read as agreement
+        self.assertIn("0 comparable signals", dom)
+        self.assertIn("This is an empty denominator, not agreement", dom)
+
+
 class TestSourceHealth(ReviewTestBase):
     def test_five_states_classified_and_error_verbatim(self):
         dom = self.page()

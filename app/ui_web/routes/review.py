@@ -11,9 +11,18 @@ sections, each with an honest empty state:
    ``data.triage_decision`` (the only write path here) and HTMX-swaps the row
    out for a 'decision recorded' line. Approving records the decision only;
    creating a signal from an approved match is deferred this chunk.
-2. Source health — every source policy classified error / never_run / stale /
+2. Duplicate candidates — pairs of active signals that may be the same event
+   (shared entity + trigger within ``data.DUPLICATE_NEAR_DAYS``, or an identical
+   raw ``content_hash``). PROPOSALS ONLY: no merge, no dismiss, no auto-anything
+   — a duplicate ruling is the operator's, so the row states its basis and links
+   both cards by ``card_key``.
+3. Judge / human disagreements — the SAME computation the Precision page
+   reports (``precision.judge_human_disagreement``), surfaced as work rather
+   than as a rate, so the two can never diverge. An empty queue distinguishes
+   'nothing comparable yet' from 'the judge and you agreed'.
+4. Source health — every source policy classified error / never_run / stale /
    disabled / ok via ``data.source_state``; error text shown verbatim (R10.3).
-3. Stale license facts — read-only, verified more than 180 days ago (R10.7);
+5. Stale license facts — read-only, verified more than 180 days ago (R10.7);
    the count is in the section header.
 
 A reader except for ``data.triage_decision``. Display shaping lives in
@@ -38,8 +47,16 @@ def _review_context(conn):
                for row in data.source_health(conn)]
     stale = [render.stale_fact_view(fact)
              for fact in data.stale_facts(conn, days=render.STALE_FACT_WINDOW_DAYS)]
+    duplicates = [render.duplicate_candidate_view(pair)
+                  for pair in data.duplicate_candidates(conn)]
+    disagreement = data.judge_human_disagreements(conn)
     return {
         "pending": pending,
+        "duplicates": duplicates,
+        "duplicate_near_days": data.DUPLICATE_NEAR_DAYS,
+        "disagreements": [render.disagreement_item_view(item)
+                          for item in disagreement["items"]],
+        "disagreement_comparable": disagreement["comparable"],
         "sources": sources,
         "stale": stale,
         "stale_count": len(stale),

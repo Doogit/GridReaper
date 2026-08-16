@@ -385,6 +385,55 @@ def review_snippet_note(item):
     return ""
 
 
+def duplicate_candidate_view(pair):
+    """Shape one duplicate_candidates() pair for _review_duplicates.html (R8.2).
+
+    Both signals are identified by ``card_key`` (sha256), never by raw
+    ``signal_id``: a signal_id embeds its raw_event_id, which for a press source
+    IS the article URL (KTD2). The operator opens each card and judges; this row
+    proposes and states its basis, and offers no merge or dismiss action,
+    because a duplicate ruling is the operator's alone. Pure.
+    """
+    bases = pair.get("bases") or []
+    gap = pair.get("day_gap")
+    return {
+        "key_a": card_key(pair["signal_a"]),
+        "key_b": card_key(pair["signal_b"]),
+        "headline_a": pair.get("headline_a") or "(untitled)",
+        "headline_b": pair.get("headline_b") or "(untitled)",
+        "event_date_a": pair.get("event_date_a") or "n/a",
+        "event_date_b": pair.get("event_date_b") or "n/a",
+        # both sides score separately and both stay on the feed until the
+        # operator rules, so the double-count is stated where it is decided
+        "score_a": fmt_score(pair.get("score_a")),
+        "score_b": fmt_score(pair.get("score_b")),
+        "entity": pair.get("entity_name") or pair.get("entity_id") or "(no entity)",
+        "trigger": pair.get("trigger_name") or pair.get("trigger_id") or "(none)",
+        "scope_a": scope_label(pair.get("scope_a")),
+        "scope_b": scope_label(pair.get("scope_b")),
+        "bases": [data.duplicate_basis_label(b, gap) for b in bases],
+    }
+
+
+def disagreement_item_view(item):
+    """Shape one judge_human_disagreements() item for the triage queue (R8.2).
+
+    Judge and human verdicts side by side on a card the operator can open.
+    Keyed by ``card_key`` for the same reason duplicates are. Pure.
+    """
+    return {
+        "key": card_key(item["signal_id"]),
+        "headline": item.get("headline") or "(untitled)",
+        "event_date": item.get("event_date") or "n/a",
+        "entity": item.get("entity_name") or item.get("entity_id") or "(no entity)",
+        "trigger": item.get("trigger_name") or "(none)",
+        "source_id": item.get("source_id") or "(no source)",
+        "judge": item.get("judge") or "n/a",
+        "human": item.get("human") or "n/a",
+        "scope": scope_label(item.get("signal_scope")),
+    }
+
+
 def source_health_view(row, state):
     """Shape one source_health() row + its source_state() label for the template.
 
