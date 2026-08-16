@@ -299,10 +299,19 @@ def _payload_snippet_parts(payload, limit=_PAYLOAD_SNIPPET_LIMIT):
 # proposes (R8.2). Both lineages are deliberately coarse and stated on the row so
 # a proposal can be rejected on its face.
 DUPLICATE_NEAR_DAYS = 3
+# The two lineages are NOT equally strong, and a render that shows them
+# identically trains the operator to ignore the section: a shared content_hash
+# is the same underlying record, while same-account-same-trigger-within-N-days
+# routinely pairs two genuinely distinct events (a VP departing and their
+# successor being named). The label says which one is talking, and
+# ``_DUP_BASIS_RANK`` floats the strong lineage to the top.
 _DUP_BASIS_LABELS = {
-    "entity_trigger_date": "same entity + trigger, {gap} day(s) apart",
-    "content_hash": "identical raw content_hash across two raw events",
+    "content_hash": ("identical raw content_hash on two raw events — the same "
+                     "underlying record"),
+    "entity_trigger_date": ("same account and trigger type, {gap} day(s) apart "
+                            "— may be two distinct events"),
 }
+_DUP_BASIS_RANK = {"content_hash": 0, "entity_trigger_date": 1}
 
 
 def duplicate_candidates(conn, near_days=DUPLICATE_NEAR_DAYS,
@@ -318,8 +327,10 @@ def duplicate_candidates(conn, near_days=DUPLICATE_NEAR_DAYS,
       ``content_hash`` (R10.4's dedupe key), each with a signal. Same raw event
       is excluded: two triggers off one record are not a duplicate pair.
 
-    Ordered newest-first by the pair's later event date. Each pair appears once,
-    with ``(signal_a, signal_b)`` in stable ``signal_id`` order. Read-only.
+    The lineages are not equally strong, so ordering puts every content_hash
+    pair above every date-proximity pair, newest-first within each. Each pair
+    appears once, with ``(signal_a, signal_b)`` in stable ``signal_id`` order,
+    carrying every basis that produced it. Read-only.
     """
     statuses = tuple(statuses)
     ph = _placeholders(len(statuses))
@@ -328,6 +339,7 @@ def duplicate_candidates(conn, near_days=DUPLICATE_NEAR_DAYS,
         " s1.headline AS headline_a, s2.headline AS headline_b, "
         " s1.event_date AS event_date_a, s2.event_date AS event_date_b, "
         " s1.signal_scope AS scope_a, s2.signal_scope AS scope_b, "
+        " s1.score AS score_a, s2.score AS score_b, "
         " s1.entity_id AS entity_id, e.name AS entity_name, "
         " s1.trigger_id AS trigger_id, t.name AS trigger_name ")
     joins = (" LEFT JOIN watchlist_entities e ON e.entity_id = s1.entity_id "
@@ -377,8 +389,14 @@ def duplicate_candidates(conn, near_days=DUPLICATE_NEAR_DAYS,
     for d in out:
         d.setdefault("content_hash", None)
         d["day_gap"] = _day_gap(d["event_date_a"], d["event_date_b"])
+        d["bases"].sort(key=lambda b: _DUP_BASIS_RANK.get(b, 99))
+        # the strongest lineage backing this pair; drives ordering so the
+        # same-record proposals are not buried under coincidental proximity
+        d["basis_rank"] = min(_DUP_BASIS_RANK.get(b, 99) for b in d["bases"])
+    # newest-first, then a stable pass that floats the strong lineage to the top
     out.sort(key=lambda d: (max(d["event_date_a"] or "", d["event_date_b"] or ""),
                             d["signal_a"]), reverse=True)
+    out.sort(key=lambda d: d["basis_rank"])
     return out
 
 

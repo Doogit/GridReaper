@@ -5,16 +5,16 @@
    autoescaped. Empty = nothing in the store looks duplicated under either
    lineage. #}
 <h2 class="gs-account-name">Duplicate candidates ({{ duplicates|length }})</h2>
-<p class="gs-muted-text">Pairs that <em>may</em> be the same event, by shared entity + trigger within {{ duplicate_near_days }} days, or an identical raw <code>content_hash</code>. Proposals only — nothing is merged or dismissed here; open both cards and judge.</p>
+<p class="gs-muted-text">Pairs that <em>may</em> be the same event. The two lineages are not equally strong and are listed strongest first: an identical raw <code>content_hash</code> is the same underlying record, while same-account-same-trigger within {{ duplicate_near_days }} days often pairs two genuinely distinct events. Proposals only — nothing is merged or dismissed here; both cards stay on the feed, each with its own score, until you judge.</p>
 
 {% if duplicates %}
 {% for d in duplicates %}
 <div class="gs-card sev-moderate">
   <div class="gs-meta">{{ d.entity }} · {{ d.trigger }}</div>
   <div class="gs-headline"><a href="/card/{{ d.key_a }}">{{ d.headline_a }}</a></div>
-  <div class="gs-meta">{{ d.event_date_a }} · {{ d.scope_a }}</div>
+  <div class="gs-meta">{{ d.event_date_a }} · {{ d.scope_a }} · score {{ d.score_a }}</div>
   <div class="gs-headline"><a href="/card/{{ d.key_b }}">{{ d.headline_b }}</a></div>
-  <div class="gs-meta">{{ d.event_date_b }} · {{ d.scope_b }}</div>
+  <div class="gs-meta">{{ d.event_date_b }} · {{ d.scope_b }} · score {{ d.score_b }}</div>
   <div class="gs-meta">matched on: {% for b in d.bases %}<code>{{ b }}</code>{% if not loop.last %} · {% endif %}{% endfor %}</div>
 </div>
 {% endfor %}

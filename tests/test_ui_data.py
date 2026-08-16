@@ -229,9 +229,41 @@ class TestDuplicateCandidates(unittest.TestCase):
                 (sid, rid, days_ago_date(20), f"same content {sid}"))
         pairs = data.duplicate_candidates(self.conn)
         self.assertEqual(len(pairs), 1)
-        self.assertEqual(pairs[0]["bases"], ["entity_trigger_date",
-                                             "content_hash"])
+        # strongest lineage first
+        self.assertEqual(pairs[0]["bases"], ["content_hash",
+                                             "entity_trigger_date"])
         self.assertEqual(pairs[0]["content_hash"], "HASH1")
+        self.assertEqual(pairs[0]["basis_rank"], 0)
+
+    def test_content_hash_pairs_outrank_date_proximity_pairs(self):
+        # a date-proximity pair, newer than the content_hash pair below it
+        add_signal(self.conn, "S_NEAR", "E_ACME", "account", "t_lead",
+                   days_ago_date(6), "Acme names new CISO (reprint)", cfa=1)
+        for rid in ("re_h1", "re_h2"):
+            self.conn.execute(
+                "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+                "payload, url, content_hash) VALUES (?,'sp_ok',?,'{}',"
+                "'http://h','HASH1')", (rid, days_ago_date(300)))
+        for sid, rid in (("S_H1", "re_h1"), ("S_H2", "re_h2")):
+            self.conn.execute(
+                "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+                "signal_scope, trigger_id, event_date, headline, status) "
+                "VALUES (?,?,'E_SUB','account','t_reg',?,?, 'active')",
+                (sid, rid, days_ago_date(300), sid))
+        pairs = data.duplicate_candidates(self.conn)
+        # the OLDER content_hash-backed pair still sorts above the newer
+        # date-proximity-only pair
+        self.assertEqual([p["basis_rank"] for p in pairs], [0, 1])
+        self.assertIn("content_hash", pairs[0]["bases"])
+        self.assertEqual(pairs[1]["bases"], ["entity_trigger_date"])
+
+    def test_scores_are_carried_so_the_double_count_is_visible(self):
+        add_signal(self.conn, "S_DUP2", "E_ACME", "account", "t_lead",
+                   days_ago_date(6), "Acme CISO reprint", cfa=1, score=2.9)
+        self.conn.execute("UPDATE signals SET score=3.4 "
+                          "WHERE signal_id='S_ACC1'")
+        p = data.duplicate_candidates(self.conn)[0]
+        self.assertEqual({p["score_a"], p["score_b"]}, {3.4, 2.9})
 
     def test_two_signals_off_one_raw_event_are_not_a_pair(self):
         # different triggers on the SAME record is not a duplicate pair
@@ -253,11 +285,12 @@ class TestDuplicateCandidates(unittest.TestCase):
                    days_ago_date(401), "Old exec note reprint", status="decayed")
         self.assertEqual(data.duplicate_candidates(self.conn), [])
 
-    def test_basis_label_states_the_gap(self):
-        self.assertIn("2 day(s) apart",
-                      data.duplicate_basis_label("entity_trigger_date", 2))
-        self.assertIn("content_hash",
-                      data.duplicate_basis_label("content_hash"))
+    def test_basis_labels_do_not_read_as_equally_strong(self):
+        weak = data.duplicate_basis_label("entity_trigger_date", 2)
+        strong = data.duplicate_basis_label("content_hash")
+        self.assertIn("2 day(s) apart", weak)
+        self.assertIn("may be two distinct events", weak)
+        self.assertIn("the same underlying record", strong)
 
 
 class TestJudgeHumanDisagreements(unittest.TestCase):

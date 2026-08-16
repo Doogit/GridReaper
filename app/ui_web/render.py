@@ -403,6 +403,10 @@ def duplicate_candidate_view(pair):
         "headline_b": pair.get("headline_b") or "(untitled)",
         "event_date_a": pair.get("event_date_a") or "n/a",
         "event_date_b": pair.get("event_date_b") or "n/a",
+        # both sides score separately and both stay on the feed until the
+        # operator rules, so the double-count is stated where it is decided
+        "score_a": fmt_score(pair.get("score_a")),
+        "score_b": fmt_score(pair.get("score_b")),
         "entity": pair.get("entity_name") or pair.get("entity_id") or "(no entity)",
         "trigger": pair.get("trigger_name") or pair.get("trigger_id") or "(none)",
         "scope_a": scope_label(pair.get("scope_a")),

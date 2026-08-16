@@ -323,8 +323,21 @@ class TestTriageDuplicates(ReviewTestBase):
         self.assertIn(f'/card/{render.card_key("S_ONE")}', dom)
         self.assertIn(f'/card/{render.card_key("S_TWO")}', dom)
         self.assertIn("1 day(s) apart", dom)
+        # a weak-lineage pair must not read as a finding
+        self.assertIn("may be two distinct events", dom)
         # raw signal ids never reach the DOM (KTD2)
         self.assertNotIn("S_ONE", dom)
+
+    def test_both_scores_are_shown_so_the_double_count_is_visible(self):
+        dom = self.page()
+        section = dom.split("Duplicate candidates")[1].split("Judge / human")[0]
+        self.assertEqual(section.count("score "), 2)
+
+    def test_source_health_precedes_the_proposal_sections(self):
+        # the two operational questions stay together at the top
+        dom = self.page()
+        self.assertLess(dom.index("Source health"),
+                        dom.index("Duplicate candidates"))
 
     def test_no_merge_or_dismiss_action_is_offered(self):
         dom = self.page()
