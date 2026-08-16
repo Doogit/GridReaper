@@ -327,7 +327,7 @@ def judge_human_disagreement(audit_rows, feedback_rows):
 
 # R9.11 per-source disagreement gate + spot-check coverage.
 #
-# KTD3 (Kevin-ratified reconciliation): R9.11 literally says high judge-human
+# KTD3 (operator-ratified reconciliation): R9.11 literally says high judge-human
 # disagreement "blocks judge verdicts from demotion." In THIS build the only
 # demotion signal (G2 ``demote_recommended``) is computed from the HUMAN
 # useful-rate, and the judge is report-only (R9.8) — there are no judge verdicts
@@ -358,8 +358,8 @@ def _month_key(value):
     """UTC calendar-month key ``(year, month)`` for an ISO ts, or None.
 
     WINDOW DECISION (Open Q#2, default): the spot-check window is a UTC CALENDAR
-    month. Kevin may prefer a trailing-30-day window instead — flagged, not
-    silently chosen.
+    month. The operator may prefer a trailing-30-day window instead — flagged,
+    not silently chosen.
     """
     dt = _parse_ts(value)
     if dt is None:

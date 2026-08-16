@@ -29,9 +29,9 @@ SOURCE_ID = "sec_edgar_submissions"
 PARSER_VERSION = "edgar/1.0"
 # SEC requires a "name (contact email)" User-Agent: data.sec.gov returns 403
 # both without a contact address and when the UA contains a URL, so this
-# deviates from the repo-wide UA form. The address is already public in this
-# repo's commit history.
-USER_AGENT = "GridSignals/0.1 (contact: kdugas06@gmail.com)"
+# deviates from the repo-wide UA form. The GitHub noreply alias is the contact
+# of record; it routes to the maintainer without publishing a personal address.
+USER_AGENT = "GridSignals/0.1 (contact: 78006305+Doogit@users.noreply.github.com)"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
 KEEP_FORMS = {"8-K", "8-K/A", "10-K", "10-K/A"}
 SLEEP_S = 0.2

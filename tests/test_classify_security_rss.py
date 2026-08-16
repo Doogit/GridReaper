@@ -194,7 +194,7 @@ class TestLeakAdjacent(SecurityRssTestCase):
 class TestCollisionReview(SecurityRssTestCase):
     def test_bare_collision_subject_goes_to_review_no_card(self):
         """R6.2/R6.3: a bare collision term never auto-fires; it queues for
-        review and mints no card (Kevin's queue-only decision)."""
+        review and mints no card (the operator's queue-only decision)."""
         add_item(self.conn, 1, RECORD, "Dominion confirms cybersecurity incident")
         s = self.run_src(RECORD)
         self.assertEqual((s["signals_new"], s["review_enqueued"]), (0, 1))

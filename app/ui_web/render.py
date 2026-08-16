@@ -1190,7 +1190,7 @@ RANSOMWARE_CAPTION = (
 
 # The single most-misread thing on this panel: "Industries hit" counts the
 # industries of leak-site victims WORLDWIDE, not the composition of our own
-# watchlist (which is energy-only, by construction). Kevin himself read the
+# watchlist (which is energy-only, by construction). The operator read the
 # table as the watchlist during the persona pass, so the subject is stated on
 # the page rather than left to inference.
 RANSOMWARE_SUBJECT_NOTE = (
