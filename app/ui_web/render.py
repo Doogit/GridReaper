@@ -970,9 +970,15 @@ def card_view(detail, legend):
     # entity name and the severity-colored score ring); the meta keeps the
     # trigger, date, and any non-active status.
     who = signal["entity_name"] or scope_label(signal["signal_scope"])
+    # The source name is a discriminator, not decoration: both security_rss peer
+    # paths mint a FIXED template headline, so several peer cards are identical
+    # strings and only the reporting outlet tells them apart. Shown on every card
+    # uniformly — honest provenance, and no conditional to get wrong. Falls back
+    # to the raw source_id when the policy row carries no display name.
     meta_bits = [b for b in (
         signal["trigger_name"] or "",
         str(signal["event_date"] or ""),
+        _row_get(signal, "source_name") or _row_get(signal, "source_id") or "",
     ) if b]
     if status != "active":
         meta_bits.append(status)

@@ -138,6 +138,22 @@
         {% if c.source_url %}<a class="gs-source-link" href="{{ c.source_url }}" target="_blank" rel="noopener">Source</a>{% endif %}
       </div>
       {% endif %}
+      {# R3.7 reproducibility, same content as _card.html's Provenance block but
+         always expanded: a saved digest is read as a document (and printed), so
+         a <details> would hide the audit trail from the person holding it. The
+         raw event reference is already hashed for non-account scopes by
+         render.provenance_view (the stored id embeds the source article URL,
+         whose slug names the breached company), so nothing here can name a
+         victim — the gate is in app/ui/data.py, not in this markup. #}
+      {% if c.provenance %}
+      <div class="gs-meta">
+        <b>Provenance</b><br>
+        raw event{% if c.provenance.raw_event_hashed %} (hashed){% endif %}: {{ c.provenance.raw_event_ref or "unrecorded" }}<br>
+        classifier version: {{ c.provenance.classifier_version or "unrecorded" }}<br>
+        fetch version: {{ c.provenance.fetch_version or "unrecorded" }}<br>
+        scoring config: {{ c.provenance.scoring_config_version }} · scored at {{ c.provenance.scored_at }}
+      </div>
+      {% endif %}
       {% if c.incident_cleared_note %}
       <div class="gs-cleared-note" role="note">{{ c.incident_cleared_note }}</div>
       {% endif %}
