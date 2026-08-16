@@ -1,0 +1,34 @@
+# GridSignals in-container scheduler (R3.1). The Dockerfile installs this file to
+# /etc/cron.d/gridsignals; deploy/entrypoint.sh starts the cron daemon before it
+# execs uvicorn. Debian /etc/cron.d format: m h dom mon dow USER command.
+# Times are UTC (the image sets no timezone), matching R10.2.
+#
+# Three rules this file must keep:
+#
+# 1. It drives deploy/ingest_pipeline.sh — the ONE canonical pipeline, shared
+#    with the first-load entrypoint. A second hardcoded step list here would be
+#    exactly the drift tests/test_packaging.py exists to prevent.
+# 2. Every job sources /etc/gridsignals.env first. cron strips the environment,
+#    so GRIDSIGNALS_DB (a Dockerfile ENV) and any optional API key are invisible
+#    to a scheduled run otherwise — which would turn a deliberate
+#    skip-on-missing-key into a source that silently never runs while the ledger
+#    reads healthy. The snapshot is written at startup, mode 600, outside the
+#    repo tree: NO secret is ever assigned in this file (R10.8).
+# 3. Every job is wrapped in deploy/scheduled_run.sh, which records a dated skip
+#    and exits 0 when a manual or first-load ingest holds the single-writer
+#    ingestion lock (R3.2) — the lock raises, it does not skip.
+#
+# NOT scheduled here: the annual entity-identifier refresh (R4.2).
+# app/enrich_entities.py writes reviewable seed CSVs to disk and never writes the
+# store — generated fills are a reviewed-in-PR artifact by design. In a container
+# those CSVs land on ephemeral storage and are never loaded, so a cron line here
+# would only pretend R4.2 was automated. It stays an operator-run refresh
+# (generate -> review -> python -m app.db.load_seeds).
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Daily full refresh: licensing -> ingest -> classify -> score -> plays -> digest.
+# This is what closes "a container with a durable volume never re-ingests": the
+# first-load gate deliberately skips ingest when the volume already holds
+# signals, so without a schedule the dataset is frozen at first boot.
+17 3 * * * root . /etc/gridsignals.env; cd /app && sh deploy/scheduled_run.sh sh deploy/ingest_pipeline.sh >> /var/log/gridsignals-cron.log 2>&1
