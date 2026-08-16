@@ -10,7 +10,7 @@
     {% for r in relationship_rows %}
     <tr>
       <td>{{ r.direction_label }}</td>
-      <td><a href="/account?entity_id={{ r.entity_id }}">{{ r.name }}</a></td>
+      <td><a href="/account?entity_id={{ r.entity_id | urlencode }}">{{ r.name }}</a></td>
       <td><span class="gs-badge scope">{{ r.subsector }}</span></td>
       <td>{{ r.relationship_type }}</td>
       <td>{{ r.source }}</td>

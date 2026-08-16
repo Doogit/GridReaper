@@ -49,12 +49,21 @@ def seed(conn):
         "'dark','unknown','unknown')")
     conn.execute(
         "INSERT INTO watchlist_entities (entity_id, name, subsector, parent_id, "
+        "richness, coverage_flag, gov_cloud_likelihood, "
+        "tenant_cloud_environment, active) VALUES "
+        "('E_SUB&BR','Ampersand Grid Sub','iou_electric','E_ACME','medium',"
+        "'dark','unknown','unknown',0)")
+    conn.execute(
+        "INSERT INTO watchlist_entities (entity_id, name, subsector, parent_id, "
         "richness, coverage_flag, gov_cloud_likelihood, tenant_cloud_environment)"
         " VALUES ('E_DARK','Dark Muni Co','muni_public',NULL,'low','dark',"
         "'likely','gcc_high')")
     conn.execute(
         "INSERT INTO entity_relationships (parent_entity_id, child_entity_id, "
         "relationship_type) VALUES ('E_ACME','E_SUB','subsidiary')")
+    conn.execute(
+        "INSERT INTO entity_relationships (parent_entity_id, child_entity_id, "
+        "relationship_type) VALUES ('E_ACME','E_SUB&BR','subsidiary')")
 
     # product + play + a primary fact for the snapshot provenance
     conn.execute("INSERT INTO products (product_id, name) VALUES "
@@ -319,6 +328,11 @@ class TestEntityGraphTab(AccountTestBase):
         self.assertIn("Subsidiary of this account", dom)
         self.assertIn("subsidiary", dom)
         self.assertIn('href="/account?entity_id=E_SUB"', dom)
+
+    def test_graph_account_links_urlencode_entity_ids(self):
+        dom = self.page(entity_id="E_ACME")
+        self.assertIn('href="/account?entity_id=E_SUB%26BR"', dom)
+        self.assertNotIn('href="/account?entity_id=E_SUB&amp;BR"', dom)
 
     def test_unsourced_edge_provenance_is_visible_as_such(self):
         """The seeded edge has no source and no verified_at; the tab must show
