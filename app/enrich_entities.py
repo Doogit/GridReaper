@@ -1,18 +1,25 @@
-"""Entity identifier enrichment (R4.2, R6.5).
+"""Entity identifier enrichment (R4.2, R5.5, R6.5).
 
-Populates lei / wikidata_qid for watchlist entities plus GLEIF parent/child
-relationships, writing generated seed CSVs for review:
+Populates cik / lei / wikidata_qid for watchlist entities plus GLEIF
+parent/child relationships, writing generated seed CSVs for review:
 
-  seeds/entity_identifiers.csv    entity_id, lei, wikidata_qid, method, verified_at
+  seeds/entity_identifiers.csv    entity_id, cik, lei, wikidata_qid, method,
+                                  verified_at
   seeds/entity_relationships.csv  parent_entity_id, child_entity_id,
                                   relationship_type, source, verified_at
 
-Deterministic first: Wikidata is queried by CIK (P5531), returning QID and
-LEI (P1278) in one batch; a second batch maps GLEIF-found LEIs back to QIDs.
-GLEIF fulltext search is fallback only for entities still missing an LEI and
-a candidate is accepted only on exact normalized-name match against the
-entity name or a curated alias (fuzzy identifier writes are how wrong LEIs
-happen). All access is read-only GET (R3.4). Re-run annually per R4.2:
+CIK first (R5.5): ``app.ingest.edgar`` iterates CIK-bearing entities only, so
+an entity without a CIK is unreachable by the richest account-scoped source.
+EDGAR's company-name index (cik-lookup-data.txt) is one GET covering every
+filer including non-tickered co-ops, and a CIK is accepted only when a
+normalized entity name or curated alias resolves to exactly one CIK.
+
+Then Wikidata is queried by CIK (P5531), returning QID and LEI (P1278) in one
+batch; a second batch maps GLEIF-found LEIs back to QIDs. GLEIF fulltext
+search is fallback only for entities still missing an LEI and a candidate is
+accepted only on exact normalized-name match against the entity name or a
+curated alias (fuzzy identifier writes are how wrong LEIs happen). All access
+is read-only GET (R3.4). Re-run annually per R4.2:
 
   python -m app.enrich_entities
 """
@@ -30,6 +37,11 @@ from app.db.connection import get_connection
 from app.resolve import normalize
 
 USER_AGENT = "GridSignals/0.1 (+https://github.com/Doogit/GridSignals)"
+# SEC requires a "name (contact email)" User-Agent and 403s on a UA containing
+# a URL, so SEC requests deviate from the repo-wide UA exactly as
+# app.ingest.edgar does. The GitHub noreply alias is the contact of record.
+SEC_USER_AGENT = "GridSignals/0.1 (contact: 78006305+Doogit@users.noreply.github.com)"
+SEC_CIK_LOOKUP_URL = "https://www.sec.gov/Archives/edgar/cik-lookup-data.txt"
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 GLEIF_API = "https://api.gleif.org/api/v1"
 GLEIF_SLEEP_S = 0.7   # stay well under GLEIF's 60 req/min
@@ -58,6 +70,45 @@ def _get_json(url, params=None, retries=2):
             if attempt == retries:
                 raise
             time.sleep(2 * (attempt + 1))
+
+
+# -- SEC EDGAR company-name index (R5.5) -------------------------------------
+
+def parse_cik_lookup(text):
+    """Parse EDGAR's cik-lookup-data.txt ('COMPANY NAME:0000012345:' per line)
+    into {normalized name -> set of zero-padded CIKs}. Names that map to more
+    than one CIK stay ambiguous here and are rejected at acceptance time."""
+    out = {}
+    for line in text.splitlines():
+        parts = line.rstrip(":").rsplit(":", 1)
+        if len(parts) != 2:
+            continue
+        name, cik = parts[0].strip(), parts[1].strip()
+        if not name or not cik.isdigit():
+            continue
+        key = normalize(name)
+        if key:
+            out.setdefault(key, set()).add(cik.zfill(10))
+    return out
+
+
+def sec_cik_lookup():
+    """One read-only GET of the full EDGAR company-name index."""
+    req = urllib.request.Request(SEC_CIK_LOOKUP_URL, headers={
+        "User-Agent": SEC_USER_AGENT, "Accept": "text/plain"})
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        return parse_cik_lookup(resp.read().decode("latin-1"))
+
+
+def accept_cik(positive_terms, lookup):
+    """Accept a CIK only when the entity's name/aliases resolve to exactly one
+    CIK across EDGAR's index. Two entity terms pointing at different filers, or
+    one name shared by several filers, is a wrong-CIK risk: a wrong CIK does not
+    just miss filings, it attributes another company's 8-Ks to the account."""
+    hits = set()
+    for term in positive_terms:
+        hits |= lookup.get(term, set())
+    return hits.pop() if len(hits) == 1 else None
 
 
 # -- Wikidata ----------------------------------------------------------------
@@ -149,21 +200,50 @@ def run():
         terms.setdefault(r["entity_id"], set()).add(normalize(r["alias"]))
 
     today = datetime.now(timezone.utc).date().isoformat()
-    results = {}   # entity_id -> {lei, wikidata_qid, method}
+    results = {}   # entity_id -> {cik, lei, wikidata_qid, method}
+
+    def result_for(entity_id):
+        return results.setdefault(
+            entity_id, {"cik": "", "lei": "", "wikidata_qid": "", "method": ""})
+
+    # 0) SEC name -> CIK for entities that have none (R5.5). Runs first so a
+    #    newly found CIK also feeds the Wikidata-by-CIK batch below.
+    cik_of = {e["entity_id"]: (e["cik"] or "").strip() for e in entities}
+    no_cik = [e for e in entities if not cik_of[e["entity_id"]]]
+    print(f"SEC: name->CIK lookup for {len(no_cik)} entities without a CIK "
+          f"(exact-name, single-match acceptance only)...")
+    if no_cik:
+        try:
+            lookup = sec_cik_lookup()
+        except Exception as exc:   # a blocked source never kills the run (R10.3)
+            print(f"  WARN EDGAR company index unavailable: {exc}")
+            lookup = {}
+        cik_found = 0
+        for e in no_cik:
+            cik = accept_cik(terms[e["entity_id"]], lookup)
+            if cik:
+                cik_of[e["entity_id"]] = cik
+                r = result_for(e["entity_id"])
+                r["cik"] = cik
+                r["method"] = "sec_cik_lookup"
+                cik_found += 1
+        print(f"  accepted: {cik_found} CIKs")
 
     # 1) Wikidata by CIK (deterministic, one batch)
-    with_cik = [e for e in entities if (e["cik"] or "").strip()]
-    ciks = [e["cik"].strip() for e in with_cik]
+    with_cik = [e for e in entities if cik_of[e["entity_id"]]]
+    ciks = [cik_of[e["entity_id"]] for e in with_cik]
     print(f"Wikidata: querying {len(ciks)} CIKs in one batch...")
     by_cik = wikidata_by_cik(ciks)
+    found_qid = found_lei = 0
     for e in with_cik:
-        hit = by_cik.get(e["cik"].strip().zfill(10))
+        hit = by_cik.get(cik_of[e["entity_id"]].zfill(10))
         if hit:
             qid, lei = hit
-            results[e["entity_id"]] = {
-                "lei": lei, "wikidata_qid": qid, "method": "wikidata_cik"}
-    found_qid = len(results)
-    found_lei = sum(1 for v in results.values() if v["lei"])
+            r = result_for(e["entity_id"])
+            r["lei"], r["wikidata_qid"] = lei, qid
+            r["method"] = (r["method"] + "+wikidata_cik").lstrip("+")
+            found_qid += 1
+            found_lei += 1 if lei else 0
     print(f"  matched: {found_qid} QIDs, {found_lei} LEIs")
 
     # 2) GLEIF fulltext fallback for entities still missing an LEI
@@ -182,8 +262,7 @@ def run():
             continue
         lei = accept_gleif(terms[e["entity_id"]], cands)
         if lei:
-            r = results.setdefault(e["entity_id"],
-                                   {"lei": "", "wikidata_qid": "", "method": ""})
+            r = result_for(e["entity_id"])
             r["lei"] = lei
             r["method"] = (r["method"] + "+gleif_exact_name").lstrip("+")
             gleif_found += 1
@@ -224,11 +303,13 @@ def run():
     # 4) write generated seed CSVs (reviewed in PR; loaded by the seed loader)
     with open(IDENTIFIERS_CSV, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["entity_id", "lei", "wikidata_qid", "method", "verified_at"])
+        w.writerow(["entity_id", "cik", "lei", "wikidata_qid", "method",
+                    "verified_at"])
         for eid in sorted(results):
             v = results[eid]
-            if v["lei"] or v["wikidata_qid"]:
-                w.writerow([eid, v["lei"], v["wikidata_qid"], v["method"], today])
+            if v["cik"] or v["lei"] or v["wikidata_qid"]:
+                w.writerow([eid, v["cik"], v["lei"], v["wikidata_qid"],
+                            v["method"], today])
     with open(RELATIONSHIPS_CSV, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["parent_entity_id", "child_entity_id", "relationship_type",
@@ -236,7 +317,8 @@ def run():
         for parent_eid, child_eid in sorted(set(relationships)):
             w.writerow([parent_eid, child_eid, "direct_parent", "gleif", today])
 
-    total = len([v for v in results.values() if v["lei"] or v["wikidata_qid"]])
+    total = len([v for v in results.values()
+                 if v["cik"] or v["lei"] or v["wikidata_qid"]])
     print(f"\nwrote {IDENTIFIERS_CSV} ({total} entities)")
     print(f"wrote {RELATIONSHIPS_CSV} ({len(set(relationships))} pairs)")
     print("run python -m app.db.load_seeds to apply.")
