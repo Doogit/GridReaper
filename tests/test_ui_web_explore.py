@@ -14,6 +14,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+from app import aggregates
 from app.db.migrate import apply_migrations
 from app.ui_web.app import app
 
@@ -114,6 +115,39 @@ class TestExplorePage(ExploreTestBase):
         self.assertIn("Trigger Analytics", dom)
         self.assertIn("Leadership", dom)       # trigger name for the seeded signal
         self.assertIn("Signal scope", dom)      # scope table header
+
+    def test_analytics_tab_uses_fresh_precomputed_aggregate(self):
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        try:
+            aggregates.refresh(conn)
+            conn.execute("UPDATE signal_aggregates SET count = 999")
+            conn.commit()
+        finally:
+            conn.close()
+
+        dom = self.client.get("/explore").text
+        self.assertIn(">999<", dom)
+        self.assertNotIn("aggregate stale", dom.lower())
+
+    def test_stale_analytics_aggregate_falls_back_live_and_says_so(self):
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        try:
+            aggregates.refresh(conn)
+            conn.execute("UPDATE signal_aggregates SET count = 999")
+            conn.execute(
+                "UPDATE signals SET status = 'retracted' "
+                "WHERE signal_id = 'S1'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        dom = self.client.get("/explore").text
+        self.assertIn("Analytics aggregate stale (basis_changed)", dom)
+        self.assertIn("showing live counts", dom)
+        self.assertIn("python -m app.aggregates", dom)
+        self.assertNotIn(">999<", dom)
 
     def test_map_tab_contains_inline_svg_with_facility(self):
         dom = self.client.get("/explore").text

@@ -57,8 +57,9 @@ def explore(request: Request, tab: str = "analytics", conn=Depends(get_db)):
     requested = (tab or "").strip().lower()
     active_tab = requested if requested in TABS else "analytics"
 
-    analytics_tables = render.explore_analytics_view(
-        data.explore_analytics_counts(conn))
+    memo = {}
+    analytics = data.analytics_counts(conn, memo=memo)
+    analytics_tables = render.explore_analytics_view(analytics["counts"])
     facility_points = data.explore_facility_points(conn)
     state_rows = data.explore_state_density(conn)
     map_view = render.explore_map_svg(facility_points, state_rows)
@@ -70,6 +71,7 @@ def explore(request: Request, tab: str = "analytics", conn=Depends(get_db)):
         "nav_active": "explore",
         "active_tab": active_tab,
         "analytics_tables": analytics_tables,
+        "analytics_freshness": analytics,
         "analytics_empty": ANALYTICS_EMPTY,
         "ransomware": ransomware,
         "ransomware_empty": RANSOMWARE_EMPTY,

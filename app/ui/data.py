@@ -24,6 +24,7 @@ from datetime import date, datetime, timezone
 from hashlib import sha256
 from urllib.parse import urlsplit
 
+from app import aggregates
 from app.audit import precision
 from app.classify import ransomware as ransomware_classifier
 from app.classify import regulatory as regulatory_classifier
@@ -2245,37 +2246,140 @@ def explore_analytics_counts(conn, statuses=("active",)):
     counted row is a sourced signal (R4.1) — the count carries its dimension
     identity so it is inspectable back to the same signals the cards render.
     ``statuses`` filters signal status (default active-only, matching the feed).
+
+    Always a LIVE computation. The computation itself lives in
+    ``app.aggregates.compute_counts`` so the live path and the precomputed R8.10
+    path cannot drift; ``analytics_counts`` below is the aggregate-aware reader.
+    """
+    return aggregates.compute_counts(conn, statuses)
+
+
+# -- Precomputed aggregates (R8.10) -------------------------------------------
+#
+# ``app.aggregates`` refreshes the analytics counts nightly as a pipeline step.
+# A precomputed number is a claim about a PAST store, so this reader's contract
+# is: a stale aggregate is never served, and never served silently.
+#
+#   * fresh    -> the stored counts, with the refresh's own ``computed_at``.
+#   * anything -> a live recompute, returned with ``aggregate_stale=True`` and
+#     else         the reason. The caller gets today's truth AND is told the
+#                  precomputed layer is behind, so a stale number can neither
+#                  reach a reader nor hide the fact that the refresh is broken.
+#
+# Staleness is decided by three cheap checks, in order: does an aggregate exist
+# for this status filter at all; does its stored basis fingerprint still match
+# the store (see app.aggregates.basis_fingerprint); and is its stamp inside the
+# nightly window. The fingerprint is what makes the guard real — a purely
+# time-based rule would happily serve counts taken before a mid-day retraction
+# flipped 95 signals, which is exactly the failure this reader exists to
+# prevent.
+#
+# The "caching layer" half of R8.10 is deliberately REQUEST-SCOPED memoization
+# and nothing more: pass a plain dict as ``memo`` (one per request, owned by the
+# caller) and repeat reads inside that request are answered from it. The clause
+# exists to replace Streamlit's caching, and Streamlit is gone. A process-global
+# cache is the thing NOT built here on purpose — it would outlive a refresh and
+# re-introduce exactly the silent staleness the checks above close.
+
+# Nightly cadence plus slack: an aggregate older than this is presumed to have
+# missed its refresh even if the store has not moved since.
+AGGREGATE_MAX_AGE_SECONDS = 26 * 3600
+
+AGGREGATE_REFRESH_COMMAND = "python -m app.aggregates"
+
+
+def _aggregate_state(conn, name):
+    return conn.execute(
+        "SELECT computed_at, status_filter, basis, refresh_version "
+        "FROM aggregate_state WHERE aggregate_name = ?", (name,)).fetchone()
+
+
+def _aggregate_stale_reason(conn, state, statuses, now=None):
+    """None when the stored aggregate may be served; else why it may not."""
+    if state is None:
+        return "missing"
+    if state["status_filter"] != aggregates.status_key(statuses):
+        return "status_filter_unsupported"
+    if state["basis"] != aggregates.basis_fingerprint(conn):
+        return "basis_changed"
+    computed = _parse_dt(state["computed_at"])
+    # A stamp we cannot read (or one written without a UTC offset, against
+    # R10.2) tells us nothing about age, so it is not servable.
+    if computed is None or computed.tzinfo is None:
+        return "unreadable_stamp"
+    age = ((now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+           - computed).total_seconds()
+    # A future-dated stamp is not "extra fresh" — it is a stamp we cannot
+    # trust, so it fails the same way an old one does.
+    if age < 0 or age > AGGREGATE_MAX_AGE_SECONDS:
+        return "expired"
+    return None
+
+
+def _read_aggregate_counts(conn, name):
+    """Stored counts in the same shape and order compute_counts returns."""
+    out = {dimension: [] for dimension in aggregates.DIMENSIONS}
+    for r in conn.execute(
+            "SELECT dimension, key, label, count FROM signal_aggregates "
+            "WHERE aggregate_name = ? ORDER BY dimension, count DESC, key",
+            (name,)):
+        if r["dimension"] in out:
+            out[r["dimension"]].append(
+                {"key": r["key"], "label": r["label"], "count": r["count"]})
+    return out
+
+
+def analytics_counts(conn, statuses=aggregates.DEFAULT_STATUSES, now=None,
+                     memo=None):
+    """Analytics counts plus their freshness envelope (R8.10, R10.2).
+
+    Returns::
+
+        {"counts": {trigger/scope/incident_tier lists, as
+                    explore_analytics_counts returns them},
+         "served_from": "aggregate" | "live",
+         "as_of": UTC ISO-8601 the returned counts describe,
+         "aggregate_as_of": the stored refresh's stamp, or None if never run,
+         "aggregate_stale": bool,
+         "stale_reason": None | "missing" | "status_filter_unsupported"
+                         | "basis_changed" | "expired" | "unreadable_stamp",
+         "refresh_command": how to fix a stale aggregate}
+
+    ``counts`` is always current: when the aggregate cannot be trusted the
+    numbers are recomputed live and the envelope says so. ``memo``, when given,
+    is a caller-owned request-scoped dict (see the note above).
     """
     statuses = tuple(statuses)
-    ph = _placeholders(len(statuses))
-    trigger = conn.execute(
-        "SELECT s.trigger_id AS key, t.name AS label, COUNT(*) AS count "
-        "FROM signals s LEFT JOIN triggers t ON t.trigger_id = s.trigger_id "
-        f"WHERE s.status IN ({ph}) "
-        "GROUP BY s.trigger_id ORDER BY count DESC, s.trigger_id",
-        list(statuses)).fetchall()
-    scope = conn.execute(
-        "SELECT s.signal_scope AS key, COUNT(*) AS count "
-        f"FROM signals s WHERE s.status IN ({ph}) "
-        "GROUP BY s.signal_scope ORDER BY count DESC, s.signal_scope",
-        list(statuses)).fetchall()
-    # Incident tier is NULL for non-incident signals; only incident signals carry
-    # a tier, so a NULL tier is not a bucket here (the tab counts incidents by
-    # their R10.5 evidence tier).
-    tier = conn.execute(
-        "SELECT s.incident_evidence_level AS key, COUNT(*) AS count "
-        f"FROM signals s WHERE s.status IN ({ph}) "
-        " AND s.incident_evidence_level IS NOT NULL "
-        "GROUP BY s.incident_evidence_level ORDER BY count DESC, "
-        "s.incident_evidence_level", list(statuses)).fetchall()
-    return {
-        "trigger": [{"key": r["key"], "label": r["label"] or r["key"],
-                     "count": r["count"]} for r in trigger],
-        "scope": [{"key": r["key"], "label": r["key"], "count": r["count"]}
-                  for r in scope],
-        "incident_tier": [{"key": r["key"], "label": r["key"],
-                           "count": r["count"]} for r in tier],
-    }
+    memo_key = ("analytics_counts", aggregates.status_key(statuses))
+    if memo is not None and memo_key in memo:
+        return memo[memo_key]
+
+    state = _aggregate_state(conn, aggregates.ANALYTICS_COUNTS)
+    reason = _aggregate_stale_reason(conn, state, statuses, now=now)
+    if reason is None:
+        result = {
+            "counts": _read_aggregate_counts(conn,
+                                             aggregates.ANALYTICS_COUNTS),
+            "served_from": "aggregate",
+            "as_of": state["computed_at"],
+            "aggregate_as_of": state["computed_at"],
+            "aggregate_stale": False,
+            "stale_reason": None,
+            "refresh_command": AGGREGATE_REFRESH_COMMAND,
+        }
+    else:
+        result = {
+            "counts": aggregates.compute_counts(conn, statuses),
+            "served_from": "live",
+            "as_of": _utcnow_iso(now),
+            "aggregate_as_of": state["computed_at"] if state else None,
+            "aggregate_stale": True,
+            "stale_reason": reason,
+            "refresh_command": AGGREGATE_REFRESH_COMMAND,
+        }
+    if memo is not None:
+        memo[memo_key] = result
+    return result
 
 
 def explore_facility_points(conn):
