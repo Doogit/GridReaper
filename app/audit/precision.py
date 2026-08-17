@@ -1,9 +1,14 @@
 """Precision computation for the Feedback / Precision view (R9.3, R9.4, R9.5).
 
-PURE functions only. No database, no network, no Streamlit. Every function
-takes lists of plain dict rows (fetched and shaped by the UI layer) and returns
-plain dicts / lists. Any date/age reasoning accepts an injectable ``now`` so
-callers and tests stay deterministic; all timestamps are UTC ISO-8601 (R10.2).
+PURE computations. No network, no Streamlit. Every computation function takes
+lists of plain dict rows (fetched and shaped by the UI layer) and returns plain
+dicts / lists. Any date/age reasoning accepts an injectable ``now`` so callers
+and tests stay deterministic; all timestamps are UTC ISO-8601 (R10.2).
+
+The ONE piece of I/O in this file is the ``--materialize`` CLI at the bottom —
+R9.3's monthly job. It opens a connection, reads its rows through
+``app.ui.data.precision_report`` and prints what the functions above compute; it
+adds no computation of its own and writes nothing to the store.
 
 TRUST INVARIANT (returning-maintainer rule): a rate is *never* returned as a
 bare percentage. Every computed rate ships alongside its ``n`` (denominator),
@@ -34,8 +39,12 @@ mirror ``app.audit.schema`` (CHECKS / RESULTS); only entity_match +
 evidence_support feed auto-accuracy, and only "pass"/"fail" are scored
 ("unclear"/"not_applicable" are excluded from the denominator).
 """
+import argparse
 import math
+import sys
 from datetime import datetime, timezone
+
+from app.db.connection import get_connection
 
 # Verdicts counted as a human positive vs negative (R9.1).
 POSITIVE_VERDICTS = frozenset({"useful", "converted"})
@@ -64,6 +73,12 @@ DIMENSION_KEYS = {
     "signal_scope": "signal_scope",
     "incident_evidence_level": "incident_evidence_level",
 }
+
+# The three dimensions R9.3's monthly job reports on, verbatim from the
+# requirement ("precision per trigger type, source, and signal_scope"). It is a
+# subset of DIMENSIONS: incident_evidence_level is a Precision-page slice R9.3
+# does not ask the monthly record to carry.
+REPORT_DIMENSIONS = ("trigger", "source", "signal_scope")
 
 # G1 thresholds (R9.4): fixed by the PRD, exposed as parameters so tests pin
 # them and the caller can override for what-if analysis.
@@ -656,7 +671,7 @@ def _days_span(timestamps, now):
 
 def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
               min_days=G1_MIN_DAYS, min_rated=G1_MIN_RATED,
-              waiver_active=G1_WAIVER_ACTIVE):
+              waiver_active=None):
     """Gate G1 (Stage 1 -> 2) status per primary account-level trigger (R9.4).
 
     ONLY account-specific rated cards (entity_id present AND signal_scope in
@@ -686,8 +701,13 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
 
     ``eligible`` is True only when every primary trigger ``meets``.
 
-    THE WAIVER (KTD1). When ``waiver_active`` (defaults to the recorded
-    ``G1_WAIVER_ACTIVE`` ruling), ``state`` is ``"waived"`` and ``waiver``
+    THE WAIVER (KTD1). ``waiver_active`` defaults to ``None``, resolved in the
+    body to the recorded ``G1_WAIVER_ACTIVE`` ruling — read at CALL time, the
+    same way the three other waiver constants are, so the documented rollback
+    (edit the constant) and a ``mock.patch.object`` of it both take effect. A
+    default of ``G1_WAIVER_ACTIVE`` would bind the ruling once at import and
+    freeze one of the four constants while the other three stayed live. When
+    ``waiver_active`` is true, ``state`` is ``"waived"`` and ``waiver``
     carries the ruling date, its one-line reason, and the condition that would
     end it. ``"waived"`` is NOT reachable by computation — only by the recorded
     waiver — and it is not a pass: ``eligible``, every per-trigger cell, and
@@ -697,6 +717,8 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
     reaches ``min_rated``.
     """
     now_dt = _now(now)
+    if waiver_active is None:
+        waiver_active = G1_WAIVER_ACTIVE
     triggers = list(primary_triggers) if primary_triggers else list(
         DEFAULT_PRIMARY_TRIGGERS)
 
@@ -848,3 +870,97 @@ def g2_status(feedback_rows, threshold=G2_THRESHOLD, min_n=G2_MIN_N, now=None):
             "note": note,
         }
     return out
+
+
+# -- CLI: the monthly precision job (R9.3) -----------------------------------
+#
+#     python -m app.audit.precision --materialize
+#
+# NO new table, and no ingest lock. The report is a pure function of rows that
+# are already durable and append-only (``feedback`` + ``audit``), so it is
+# reproducible for any month at any time; a snapshot table would be a second
+# copy of derivable numbers with nothing reading it. What the monthly job adds
+# is the RECORD: cron appends this run's lines to the container log, dated, so
+# precision per trigger / source / signal_scope is observable over time rather
+# than only in the moment someone opens the Precision page. The job reads and
+# prints; it never writes the store, so it takes no single-writer lock (R3.2) —
+# ``ingest_lock()`` RAISES on a live lock, which would turn a read-only report
+# into a spurious failure whenever a pipeline happened to be running.
+
+def _fmt_rate(value):
+    """A rate as a percent, or ``n/a`` when the denominator was empty.
+
+    Never a bare number: every caller below prints this beside the ``n`` it was
+    computed over, so the module's trust invariant survives into the log.
+    """
+    return "n/a" if value is None else f"{value:.1%}"
+
+
+def format_report(report):
+    """Render a ``app.ui.data.precision_report`` dict as the R9.3 record.
+
+    One summary line (``precision: success …``, matching the other producers'
+    one-line convention) followed by one line per dimension bucket for each of
+    ``REPORT_DIMENSIONS``. Every rate is printed beside its ``n``. Returns the
+    lines as a list so the shaping is testable without a store.
+    """
+    useful = report["useful_overall"]
+    auto = report["auto_overall"]
+    spot = report["spotcheck"]
+    g2 = report["g2"]
+    demote = sum(1 for cell in g2.values() if cell["demote_recommended"])
+    lines = [
+        f"precision: success useful={_fmt_rate(useful['rate'])} "
+        f"n={useful['total']} auto={_fmt_rate(auto['accuracy'])} "
+        f"n={auto['scored']} g1={report['g1']['state']} "
+        f"g2_demote_recommended={demote}/{len(g2)} "
+        f"spotcheck={spot['reviewed']}/{spot['target']} "
+        f"spotcheck_window={spot['window']}"
+    ]
+    for dimension in REPORT_DIMENSIONS:
+        useful_buckets = report["useful_by_dimension"][dimension]
+        auto_buckets = report["auto_by_dimension"][dimension]
+        keys = (set(useful_buckets) | set(auto_buckets)) - {"overall"}
+        for key in sorted(keys, key=lambda k: (k is None, k)):
+            u = useful_buckets.get(key)
+            a = auto_buckets.get(key)
+            lines.append(
+                f"precision {dimension}={'(none)' if key is None else key} "
+                f"useful={_fmt_rate(u['rate']) if u else 'n/a'} "
+                f"n={u['total'] if u else 0} "
+                f"auto={_fmt_rate(a['accuracy']) if a else 'n/a'} "
+                f"n={a['scored'] if a else 0}")
+    return lines
+
+
+def main(argv=None):
+    """Compute and emit the monthly precision report (R9.3). Returns 0."""
+    parser = argparse.ArgumentParser(
+        prog="python -m app.audit.precision",
+        description="Compute precision per trigger, source and signal_scope "
+                    "over the stored feedback and audit verdicts (R9.3).")
+    parser.add_argument(
+        "--materialize", action="store_true",
+        help="compute the report and emit it to stdout (the monthly R9.3 job)")
+    args = parser.parse_args(argv)
+    if not args.materialize:
+        parser.error("no action requested; pass --materialize")
+
+    # Deferred import: app.ui.data imports THIS module, so a module-level
+    # import would be a cycle. precision_report is the ONE place the four
+    # row-reads and the R9.11 gate overlay are composed (R10.9) — reusing it
+    # is what keeps this job and the Precision page from ever disagreeing.
+    from app.ui import data
+
+    conn = get_connection()
+    try:
+        report = data.precision_report(conn)
+    finally:
+        conn.close()
+    for line in format_report(report):
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

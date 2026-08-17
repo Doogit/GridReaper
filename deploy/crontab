@@ -6,9 +6,11 @@
 # Four rules this file must keep, each pinned in tests/test_packaging.py because
 # each one fails SILENTLY:
 #
-# 1. It drives deploy/ingest_pipeline.sh — the ONE canonical pipeline, shared
-#    with the first-load entrypoint. A second hardcoded step list here would be
-#    exactly the drift those tests exist to prevent.
+# 1. Data refresh drives deploy/ingest_pipeline.sh — the ONE canonical pipeline,
+#    shared with the first-load entrypoint. A second hardcoded step list here
+#    would be exactly the drift those tests exist to prevent. (The reporting
+#    jobs below are not pipeline steps: they read what the pipeline produced and
+#    write nothing, so they are scheduled on their own requirement's cadence.)
 # 2. Every job sources /etc/gridsignals.env first, and treats a failure to do so
 #    as fatal. cron strips the environment, so GRIDSIGNALS_DB (a Dockerfile ENV)
 #    and any optional API key are invisible to a scheduled run otherwise — which
@@ -42,3 +44,25 @@ MAILTO=""
 # first-load gate deliberately skips ingest when the volume already holds
 # signals, so without a schedule the dataset is frozen at first boot.
 17 3 * * * root { . /etc/gridsignals.env && cd /app && sh deploy/scheduled_run.sh sh deploy/ingest_pipeline.sh ; } >> /var/log/gridsignals-cron.log 2>&1
+
+# Monthly precision report (R9.3: "Monthly job computes precision per trigger
+# type, source, and signal_scope"), 1st of the month. It writes nothing to the
+# store — the record IS these log lines, dated by the run, which is what makes
+# precision observable over time rather than only in the moment someone opens
+# the Precision page.
+#
+# Mid-afternoon UTC on purpose, ~12h from the 03:17 refresh. The guard's tick
+# lock is shared across ALL scheduled jobs, so a report that lands while a long
+# pipeline is still running is skipped for the whole month — a monthly job gets
+# no second chance the way a daily one does. Distance from the refresh window is
+# the whole mitigation; it is not a guarantee.
+47 15 1 * * root { . /etc/gridsignals.env && cd /app && sh deploy/scheduled_run.sh python -m app.audit.precision --materialize ; } >> /var/log/gridsignals-cron.log 2>&1
+
+# Semi-annual license re-verification sweep (R10.7: "semi-annual task plus Admin
+# banner"). Jan 1 and Jul 1 — cron has no "every 6 months", so the month field
+# names both; same mid-afternoon reasoning as above, 36 minutes clear of it.
+# This is the JOB half only: it names the facts whose verified_date has aged past
+# the window so the work announces itself instead of waiting for someone to open
+# Admin. Re-verifying a fact against primary Microsoft sources stays a human act;
+# the sweep writes nothing and never invents a verified_date.
+23 16 1 1,7 * root { . /etc/gridsignals.env && cd /app && sh deploy/scheduled_run.sh python -m app.reverify ; } >> /var/log/gridsignals-cron.log 2>&1

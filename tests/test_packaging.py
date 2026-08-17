@@ -294,6 +294,36 @@ class PackagingContractTest(unittest.TestCase):
                     f"deploy/ingest_pipeline.sh — a second step list will drift",
                 )
 
+    def test_crontab_schedules_the_precision_and_reverification_jobs(self):
+        # R9.3 and R10.7 each name a JOB, not just a page: a monthly precision
+        # computation and a semi-annual license re-verification task. Both were
+        # marked resolved against a scheduler that did not schedule them, so pin
+        # the cadence fields — a job present at the wrong cadence is the same
+        # false green in slower motion.
+        jobs = {}
+        for job in self._crontab_jobs():
+            match = re.match(r"^(\S+ \S+ \S+ \S+ \S+)\s+\S+\s+(.*)$", job)
+            self.assertIsNotNone(match, f"not a 6-field /etc/cron.d entry: {job}")
+            jobs[match.group(2)] = match.group(1)
+
+        precision = [cmd for cmd in jobs if "app.audit.precision" in cmd]
+        self.assertEqual(len(precision), 1, "R9.3's monthly precision job is not scheduled exactly once")
+        self.assertIn("--materialize", precision[0], "the precision job must run its --materialize entry point")
+        # dom is a single day and mon is every month -> monthly (R9.3).
+        _m, _h, dom, mon, _dow = jobs[precision[0]].split()
+        self.assertRegex(dom, r"^\d+$", f"R9.3 asks for a MONTHLY job; day-of-month is {dom!r}")
+        self.assertEqual(mon, "*", f"R9.3 asks for a MONTHLY job; month field is {mon!r}")
+
+        reverify = [cmd for cmd in jobs if "app.reverify" in cmd]
+        self.assertEqual(len(reverify), 1, "R10.7's re-verification sweep is not scheduled exactly once")
+        # Two months named, six apart -> semi-annual (R10.7). cron has no
+        # "every 6 months", so the month list is the only honest spelling.
+        _m, _h, dom, mon, _dow = jobs[reverify[0]].split()
+        self.assertRegex(dom, r"^\d+$", f"R10.7 asks for a SEMI-ANNUAL job; day-of-month is {dom!r}")
+        months = sorted(int(part) for part in mon.split(","))
+        self.assertEqual(len(months), 2, f"R10.7 asks for a SEMI-ANNUAL job; month field is {mon!r}")
+        self.assertEqual(months[1] - months[0], 6, f"the two runs are not six months apart: {mon!r}")
+
     def test_crontab_targets_exist(self):
         # Mirror of test_pipeline_modules_present for the scheduler: a crontab
         # naming a module that does not exist fails only at 3am in a container.
