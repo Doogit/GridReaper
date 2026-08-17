@@ -18,6 +18,7 @@ injectable ``now`` so pages and tests are deterministic.
 import contextlib
 import json
 import math
+import re
 import sqlite3
 import time
 from datetime import date, datetime, timezone
@@ -913,6 +914,14 @@ SUBSECTOR_RULE_PREFIX = "subsector_in:"
 EXCLUDE_ENTITIES_RULE_PREFIX = "exclude_entities:"
 RULE_CLAUSE_SEPARATOR = "|"
 
+# Every entity_id in seeds/watchlist_entities.csv is the literal form 'E' plus
+# four ASCII digits, and the producer names entities by that id and no other
+# spelling. So a canonical-form check is what makes the exclusion clause's
+# CONTENTS fail closed: an id carrying whitespace or the wrong case parses fine
+# and then matches nobody, silently admitting the account it was written to
+# exclude. Explicit [0-9] rather than \d, which also matches non-ASCII digits.
+_ENTITY_ID_RE = re.compile(r"E[0-9]{4}")
+
 
 def applicability_scope(applicability_rule):
     """What a stored applicability predicate admits: ``(subsectors, excluded)``.
@@ -933,6 +942,16 @@ def applicability_scope(applicability_rule):
     parses. An empty or unrecognized second clause is NOT: degrading it to "no
     exclusions" would widen the rule back to everyone the subsector labels
     over-admit, so it is treated as unevaluable and the obligation is dropped.
+
+    That applies to the exclusion clause's CONTENTS as well as its structure.
+    An excluded id must be in the canonical ``E``+4-digit form; one that is not
+    (``"E0155 "``, ``"e0155"``) would parse into a non-empty set that matches no
+    real entity_id, silently readmitting the account it names — the same
+    widening by a subtler route. The producer emits canonical ids, so any other
+    form means the predicate was not written by app/obligations.py and cannot be
+    trusted to name every entity it should. Shape is checked, existence is not:
+    this reader has no watchlist access, so a well-formed id that is absent from
+    the store parses and simply excludes nobody.
     """
     rule = (applicability_rule or "").strip()
     if not rule.startswith(SUBSECTOR_RULE_PREFIX):
@@ -950,6 +969,8 @@ def applicability_scope(applicability_rule):
         e for e in clauses[1][len(EXCLUDE_ENTITIES_RULE_PREFIX):].split(";")
         if e}
     if not excluded:
+        return None
+    if any(not _ENTITY_ID_RE.fullmatch(e) for e in excluded):
         return None
     return subsectors, excluded
 

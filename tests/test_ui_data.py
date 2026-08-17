@@ -725,9 +725,10 @@ class TestAccountObligations(unittest.TestCase):
         self.assertEqual(data.applicability_scope("subsector_in:a;b"),
                          ({"a", "b"}, set()))
         self.assertEqual(
-            data.applicability_scope("subsector_in:a;b|exclude_entities:E1;E2"),
-            ({"a", "b"}, {"E1", "E2"}))
-        self.assertIsNone(data.applicability_scope("entity_in:E1"))
+            data.applicability_scope(
+                "subsector_in:a;b|exclude_entities:E0155;E0156"),
+            ({"a", "b"}, {"E0155", "E0156"}))
+        self.assertIsNone(data.applicability_scope("entity_in:E0155"))
         self.assertIsNone(data.applicability_scope(None))
 
     def test_malformed_exclusion_clause_fails_closed(self):
@@ -741,15 +742,75 @@ class TestAccountObligations(unittest.TestCase):
                 # a trailing separator with no clause behind it
                 "subsector_in:a;b|",
                 # a second clause this reader does not know
-                "subsector_in:a;b|entity_in:E1",
+                "subsector_in:a;b|entity_in:E0155",
                 # more clauses than the grammar defines
-                "subsector_in:a;b|exclude_entities:E1|exclude_entities:E2"):
+                "subsector_in:a;b|exclude_entities:E0155"
+                "|exclude_entities:E0156"):
             with self.subTest(rule=rule):
                 self.assertIsNone(data.applicability_scope(rule))
 
+    def test_non_canonical_excluded_id_fails_closed(self):
+        """A clause can be structurally perfect and still name nobody.
+
+        An id that differs from the canonical ``E`` + four digits by
+        whitespace, case or shape parses into a non-empty set that matches no
+        real entity_id, so the account it was written to exclude is silently
+        ADMITTED — the one direction this design exists to prevent. The writer
+        emits canonical ids, so any other form means the predicate did not come
+        from app/obligations.py and cannot be trusted to name every entity it
+        should: unevaluable, not "no exclusions"."""
+        for bad_id in (
+                "E0155 ",           # trailing space
+                " E0155",           # leading space
+                "E0155\t",          # trailing tab
+                "e0155",            # lowercase — and, paired below, mixed case
+                "X0155",            # wrong prefix letter
+                "E015",             # too few digits
+                "E01555",           # too many digits
+                "E015A",            # non-numeric suffix
+                "E-155",            # non-numeric suffix, separator shape
+                "0155"):            # no prefix at all
+            # The bad id is never last. The real clause names seven, and a
+            # trailing space in final position is absorbed by the rule-level
+            # strip() below before the ids are ever split out.
+            rule = ("subsector_in:renewables|exclude_entities:"
+                    + bad_id + ";E0156")
+            with self.subTest(rule=rule):
+                self.assertIsNone(data.applicability_scope(rule))
+
+    def test_trailing_whitespace_on_the_whole_rule_is_normalized_not_widened(
+            self):
+        """The reader strips the stored rule before parsing it, so whitespace
+        in final position resolves to the canonical id rather than to a token
+        that matches nobody. Pinned because it is the one whitespace case that
+        does NOT fail closed, and it is safe only because stripping it yields
+        the exclusion the writer meant."""
+        self.assertEqual(
+            data.applicability_scope(
+                "subsector_in:renewables|exclude_entities:E0155;E0156 \n"),
+            ({"renewables"}, {"E0155", "E0156"}))
+
+    def test_well_formed_excluded_id_absent_from_the_watchlist_parses(self):
+        """Shape is the parser's concern; existence is not. This reader has no
+        DB access, so an id it cannot find is still an id it can evaluate — a
+        stale exclusion excludes nobody and is pinned in
+        tests/test_obligations.py against the seed CSV, not here."""
+        self.assertEqual(
+            data.applicability_scope(
+                "subsector_in:renewables|exclude_entities:E0999"),
+            ({"renewables"}, {"E0999"}))
+
+    def _add_canonical_sibling(self):
+        """An iou_electric account whose id is in the canonical ``E``+4-digit
+        form the exclusion clause requires (the fixture's own ids are not)."""
+        self.conn.execute(
+            "INSERT INTO watchlist_entities (entity_id, name, subsector) "
+            "VALUES ('E0999','Canonical Grid Co','iou_electric')")
+
     def test_excluded_entity_is_dropped_from_its_own_subsector(self):
-        """E_ACME and E_SUB share a subsector; a rule naming E_SUB in its
+        """E_ACME and E0999 share a subsector; a rule naming E0999 in its
         exclusion clause must bind the first and not the second."""
+        self._add_canonical_sibling()
         self.conn.execute(
             "INSERT INTO regulatory_obligations (obligation_id, source_url, "
             " regulator, rule_name, affected_scope, applicability_rule, "
@@ -757,10 +818,10 @@ class TestAccountObligations(unittest.TestCase):
             " signal_id, derived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
             ("ob_narrow", "http://fr/narrow", "Some Agency", "Narrowed rule",
              "owners and operators (registration not verified per account)",
-             "subsector_in:iou_electric|exclude_entities:E_SUB",
+             "subsector_in:iou_electric|exclude_entities:E0999",
              days_ago_date(3), "S_SEC", iso(NOW)))
         self.conn.commit()
-        for entity_id, expected in (("E_ACME", ["ob_narrow"]), ("E_SUB", [])):
+        for entity_id, expected in (("E_ACME", ["ob_narrow"]), ("E0999", [])):
             cal = data.account_obligations(self.conn, entity_id, now=NOW)
             self.assertEqual(
                 [o["obligation_id"] for o in cal["obligations"]
@@ -772,6 +833,7 @@ class TestAccountObligations(unittest.TestCase):
         """Two accounts in one subsector get different rows; without a count of
         the individual exclusions the reader cannot tell "this class has no
         obligation" from "this account was dropped from one" (R4.1)."""
+        self._add_canonical_sibling()
         self.conn.execute(
             "INSERT INTO regulatory_obligations (obligation_id, source_url, "
             " regulator, rule_name, affected_scope, applicability_rule, "
@@ -779,11 +841,11 @@ class TestAccountObligations(unittest.TestCase):
             " signal_id, derived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
             ("ob_narrow", "http://fr/narrow", "Some Agency", "Narrowed rule",
              "owners and operators (registration not verified per account)",
-             "subsector_in:iou_electric|exclude_entities:E_SUB",
+             "subsector_in:iou_electric|exclude_entities:E0999",
              days_ago_date(3), "S_SEC", iso(NOW)))
         self.conn.commit()
         # dropped by name from a rule its own subsector admits
-        excluded = data.account_obligations(self.conn, "E_SUB", now=NOW)
+        excluded = data.account_obligations(self.conn, "E0999", now=NOW)
         self.assertEqual(excluded["excluded_by_entity"], 1)
         # same subsector, admitted: nothing to disclose
         admitted = data.account_obligations(self.conn, "E_ACME", now=NOW)

@@ -329,6 +329,18 @@ class CipApplicabilitySetTest(unittest.TestCase):
     # excluded list fails this test instead of quietly widening the rule.
     EQUIPMENT_MAKERS = ("E0155", "E0156", "E0158", "E0159", "E0160", "E0161",
                         "E0164")
+    # The company each exclusion was judged against, as a distinctive
+    # lowercase substring of the seed row's name. The exclusion is keyed by
+    # entity_id but justified by WHO that id is; this is what binds the two.
+    EQUIPMENT_MAKER_COMPANIES = {
+        "E0155": "first solar",
+        "E0156": "enphase",
+        "E0158": "bloom energy",
+        "E0159": "sunrun",
+        "E0160": "array technologies",
+        "E0161": "plug power",
+        "E0164": "ge vernova",
+    }
     # The renewables entities that stay in: project owners/operators.
     RENEWABLE_OPERATORS = ("E0152", "E0153", "E0154", "E0162", "E0163")
     ADMITTED_ENTITY_COUNT = 88
@@ -348,6 +360,51 @@ class CipApplicabilitySetTest(unittest.TestCase):
     def test_excluded_entity_list_is_exactly_the_equipment_makers(self):
         self.assertEqual(APPLICABILITY["nerc_cip_revision"][3],
                          self.EQUIPMENT_MAKERS)
+
+    def test_each_exclusion_still_names_the_company_it_was_justified_against(
+            self):
+        """Binds each excluded id to WHO it is in the read-only seed.
+
+        The exclusions are keyed by entity_id, but every one of them is a
+        judgment about a company: this is an equipment maker, not a BES
+        owner/operator. Nothing in the store carries that judgment - it lives
+        in a trailing comment in app/obligations.py, which is documentation,
+        not a constraint. Re-point one of these ids at a different company in
+        the seed and the admitted count is still 88, the subsector is still
+        'renewables', and every other test in this file still passes while a
+        real operator's CIP obligation is silently suppressed. This is the
+        test that turns that RED."""
+        with (SEEDS / "watchlist_entities.csv").open(
+                newline="", encoding="utf-8") as fh:
+            by_id = {e["entity_id"]: e for e in csv.DictReader(fh)}
+
+        for entity_id in self.EQUIPMENT_MAKERS:
+            company = self.EQUIPMENT_MAKER_COMPANIES[entity_id]
+            with self.subTest(entity_id=entity_id):
+                row = by_id.get(entity_id)
+                self.assertIsNotNone(
+                    row,
+                    f"{entity_id} is excluded from the CIP rule but no longer "
+                    f"exists in the watchlist, so the exclusion now removes "
+                    f"nobody. It was excluded as {company!r}; find where that "
+                    f"company lives now and re-key the exclusion.")
+                self.assertIn(
+                    company, row["name"].lower(),
+                    f"{entity_id} is {row['name']!r} in the seed, but the CIP "
+                    f"exclusion was justified against {company!r}. The id has "
+                    f"been re-pointed at a different company, so the rule is "
+                    f"now suppressing an account nobody judged. Re-make the "
+                    f"equipment-maker-vs-BES-operator call for {row['name']!r} "
+                    f"and update app/obligations.py - this is a category "
+                    f"judgment, not a number to update.")
+                self.assertEqual(
+                    row["subsector"], "renewables",
+                    f"{entity_id} ({row['name']}) is now "
+                    f"{row['subsector']!r}, not 'renewables'. The exclusion "
+                    f"exists only because the 'renewables' label over-admits "
+                    f"equipment makers; under another label it is either "
+                    f"redundant or is narrowing a class it was never judged "
+                    f"against.")
 
     def test_renewable_operator_still_sees_the_cip_obligation(self):
         add_signal(self.conn, "cip003", CIP_003_DOC)
