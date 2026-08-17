@@ -44,12 +44,22 @@ router = APIRouter()
 # but are not surfaced here.
 STATUSES = ("active",)
 
-# R6.6: an unknown, stale, or soft-disabled entity_id must render this honest
-# not-found panel naming the id that was actually requested — never silently
-# substitute a different company at HTTP 200 (the wrong-company fallback bug).
+# R6.6: an unknown or stale entity_id must render this honest not-found panel
+# naming the id that was actually requested — never silently substitute a
+# different company at HTTP 200 (the wrong-company fallback bug).
 NOT_FOUND_MESSAGE = (
     'No account matches id "{requested_id}". It may have been removed from '
     "the watchlist. Pick an account from the selector above.")
+
+# U34: a soft-disabled entity (watchlist_entities.active = 0) is still ON FILE
+# — it can be reached from an active entity's own relationship links (R8.7,
+# account_header/account_relationships do not filter on active, by design: the
+# operator still needs to see the edge). Landing there must not claim removal;
+# it never left the watchlist, it was deactivated.
+DEACTIVATED_MESSAGE = (
+    'The account "{requested_id}" has been deactivated. It is still on file '
+    "but is no longer an active watchlist account. Pick an account from the "
+    "selector above.")
 
 EMPTY_WATCHLIST_MESSAGE = "No watchlist entities loaded. Run the seed loader first."
 
@@ -59,6 +69,7 @@ EMPTY_WATCHLIST_MESSAGE = "No watchlist entities loaded. Run the seed loader fir
 # from "watchlist is empty" apart from any other load failure without parsing
 # the English message. See _empty.html.
 NOT_FOUND_STATE = "not-found"
+DEACTIVATED_STATE = "deactivated"
 EMPTY_WATCHLIST_STATE = "empty-watchlist"
 LOAD_ERROR_STATE = "load-error"
 
@@ -95,11 +106,30 @@ def _resolve(entities, entity_id):
     return entities[0]["entity_id"]
 
 
+def _deactivated(conn, requested_id):
+    """True when ``requested_id`` names a real watchlist_entities row that is
+    soft-disabled (active = 0) — distinct from an id that names no row at all.
+    _entities() only pools active rows, so _resolve() cannot tell those two
+    apart; this is the one extra lookup that lets the not-found panel avoid
+    claiming removal for an account that is still on file."""
+    return conn.execute(
+        "SELECT 1 FROM watchlist_entities WHERE entity_id = ? AND active = 0",
+        (requested_id,)).fetchone() is not None
+
+
 def _account_context(conn, entity_id, requested_id=""):
     """Header view + timeline rows + signal cards for one account; an empty
     body context (account=None) when the entity cannot be loaded, or the
-    not-found panel (naming ``requested_id``) when ``entity_id`` is None."""
+    not-found/deactivated panel (naming ``requested_id``) when ``entity_id``
+    is None."""
     if entity_id is None:
+        if requested_id and _deactivated(conn, requested_id):
+            return {"selected": "", "not_found": True,
+                    "requested_id": requested_id, "account": None,
+                    "timeline": [], "cards": [],
+                    "empty_message": DEACTIVATED_MESSAGE.format(
+                        requested_id=requested_id),
+                    "empty_state": DEACTIVATED_STATE}
         return {"selected": "", "not_found": True, "requested_id": requested_id,
                 "account": None, "timeline": [], "cards": [],
                 "empty_message": NOT_FOUND_MESSAGE.format(
