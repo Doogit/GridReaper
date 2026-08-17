@@ -5,6 +5,7 @@ throughout: every rate is returned with its denominator, and an empty
 denominator yields ``None`` (never a fake 0.0 pass).
 """
 import unittest
+from unittest import mock
 
 from app.audit import precision as p
 
@@ -371,6 +372,36 @@ class G1WaiverTests(unittest.TestCase):
         out = p.g1_status([], [], primary_triggers=("leadership_change",),
                           now=self.NOW)
         self.assertEqual(out["state"], "waived")
+
+    def test_patching_the_waiver_constant_takes_effect(self):
+        # The ruling is read at CALL time, not bound once into the default
+        # argument. Its three sibling constants (date / reason / lift condition)
+        # are read from module globals in the body, so a G1_WAIVER_ACTIVE bound
+        # at import would leave one of the four frozen and three live — and a
+        # mock.patch.object of it, this suite's idiom, would silently prove
+        # nothing while still passing.
+        with mock.patch.object(p, "G1_WAIVER_ACTIVE", False):
+            out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                              now=self.NOW)
+        self.assertEqual(out["state"], "blocked")
+        self.assertIsNone(out["waiver"])
+        # ...and nothing about the patch is sticky: the shipped ruling governs
+        # again the moment the patch is dropped.
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW)
+        self.assertEqual(out["state"], "waived")
+
+    def test_explicit_waiver_argument_still_overrides_the_constant(self):
+        # Late binding must not cost the caller its override: an explicit
+        # argument wins over the module constant in BOTH directions.
+        with mock.patch.object(p, "G1_WAIVER_ACTIVE", False):
+            out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                              now=self.NOW, waiver_active=True)
+        self.assertEqual(out["state"], "waived")
+        with mock.patch.object(p, "G1_WAIVER_ACTIVE", True):
+            out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                              now=self.NOW, waiver_active=False)
+        self.assertEqual(out["state"], "blocked")
 
     def test_waiver_records_lift_condition(self):
         # The condition that ENDS the waiver must be readable off the state, so

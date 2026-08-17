@@ -6,9 +6,11 @@
 # Four rules this file must keep, each pinned in tests/test_packaging.py because
 # each one fails SILENTLY:
 #
-# 1. It drives deploy/ingest_pipeline.sh — the ONE canonical pipeline, shared
-#    with the first-load entrypoint. A second hardcoded step list here would be
-#    exactly the drift those tests exist to prevent.
+# 1. Data refresh drives deploy/ingest_pipeline.sh — the ONE canonical pipeline,
+#    shared with the first-load entrypoint. A second hardcoded step list here
+#    would be exactly the drift those tests exist to prevent. (The reporting
+#    jobs below are not pipeline steps: they read what the pipeline produced and
+#    write nothing, so they are scheduled on their own requirement's cadence.)
 # 2. Every job sources /etc/gridsignals.env first, and treats a failure to do so
 #    as fatal. cron strips the environment, so GRIDSIGNALS_DB (a Dockerfile ENV)
 #    and any optional API key are invisible to a scheduled run otherwise — which
@@ -16,12 +18,18 @@
 #    never runs while the ledger reads healthy. The snapshot is written at
 #    startup, mode 600, outside the repo tree: NO secret is ever assigned in this
 #    file (R10.8).
-# 3. Every job is wrapped in deploy/scheduled_run.sh, which serializes scheduled
-#    ticks against each other and records a dated skip (exit 0) when a manual or
-#    first-load ingest already holds the per-step ingestion lock (R3.2) — that
-#    lock raises, it does not skip. Read the guard's header for what this does
-#    NOT cover: the per-step lock is not held for the tick, so a manual run
-#    started mid-tick can still interleave.
+# 3. Every job that WRITES the store is wrapped in deploy/scheduled_run.sh,
+#    which serializes scheduled ticks against each other and records a dated
+#    skip (exit 0) when a manual or first-load ingest already holds the per-step
+#    ingestion lock (R3.2) — that lock raises, it does not skip. Read the
+#    guard's header for what this does NOT cover: the per-step lock is not held
+#    for the tick, so a manual run started mid-tick can still interleave.
+#    The two reporting jobs below are deliberately NOT wrapped. They take no
+#    lock and write nothing, so they serialize against nothing — and the guard
+#    exits 0 on contention, which would DISCARD the record instead of delaying
+#    it. deploy/entrypoint.sh backgrounds a first-load ingest, so a container
+#    restart near a report's slot would silently lose one month of R9.3 and SIX
+#    months of R10.7 while cron logged success.
 # 4. Each job is a brace group with the redirect OUTSIDE it, so a failure of the
 #    env source or the `cd` — the two likeliest tick-killers — reaches the log
 #    instead of cron's mail channel, which has no MTA in this image. Same reason
@@ -42,3 +50,27 @@ MAILTO=""
 # first-load gate deliberately skips ingest when the volume already holds
 # signals, so without a schedule the dataset is frozen at first boot.
 17 3 * * * root { . /etc/gridsignals.env && cd /app && sh deploy/scheduled_run.sh sh deploy/ingest_pipeline.sh ; } >> /var/log/gridsignals-cron.log 2>&1
+
+# Monthly precision report (R9.3: "Monthly job computes precision per trigger
+# type, source, and signal_scope"), 1st of the month. It writes nothing to the
+# store — the record IS these log lines, dated by the run, which is what makes
+# precision observable over time rather than only in the moment someone opens
+# the Precision page. It reports the month that JUST ENDED (see
+# app/audit/precision.py:prior_month_end): firing on the 1st, a report about
+# "this month" would summarize a few hours and be false forever.
+#
+# Unguarded on purpose (rule 3 above): read-only, lock-free, and a guard skip
+# would throw the month's record away rather than defer it. Mid-afternoon UTC,
+# ~12h from the 03:17 refresh, so it reads a settled store.
+47 15 1 * * root { . /etc/gridsignals.env && cd /app && python -m app.audit.precision --report ; } >> /var/log/gridsignals-cron.log 2>&1
+
+# Semi-annual license re-verification sweep (R10.7: "semi-annual task plus Admin
+# banner"). Jan 1 and Jul 1 — cron has no "every 6 months", so the month field
+# names both; same mid-afternoon reasoning as above, 36 minutes clear of it.
+# This is the JOB half only: it names the facts whose verified_date has aged past
+# the window so the work announces itself instead of waiting for someone to open
+# Admin. Re-verifying a fact against primary Microsoft sources stays a human act;
+# the sweep writes nothing and never invents a verified_date. Unguarded for the
+# same reason as the report above, and more sharply: a discarded tick here costs
+# six months, not one.
+23 16 1 1,7 * root { . /etc/gridsignals.env && cd /app && python -m app.reverify ; } >> /var/log/gridsignals-cron.log 2>&1
