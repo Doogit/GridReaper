@@ -36,7 +36,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 
-from app.db.connection import DEFAULT_DB_PATH, get_connection
+from app.db.connection import get_connection, resolve_db_path
 from app.ui import data
 from app.ui_web import render
 from app.ui_web.templating import templates
@@ -57,19 +57,16 @@ KEEP_DIGESTS = 30
 _REGULATORY_SCOPES = ("regulatory_calendar",)
 
 
-def resolve_db_path(db_path=None):
-    """The DB this run reads: explicit argument, else ``GRIDSIGNALS_DB``, else
-    the packaged default. One resolution order for the writer and the reader."""
-    return db_path or os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH
-
-
 def digest_dir(db_path=None):
     """Directory digests are written to: a ``digests/`` folder beside the DB, so
     a throwaway test DB writes its digest next to itself, never into the repo.
 
     Public because the ``/digest`` route reads back what this module wrote; both
     sides resolving the location through this one function is what keeps them
-    from drifting."""
+    from drifting. The DB path itself is resolved by
+    ``app.db.connection.resolve_db_path`` (explicit argument, else
+    ``GRIDSIGNALS_DB``, else the packaged default) — the same resolution order
+    ``get_connection`` and ``app.audit.precision.report_path`` use."""
     parent = os.path.dirname(resolve_db_path(db_path)) or "."
     return os.path.join(parent, "digests")
 
