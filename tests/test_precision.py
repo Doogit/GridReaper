@@ -413,6 +413,23 @@ class G1WaiverTests(unittest.TestCase):
         self.assertIn(str(p.G1_MIN_RATED), lift)
         self.assertIn("rated", lift)
 
+    def test_lift_condition_text_reflects_a_patched_min_rated(self):
+        # PR #84 review Fix 1: the lift-condition TEXT must quote the same
+        # resolved min_rated the per-trigger `reasons` use, not the frozen
+        # import-time G1_WAIVER_LIFT_CONDITION string — else the same call
+        # could report "n<9999" in reasons but "reaches 20" in the waiver.
+        with mock.patch.object(p, "G1_MIN_RATED", 9999):
+            out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                              now=self.NOW, waiver_active=True)
+        lift = out["waiver"]["lift_condition"]
+        self.assertIn("reaches 9999 rated cards", lift)
+        self.assertNotIn("reaches 20 rated cards", lift)
+
+    def test_lift_condition_text_reflects_an_explicit_min_rated_argument(self):
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True, min_rated=42)
+        self.assertIn("reaches 42 rated cards", out["waiver"]["lift_condition"])
+
     def test_waiver_is_recorded_not_enforced(self):
         # The lift condition is RECORDED, not ENFORCED (Open Question 7): a
         # trigger that has since reached the rated-card floor does NOT make
@@ -497,7 +514,7 @@ class G1WaiverTests(unittest.TestCase):
         g2 = p.g2_status(rows)
         self.assertEqual(set(g2["good"]), {
             "precision", "n", "reason_codes", "below_threshold",
-            "demote_recommended", "note"})
+            "demote_recommended", "note", "threshold"})
         gated = p.g2_gated(g2, p.judge_human_disagreement_by_source([], rows))
         self.assertEqual(gated["good"]["gate"], "na")
         self.assertNotIn("waiver", gated["good"])
@@ -591,6 +608,25 @@ class G2GatedTests(unittest.TestCase):
                       gated["bad"]["note"])
         # Base result untouched (overlay is non-mutating).
         self.assertTrue(g2["bad"]["demote_recommended"])
+
+    def test_withheld_note_quotes_the_threshold_actually_used(self):
+        # PR #84 review Fix 1: the withheld note reconstructs "base precision
+        # was X%<Y%" — Y must be the threshold g2_status() actually used to
+        # produce demote_recommended on THIS cell, not the bare G2_THRESHOLD
+        # global, else an explicit threshold= override silently vanishes from
+        # the operator-facing note.
+        rows = [fb(f"bad:u{i}", "useful", source_id="bad") for i in range(4)]
+        rows += [fb(f"bad:n{i}", "not_useful", source_id="bad",
+                    reason_code="weak_evidence") for i in range(26)]
+        g2 = p.g2_status(rows, threshold=0.99)
+        self.assertEqual(g2["bad"]["threshold"], 0.99)
+        self.assertTrue(g2["bad"]["demote_recommended"])
+        dis = {"bad": {"comparable": p.G2_MIN_N, "agree": 14, "disagree": 6,
+                       "disagreement_rate": 0.30}}
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "withheld")
+        self.assertIn("99%", gated["bad"]["note"])
+        self.assertNotIn("40%", gated["bad"]["note"])
 
     def test_high_disagreement_without_demote_recommendation_stays_ok(self):
         # The disagreement gate withholds demotion guidance; it must not invent

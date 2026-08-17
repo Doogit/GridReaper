@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+from unittest import mock
 
 from app.audit import precision
 from app.db.migrate import apply_migrations
@@ -340,6 +341,39 @@ class DurableReportFileTests(unittest.TestCase):
             # tempdir put the DB, not a fixed "/app/data".
             self.assertNotIn("app/data", path.replace("\\", "/"))
             shutil.rmtree(self._report_dir(db_path), ignore_errors=True)
+
+    def test_successful_write_leaves_no_temp_file_behind(self):
+        # Not a true crash-mid-write test (hard to force reliably here) — this
+        # confirms the atomic temp-file-then-replace pattern
+        # write_report_file() uses cleans up after itself, so a reader beside
+        # the final file never finds a stray partial write (U27).
+        with throwaway_db() as conn:
+            self._august_store_minimal(conn)
+            db_path = os.environ["GRIDSIGNALS_DB"]
+            conn.close()
+            with redirect_stdout(io.StringIO()):
+                precision.main(["--report"], now=CRON_NOW)
+            report_dir = self._report_dir(db_path)
+            leftovers = [f for f in os.listdir(report_dir)
+                        if f.startswith(".tmp-")]
+            self.assertEqual(leftovers, [])
+            shutil.rmtree(report_dir, ignore_errors=True)
+
+    def test_filesystem_failure_degrades_gracefully_not_fatally(self):
+        # --report runs unguarded/lock-free off cron; a filesystem problem
+        # persisting the durability copy must not crash a run whose report
+        # was already computed correctly and printed to stdout (U27).
+        with throwaway_db() as conn:
+            self._august_store_minimal(conn)
+            conn.close()
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch("app.audit.precision.tempfile.mkstemp",
+                            side_effect=OSError("disk full")):
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = precision.main(["--report"], now=CRON_NOW)
+            self.assertEqual(code, 0)
+            self.assertTrue(out.getvalue().startswith("precision: success "))
+            self.assertIn("NOT persisted", err.getvalue())
 
     @staticmethod
     def _august_store_minimal(conn):
