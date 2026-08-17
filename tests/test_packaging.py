@@ -461,19 +461,191 @@ class PackagingContractTest(unittest.TestCase):
         )
         return match.start()
 
-    def test_entrypoint_starts_scheduler_before_exec_uvicorn(self):
+    def test_entrypoint_starts_scheduler_before_uvicorn(self):
         # A scheduler that blocks the web process is worse than no scheduler:
-        # cron is started (backgrounded daemon) and uvicorn is still exec'd last.
+        # cron is started (backgrounded daemon) before uvicorn is started.
+        # U28: uvicorn runs as a plain backgrounded child, `wait`ed on, rather
+        # than replacing this shell via `exec` — see
+        # test_entrypoint_relays_sigterm_to_cron for why the exec'd-uvicorn
+        # design (this test's own name until U28) does not survive shutdown
+        # with a cron tick in flight, verified against real Docker.
         entry = self._entrypoint()
         self.assertLess(
-            self._scheduler_start(entry), entry.index("exec uvicorn"),
-            "the scheduler must start before uvicorn is exec'd, or it never starts at all",
+            self._scheduler_start(entry), entry.index("uvicorn app.ui_web.app:app"),
+            "the scheduler must start before uvicorn starts, or it never starts at all",
         )
         executable = [ln for ln in entry.splitlines() if ln.strip()]
         self.assertTrue(
-            executable[-1].startswith("exec uvicorn"),
-            "uvicorn must remain the last (exec'd) step so the web process is PID 1's successor",
+            executable[-1].startswith('wait "$UVICORN_PID"'),
+            "the script must wait on uvicorn as the last step, not exec/replace itself with it — "
+            "see test_entrypoint_relays_sigterm_to_cron for why",
         )
+        self.assertRegex(
+            entry, r'uvicorn app\.ui_web\.app:app[^\n]*&\s*\nUVICORN_PID=\$!',
+            "uvicorn must be backgrounded with its pid captured, not exec'd",
+        )
+
+    def test_entrypoint_relays_sigterm_to_cron(self):
+        # U28: tini -g SIGTERMs every member of this shell's process group
+        # directly, but cron puts EACH job it runs into its OWN freshly
+        # assigned session/process group at fork time — not one shared group
+        # with the daemon, and not stable across ticks (empirically confirmed
+        # against real Docker: even `timeout`, wrapping every tick, re-groups
+        # itself again inside that, and multiple ticks can be live at once
+        # sharing none of it). There is no static pgid to precompute, so a
+        # container stop never reaches an in-flight cron tick unless
+        # something walks cron's live descendants AT SHUTDOWN TIME and
+        # signals them directly. Without this, a tick's
+        # `finally: os.remove(path)` lock cleanup (app/ingest/runner.py's
+        # ingest_lock) never gets the chance to run and data/.ingest.lock
+        # leaks until its 2h staleness window passes.
+        #
+        # The walk must also run SYNCHRONOUSLY, in the process tini actually
+        # waits on, not backgrounded: tini (PID 1) exits the instant its
+        # tracked child exits, and the kernel tears down the whole PID
+        # namespace the instant tini exits. uvicorn shuts down on TERM in
+        # well under a second, so a backgrounded walk — with uvicorn still
+        # exec'd as the tracked child — consistently lost that race in real
+        # Docker testing (the walk never finished). Hence uvicorn is a
+        # waited-on child (see test_entrypoint_starts_scheduler_before_uvicorn)
+        # and the walk runs in a trap on THIS shell, which only exits once the
+        # walk and uvicorn are both done.
+        entry = self._entrypoint()
+        self.assertIn(
+            "/run/crond.pid", entry,
+            "the entrypoint must resolve cron's real pid from its pidfile after starting it",
+        )
+        self.assertRegex(
+            entry, r"relay_sigterm_to_cron_descendants\s*\(\s*\)",
+            "the entrypoint must define a relay that walks cron's descendants, not a precomputed pgid",
+        )
+        self.assertRegex(
+            entry, r"awk '\{print \$4\}' \"\$p/stat\"",
+            "the descendant walk must read ppid (field 4) out of /proc for each candidate pid",
+        )
+        self.assertRegex(
+            entry, r"trap\s+term_handler\s+TERM",
+            "TERM must be trapped in this shell (not backgrounded) so the walk can complete "
+            "before tini's tracked child exits",
+        )
+        self.assertRegex(
+            entry, r"(?s)term_handler\(\)\s*\{[^}]*relay_sigterm_to_cron_descendants[^}]*wait \"\$UVICORN_PID\"",
+            "the TERM handler must run the descendant walk before waiting on uvicorn to exit",
+        )
+        self.assertLess(
+            entry.index("CRON_PID"), entry.index("uvicorn app.ui_web.app:app"),
+            "cron's pid must be resolved before uvicorn starts",
+        )
+
+    def test_relay_sigterm_to_cron_descendants_signals_the_whole_live_tree(self):
+        # Behavioral, not structural: the tests above pin that the relay is
+        # WIRED UP; this exercises what it actually DOES against a real
+        # nested process tree, using the actual relay_sigterm_to_cron_
+        # descendants() function extracted verbatim out of
+        # deploy/entrypoint.sh (not a reimplementation, so it can't drift from
+        # what ships) run via a real 3-level `sh` process tree, each level
+        # trapping TERM and touching its own marker file.
+        #
+        # NOTE on what this does NOT prove: the two-pass design (U28) exists
+        # to fix a race where a combined walk-and-signal loop only ever
+        # reached cron's immediate child, because signalling a process
+        # re-parents its still-live children to the subreaper before the next
+        # BFS level looks for them. That race is a function of how much wall-
+        # clock time elapses per /proc scan relative to how fast a killed
+        # process's children get reparented — inherently environment-timing-
+        # dependent (process-table size, awk-fork cost, scheduler load), and
+        # was NOT reproducible by mutating this test back to the single-pass
+        # version on this host (confirmed while writing it: the single-pass
+        # version passed here too, only reproduced against real Docker's much
+        # larger process table). This test still deterministically catches
+        # any regression that breaks multi-level delivery outright (wrong
+        # /proc field, a broken frontier loop, only ever reaching level 1) —
+        # it just cannot be relied on to catch a reintroduced one-pass
+        # walk-and-kill specifically; that needs the real-Docker verification
+        # described in this PR.
+        shell = shutil.which("sh") or shutil.which("bash")
+        if not shell:
+            self.skipTest("no POSIX shell available to run the relay function")
+        entry_text = ENTRYPOINT.read_text(encoding="utf-8")
+        start = entry_text.index("relay_sigterm_to_cron_descendants() {")
+        end_marker = "\n}\n"
+        end_idx = entry_text.index(end_marker, start)
+        relay_fn = entry_text[start:end_idx + len(end_marker)]
+        self.assertIn("kill -TERM", relay_fn, "extraction boundary missed the function body")
+
+        with tempfile.TemporaryDirectory(prefix="gs-relay-") as tmp:
+            markers = Path(tmp, "markers")
+            markers.mkdir()
+            root_pid_file = Path(tmp, "root.pid")
+            # `daemon` stands in for the cron daemon itself: CRON_PID is set
+            # to ITS pid, and — matching production, where cron itself must
+            # not be killed, only its job descendants — it deliberately has
+            # no trap/marker. level1/2/3 stand in for the job's own
+            # multi-level descendant chain (cron's per-job fork -> the job
+            # shell -> a step inside it, e.g. `timeout`'s child).
+            tree_script = f"""#!/bin/sh
+MARKER_DIR="{markers.as_posix()}"
+level3() {{
+  trap ': > "$MARKER_DIR/level3"; exit 0' TERM
+  sleep 60
+}}
+level2() {{
+  trap ': > "$MARKER_DIR/level2"; exit 0' TERM
+  level3 &
+  sleep 60
+}}
+level1() {{
+  trap ': > "$MARKER_DIR/level1"; exit 0' TERM
+  level2 &
+  sleep 60
+}}
+daemon() {{
+  level1 &
+  sleep 60
+}}
+daemon &
+echo $! > "{root_pid_file.as_posix()}"
+wait
+"""
+            tree_path = Path(tmp, "tree.sh")
+            tree_path.write_text(tree_script, encoding="utf-8")
+            tree_proc = subprocess.Popen([shell, str(tree_path)], cwd=str(REPO))
+            try:
+                deadline = time.time() + 5
+                while time.time() < deadline and not root_pid_file.exists():
+                    time.sleep(0.05)
+                self.assertTrue(root_pid_file.exists(), "test process tree never started")
+                # Give level2/level3 a moment to finish forking.
+                deadline = time.time() + 5
+                while time.time() < deadline and len(list(Path(tmp).glob("*.pid"))) < 1:
+                    time.sleep(0.05)
+                time.sleep(0.3)
+                cron_pid = root_pid_file.read_text(encoding="utf-8").strip()
+
+                relay_script = f'#!/bin/sh\nCRON_PID="{cron_pid}"\n{relay_fn}\nrelay_sigterm_to_cron_descendants\n'
+                relay_path = Path(tmp, "relay.sh")
+                relay_path.write_text(relay_script, encoding="utf-8")
+                result = subprocess.run(
+                    [shell, str(relay_path)], cwd=str(REPO),
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(0, result.returncode, f"relay script failed: {result.stderr}")
+
+                deadline = time.time() + 5
+                while time.time() < deadline and len(list(markers.iterdir())) < 3:
+                    time.sleep(0.05)
+                found = sorted(p.name for p in markers.iterdir())
+                self.assertEqual(
+                    ["level1", "level2", "level3"], found,
+                    f"the relay must signal EVERY level of a live descendant tree, not just "
+                    f"the top one (the exact bug U28's two-pass design fixes); got {found}",
+                )
+            finally:
+                tree_proc.terminate()
+                try:
+                    tree_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    tree_proc.kill()
 
     def test_entrypoint_snapshots_environment_for_cron(self):
         # The snapshot lives outside the repo tree and is locked down BEFORE
@@ -617,7 +789,8 @@ class PackagingContractTest(unittest.TestCase):
         # ingest job — empirically verified against real Docker; without -g
         # that job gets zero signal, only SIGKILLed by PID-namespace teardown.
         # It does NOT reach a cron-spawned tick (cron daemonizes into its own
-        # session/process group) — that residual gap is U28, not this test.
+        # session/process group) — deploy/entrypoint.sh closes that gap itself
+        # (U28, see test_entrypoint_relays_sigterm_to_cron below), not this flag.
         df = self._dockerfile()
         self.assertRegex(df, r"apt-get install[^\n]*\btini\b", "tini must be installed — the base image ships no init")
         self.assertRegex(
@@ -799,6 +972,56 @@ class PackagingContractTest(unittest.TestCase):
         digit_lines = [ln for ln in result.stdout.splitlines() if ln.strip().isdigit()]
         self.assertTrue(digit_lines, f"the tick lock must record a numeric PID at acquisition; stdout={result.stdout!r}")
         self.assertGreater(int(digit_lines[0]), 0)
+
+    # -- U29: TOCTOU-free lock creation ---------------------------------------
+
+    def test_take_lock_publishes_content_atomically(self):
+        # The old `set -C; printf ... > lock` idiom opened the FINAL lock path
+        # and wrote its PID into it as two separate syscalls, so a racing
+        # reader could observe the target path already existing but still
+        # empty and misclassify a live lock as the dead/empty-file residue
+        # U23 already handles — reopening the same second-writer race in a
+        # narrower window. The fix writes to a scratch file first and
+        # publishes it with `ln` (atomic create-if-absent, like `set -C`),
+        # so the target name never exists with any content but the final one.
+        text = SCHEDULED_RUN.read_text(encoding="utf-8")
+        self.assertRegex(
+            text, r'take_lock\(\)\s*\{',
+            "deploy/scheduled_run.sh no longer defines take_lock()",
+        )
+        self.assertRegex(
+            text, r"\bln\s+\"\$tmp\"\s+\"\$1\"",
+            "take_lock must publish the lock via an atomic `ln`, not a direct create+write "
+            "against the final path",
+        )
+        self.assertNotRegex(
+            text, r"set -C;\s*printf",
+            "the old two-syscall noclobber-create-then-write idiom must be gone",
+        )
+
+    def test_take_lock_still_records_its_own_pid_via_the_new_path(self):
+        # Regression guard for the U29 rewrite: the atomically-published lock
+        # must still hold the acquiring process's PID, not an empty scratch
+        # artifact — test_scheduled_run_pipeline_lock_records_its_own_pid
+        # covers this through the guard's normal flow; this pins it directly
+        # against take_lock so a future refactor of the guard around it
+        # cannot silently stop exercising the same path.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            lock = os.path.join(tmp, ".scheduled.lock")
+            result = self._run_guard(tmp, "sh", "-c", f'cat "{lock}"')
+        self.assertEqual(0, result.returncode, result.stderr)
+        digit_lines = [ln for ln in result.stdout.splitlines() if ln.strip().isdigit()]
+        self.assertTrue(digit_lines, f"the ln-published lock must still record a numeric PID; stdout={result.stdout!r}")
+
+    def test_take_lock_leaves_no_scratch_file_behind(self):
+        # `ln` leaves the scratch source name in place alongside the target
+        # (same inode, two links) until it is explicitly unlinked. take_lock
+        # must clean it up on both the success and failure paths, or every
+        # tick leaks a `<lock>.<pid>.tmp` file into data/.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            self._run_guard(tmp)
+            leftovers = [p for p in os.listdir(tmp) if p.endswith(".tmp")]
+        self.assertFalse(leftovers, f"take_lock left scratch files behind: {leftovers}")
 
     # -- U13: heartbeat + timeout ---------------------------------------------
 

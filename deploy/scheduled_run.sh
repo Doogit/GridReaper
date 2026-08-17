@@ -89,10 +89,25 @@ pipeline_lock_dead() {
   ! kill -0 "$pid" 2>/dev/null
 }
 
-# Atomic create-if-absent, recording our own PID. The subshell keeps
-# noclobber scoped and keeps a redirection error on a special builtin from
-# taking the whole script with it.
-take_lock() { ( set -C; printf '%s\n' "$$" > "$1" ) 2>/dev/null; }
+# Atomic create-if-absent, recording our own PID. `set -C`'s noclobber
+# redirect and the PID write used to be two separate syscalls (open() then
+# write()) against the SAME final path, so a racing reader could open the
+# lock in the gap between them and observe it empty — misreading a live lock
+# as the dead/pre-U23 empty-file residue and `rm -f`ing it out from under us
+# (U29). Write the PID to a PID-scoped temp file in the same directory
+# first, then `ln` (hard link, atomic create-if-absent like `set -C`) it
+# into place: the target name never exists with any content but the final
+# one. The temp name is always cleaned up, win or lose.
+take_lock() {
+  tmp="$1.$$.tmp"
+  printf '%s\n' "$$" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  if ln "$tmp" "$1" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
 
 mkdir -p "$(dirname "$PIPELINE_LOCK")"
 

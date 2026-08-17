@@ -62,9 +62,11 @@ EXPOSE 8000
 # double-forked its way to PID 1 without a chance to release its lock.
 # -g forwards the shutdown signal to tini's WHOLE process group, not just its
 # one tracked child — covers the backgrounded first-load ingest job (same
-# group, forked before exec). It does NOT cover a cron-spawned tick: cron
-# daemonizes into its own session/process group, so that gap is real and
-# stays a follow-up (U28), not fixed by this flag.
+# group, forked before exec). It does NOT cover a cron-spawned tick: each job
+# cron runs lands in its OWN freshly assigned session/process group, so -g
+# alone can't reach it. deploy/entrypoint.sh closes that gap itself (U28): it
+# resolves cron's pid after starting it and, on SIGTERM, walks cron's live
+# descendants in /proc and signals each one directly.
 # Runtime bootstrap: seed schema + config (blocking), background-ingest on first
 # load, start the cron scheduler, then exec uvicorn (bind 0.0.0.0 so App Service
 # can reach it; Easy Auth, when enabled, fronts the app). Ingestion stays a
