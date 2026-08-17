@@ -44,10 +44,11 @@ evidence_support feed auto-accuracy, and only "pass"/"fail" are scored
 """
 import argparse
 import math
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-from app.db.connection import get_connection
+from app.db.connection import DEFAULT_DB_PATH, get_connection
 
 # Verdicts counted as a human positive vs negative (R9.1).
 POSITIVE_VERDICTS = frozenset({"useful", "converted"})
@@ -474,8 +475,8 @@ def judge_human_disagreement_by_source(audit_rows, feedback_rows):
 
 
 def g2_gated(g2_result, disagreement_by_source,
-             threshold=DISAGREEMENT_GATE_THRESHOLD,
-             min_comparable=DISAGREEMENT_MIN_COMPARABLE):
+             threshold=None,
+             min_comparable=None):
     """Overlay G2 with the R9.11 disagreement gate (KTD3) — PURE, non-mutating.
 
     Returns a NEW dict (the input ``g2_result`` is never mutated) shaped exactly
@@ -498,7 +499,16 @@ def g2_gated(g2_result, disagreement_by_source,
 
     ``disagreement_by_source`` is the output of
     ``judge_human_disagreement_by_source``.
+
+    ``threshold``/``min_comparable`` default to ``None`` and are resolved here
+    from the live module globals (the ``now=None`` idiom this file already
+    uses) so a ``mock.patch.object`` of ``DISAGREEMENT_GATE_THRESHOLD``/
+    ``DISAGREEMENT_MIN_COMPARABLE`` takes effect (U25/U17).
     """
+    if threshold is None:
+        threshold = DISAGREEMENT_GATE_THRESHOLD
+    if min_comparable is None:
+        min_comparable = DISAGREEMENT_MIN_COMPARABLE
     out = {}
     for sid, cell in g2_result.items():
         new_cell = dict(cell)
@@ -537,9 +547,9 @@ def g2_gated(g2_result, disagreement_by_source,
 
 
 def spotcheck_coverage(audit_rows, feedback_rows, now=None,
-                       abs_target=SPOTCHECK_ABS_TARGET,
-                       fraction=SPOTCHECK_FRACTION,
-                       floor=SPOTCHECK_MIN_FLOOR):
+                       abs_target=None,
+                       fraction=None,
+                       floor=None):
     """Monthly audit spot-check coverage (R9.11) — report-only.
 
     R9.11 asks for >= 10 human-reviewed audit verdicts per month OR 20% of that
@@ -562,8 +572,19 @@ def spotcheck_coverage(audit_rows, feedback_rows, now=None,
     ``audited`` and ``target`` all ship together. Returns
     ``{"reviewed", "audited", "target", "met", "window"}`` where ``window`` is
     the ``"YYYY-MM"`` UTC month.
+
+    ``abs_target``/``fraction``/``floor`` default to ``None`` and are resolved
+    here from the live module globals (the ``now=None`` idiom this file
+    already uses), so a ``mock.patch.object`` of ``SPOTCHECK_ABS_TARGET``/
+    ``SPOTCHECK_FRACTION``/``SPOTCHECK_MIN_FLOOR`` takes effect (U25/U17).
     """
     now_dt = _now(now)
+    if abs_target is None:
+        abs_target = SPOTCHECK_ABS_TARGET
+    if fraction is None:
+        fraction = SPOTCHECK_FRACTION
+    if floor is None:
+        floor = SPOTCHECK_MIN_FLOOR
     month = (now_dt.year, now_dt.month)
 
     audited = set()
@@ -673,7 +694,7 @@ def _days_span(timestamps, now):
 
 
 def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
-              min_days=G1_MIN_DAYS, min_rated=G1_MIN_RATED,
+              min_days=None, min_rated=None,
               waiver_active=None):
     """Gate G1 (Stage 1 -> 2) status per primary account-level trigger (R9.4).
 
@@ -722,6 +743,15 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
     now_dt = _now(now)
     if waiver_active is None:
         waiver_active = G1_WAIVER_ACTIVE
+    # min_days/min_rated default to None and are resolved here from the live
+    # module globals, same reason as waiver_active above: a default bound to
+    # G1_MIN_DAYS/G1_MIN_RATED would capture the value at import time, so a
+    # mock.patch.object of either constant would silently not take effect
+    # (U25/U17).
+    if min_days is None:
+        min_days = G1_MIN_DAYS
+    if min_rated is None:
+        min_rated = G1_MIN_RATED
     triggers = list(primary_triggers) if primary_triggers else list(
         DEFAULT_PRIMARY_TRIGGERS)
 
@@ -815,7 +845,7 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
     }
 
 
-def g2_status(feedback_rows, threshold=G2_THRESHOLD, min_n=G2_MIN_N, now=None):
+def g2_status(feedback_rows, threshold=None, min_n=None, now=None):
     """Gate G2 (per source) demotion *recommendation* — REPORT-ONLY (R9.5).
 
     G2 is reported here, never auto-enforced: this function only recommends. Per
@@ -826,11 +856,20 @@ def g2_status(feedback_rows, threshold=G2_THRESHOLD, min_n=G2_MIN_N, now=None):
     ``min_n`` the sample is too noisy to act on, so ``demote_recommended`` is
     False with a "sample too small" note.
 
+    ``threshold``/``min_n`` default to ``None`` and are resolved here from the
+    live module globals (the ``now=None`` idiom this file already uses), so a
+    ``mock.patch.object`` of ``G2_THRESHOLD``/``G2_MIN_N`` takes effect
+    (U25/U17).
+
     ``now`` is accepted for signature symmetry / future window filtering; the
     caller is expected to have already windowed rows to the 30-day period.
     Returns ``{source_id: {"precision", "n", "reason_codes", "below_threshold",
     "demote_recommended", "note"}}`` sorted by source_id.
     """
+    if threshold is None:
+        threshold = G2_THRESHOLD
+    if min_n is None:
+        min_n = G2_MIN_N
     by_source = {}
     for row in feedback_rows:
         verdict = row.get("verdict")
@@ -883,16 +922,36 @@ def g2_status(feedback_rows, threshold=G2_THRESHOLD, min_n=G2_MIN_N, now=None):
 # are already durable and append-only (``feedback`` + ``audit``), so it is
 # reproducible for any month at any time; a snapshot table would be a second
 # copy of derivable numbers with nothing reading it. What the monthly job adds
-# is the RECORD: cron appends this run's lines to the container log, dated, so
-# precision per trigger / source / signal_scope is observable over time rather
-# than only in the moment someone opens the Precision page. The job reads and
-# prints; it never writes the store, so it takes no single-writer lock (R3.2) —
-# ``ingest_lock()`` RAISES on a live lock, which would turn a read-only report
-# into a spurious failure whenever a pipeline happened to be running. For the
-# same reason the crontab does NOT wrap it in deploy/scheduled_run.sh: that
-# guard exists to serialize WRITERS, and it exits 0 on contention, so wrapping a
-# read-only monthly job would silently discard that month's record whenever a
-# first-load or manual ingest happened to be in flight.
+# is the RECORD: it prints to stdout (cron still pipes that to the container
+# log, unchanged) AND writes the same lines to a dated file under
+# ``report_path()`` below, beside the configured DB — see U27 there for why.
+# The job reads and prints; it never writes the store, so it takes no
+# single-writer lock (R3.2) — ``ingest_lock()`` RAISES on a live lock, which
+# would turn a read-only report into a spurious failure whenever a pipeline
+# happened to be running. For the same reason the crontab does NOT wrap it in
+# deploy/scheduled_run.sh: that guard exists to serialize WRITERS, and it
+# exits 0 on contention, so wrapping a read-only monthly job would silently
+# discard that month's record whenever a first-load or manual ingest happened
+# to be in flight.
+
+
+def report_path(period, db_path=None):
+    """Durable-volume path for one month's precision record (R9.3, U27).
+
+    LESSON: append-to-a-log is only a durability story when the log itself is
+    on the volume. ``deploy/crontab`` piped ``--report`` to
+    ``/var/log/gridsignals-cron.log`` INSIDE the container; the Dockerfile
+    mounts only the DB's directory as a volume, so every monthly record died
+    on restart. Writing beside the configured DB instead (never a hardcoded
+    ``/app/data``) needs no new ``VOLUME`` mount and no new table — it is
+    derived purely from ``GRIDSIGNALS_DB`` (else the packaged default), the
+    same resolution order ``get_connection`` already uses.
+    """
+    resolved = db_path or os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH
+    directory = os.path.join(os.path.dirname(resolved) or ".",
+                              "precision-reports")
+    os.makedirs(directory, exist_ok=True)
+    return os.path.join(directory, f"{period}.txt")
 
 def prior_month_end(now=None):
     """Last instant of the UTC calendar month BEFORE ``now``.
@@ -1012,8 +1071,14 @@ def main(argv=None, now=None):
         report = data.precision_report(conn, now=as_of)
     finally:
         conn.close()
-    for line in format_report(report, as_of=as_of.isoformat()):
+    lines = format_report(report, as_of=as_of.isoformat())
+    for line in lines:
         print(line)
+    # Idempotent per period: "w" overwrites rather than appending, since the
+    # report is reproducible from stored rows, not an accumulating log (U27).
+    path = report_path(report["spotcheck"]["window"])
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
     return 0
 
 

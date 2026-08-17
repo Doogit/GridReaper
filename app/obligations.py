@@ -54,12 +54,30 @@ Idempotency (mirrors app/plays.py)
     existing one. A later correction to the Federal Register payload does not
     rewrite a stored obligation; the stored row is what the operator saw.
 
+Re-deriving the CODE-derived fields (R8.3, U20)
+    applicability_rule and affected_scope are not payload fields - they come
+    from APPLICABILITY in this module, not from the Federal Register. Freezing
+    them the same way as regulator/rule_name/effective_date would only let our
+    own code and our own stored data disagree silently, indefinitely, whenever
+    APPLICABILITY is later narrowed or widened. So they get a separate,
+    explicit, operator-invoked repair path instead of an automatic re-run:
+
+        python -m app.obligations --rederive
+
+    It recomputes ONLY applicability_rule and affected_scope on EXISTING rows,
+    from each row's already-stored signal_id -> trigger_id -> APPLICABILITY.
+    Every payload field, and derived_at, stays byte-identical. A row is left
+    untouched (not deleted, not errored) when its signal_id no longer resolves
+    to a trigger_id this module recognizes - that is a narrow field refresh,
+    not a garbage-collection pass.
+
 Not included, deliberately
     nerc_enforcement signals - an enforcement notice is a past action, not a
     forward obligation. Proposed rules whose only date anchor is
     comments_close_on - a comment deadline is Regulatory Monitor material
     (R8.4), not a compliance clock.
 """
+import argparse
 import json
 import re
 import sys
@@ -242,17 +260,85 @@ def derive_obligations(conn):
     return counts
 
 
-def main():
+def rederive_applicability(conn):
+    """Recompute applicability_rule/affected_scope on EXISTING rows (U20).
+
+    Reads each stored row's own signal_id back to its trigger_id, looks that
+    trigger_id up in the CURRENT ``APPLICABILITY``, and rewrites only
+    ``applicability_rule`` and ``affected_scope`` when the recomputed value
+    differs from what is stored - a bare re-run touches nothing. Every payload
+    field (regulator, rule_name, effective_date, mapped_products) and
+    ``derived_at`` are never read or written here.
+
+    A row whose signal_id no longer resolves to a trigger_id this module
+    recognizes (the underlying signal was retired/removed, or predates the
+    0013 signal_id column) is left exactly as stored - not deleted, not
+    errored, just skipped. This is a narrow field refresh, not a
+    garbage-collection pass over regulatory_obligations.
+
+    Returns {rederived, unchanged, skipped, rows_seen}.
+    """
+    rows = conn.execute(
+        "SELECT o.obligation_id, o.applicability_rule, o.affected_scope, "
+        " s.trigger_id "
+        "FROM regulatory_obligations o "
+        "LEFT JOIN signals s ON s.signal_id = o.signal_id "
+        "ORDER BY o.obligation_id").fetchall()
+
+    counts = {"rederived": 0, "unchanged": 0, "skipped": 0, "rows_seen": 0}
+    for row in rows:
+        counts["rows_seen"] += 1
+        entry = APPLICABILITY.get(row["trigger_id"])
+        if entry is None:
+            counts["skipped"] += 1
+            continue
+        _, affected_scope, subsectors, excluded_entities = entry
+        new_rule = applicability_rule(subsectors, excluded_entities)
+        if (new_rule == row["applicability_rule"]
+                and affected_scope == row["affected_scope"]):
+            counts["unchanged"] += 1
+            continue
+        conn.execute(
+            "UPDATE regulatory_obligations "
+            "SET applicability_rule = ?, affected_scope = ? "
+            "WHERE obligation_id = ?",
+            (new_rule, affected_scope, row["obligation_id"]))
+        counts["rederived"] += 1
+    conn.commit()
+    return counts
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="python -m app.obligations",
+        description="Derive regulatory_obligations rows from stored "
+                    "regulatory signals (R8.3). Insert-or-skip by default.")
+    parser.add_argument(
+        "--rederive", action="store_true",
+        help="recompute applicability_rule/affected_scope on EXISTING rows "
+             "from the current APPLICABILITY logic, without inserting new "
+             "rows or touching any payload-derived field (U20)")
+    args = parser.parse_args(argv)
+
     with ingest_lock():
         conn = get_connection()
         try:
-            c = derive_obligations(conn)
+            if args.rederive:
+                c = rederive_applicability(conn)
+            else:
+                c = derive_obligations(conn)
         finally:
             conn.close()
-    print(f"obligations: success new={c['obligations_new']} "
-          f"existing={c['obligations_existing']} "
-          f"signals_seen={c['signals_seen']} "
-          f"skipped_no_clock={c['skipped_no_clock']}")
+
+    if args.rederive:
+        print(f"obligations: success rederived={c['rederived']} "
+              f"unchanged={c['unchanged']} skipped={c['skipped']} "
+              f"rows_seen={c['rows_seen']}")
+    else:
+        print(f"obligations: success new={c['obligations_new']} "
+              f"existing={c['obligations_existing']} "
+              f"signals_seen={c['signals_seen']} "
+              f"skipped_no_clock={c['skipped_no_clock']}")
     return 0
 
 
