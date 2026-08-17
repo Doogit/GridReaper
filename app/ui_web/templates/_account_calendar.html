@@ -1,8 +1,10 @@
 {# Account 360 — Compliance Calendar tab (R8.3, R7.2, R4.1). Regulatory
-   obligations matched to this account by subsector class, soonest effective date
-   first. An EFFECTIVE-DATE calendar: no compliance date is shown or derived,
-   because none is in the fetched record. The coverage line is always rendered so
-   an empty tab reads as "checked N, none apply", never as a blank. #}
+   obligations matched to this account by subsector class, minus any rule that
+   excludes this account by name, soonest effective date first. An
+   EFFECTIVE-DATE calendar: no compliance date is shown or derived, because none
+   is in the fetched record. The coverage line is always rendered so an empty tab
+   reads as "checked N, none apply", never as a blank; the empty-state message
+   comes from the view, which knows WHICH reason emptied the tab. #}
 <p class="gs-muted-text">{{ calendar_caption }}</p>
 <div class="gs-info">{{ calendar.coverage }}</div>
 {% if calendar.rows %}
@@ -20,5 +22,5 @@
 </div>
 {% endfor %}
 {% else %}
-{% with message = "No regulatory obligations apply to this account's subsector class. Obligations are derived from stored regulatory signals that carry a durable compliance clock; when one applies to this class it appears here, soonest effective date first." %}{% include "_empty.html" %}{% endwith %}
+{% with message = calendar.empty_message %}{% include "_empty.html" %}{% endwith %}
 {% endif %}
