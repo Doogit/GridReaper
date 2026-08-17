@@ -7,18 +7,54 @@ no-signals skips, per-signal error containment, deterministic stratified
 sampling, the reap of runs stranded at 'running' by a killed process, and the
 date-aware model price schedule (R10.1).
 """
+import io
 import json
+import os
 import sqlite3
+import tempfile
 import unittest
+from contextlib import contextmanager, redirect_stdout
 
 from app.audit import config as cfg
 from app.audit import schema
 from app.audit.client import JudgeResult
-from app.audit.judge import REAP_NOTE, assemble_record, run_audit, sample_signals
+from app.audit.judge import (REAP_NOTE, assemble_record, cli,
+                             estimate_pending_cost, run_audit, sample_signals)
 from app.db.migrate import apply_migrations
 
 NOW = "2026-08-11T00:00:00+00:00"
 MODEL = "claude-haiku-4-5"
+
+
+@contextmanager
+def throwaway_db():
+    """A migrated temp-file store wired to GRIDSIGNALS_DB, torn down after.
+
+    Mirrors tests/test_precision_cli.py's helper: cli() opens whatever
+    get_connection() resolves, so a CLI-level test needs GRIDSIGNALS_DB
+    pointed at a throwaway file, never data/gridsignals.db.
+    """
+    saved = os.environ.get("GRIDSIGNALS_DB")
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
+        apply_migrations(conn)
+        os.environ["GRIDSIGNALS_DB"] = path
+        try:
+            yield conn
+        finally:
+            conn.close()
+    finally:
+        if saved is None:
+            os.environ.pop("GRIDSIGNALS_DB", None)
+        else:
+            os.environ["GRIDSIGNALS_DB"] = saved
+        for suffix in ("", "-wal", "-shm"):
+            if os.path.exists(path + suffix):
+                os.remove(path + suffix)
 
 
 def _ok_verdicts():
@@ -140,6 +176,19 @@ def _signal(conn, signal_id, raw_event_id, entity_id, scope, trigger_id,
         "VALUES (?, ?, ?, ?, ?, '2026-08-01', ?, ?, ?, 1, 'active')",
         (signal_id, raw_event_id, entity_id, scope, trigger_id, headline,
          headline, quality))
+
+
+def _bulk_signals(conn, n, prefix="bulk"):
+    """Add N more account-scope, t_lead/src_a unaudited signals on top of
+    fixture_conn's 3, so a test can prove the U26 default is uncapped rather
+    than stopping at the old min(20, all) ceiling."""
+    for i in range(n):
+        rid = f"src_a:{prefix}{i}"
+        sid = f"t_lead:{rid}:EA1"
+        _raw_event(conn, rid, "src_a", {"title": f"Acme update {i}", "body": "x"})
+        _signal(conn, sid, rid, "EA1", "account", "t_lead",
+                f"Acme update {i}", "PC")
+    conn.commit()
 
 
 class TestAssembleRecord(unittest.TestCase):
@@ -309,6 +358,24 @@ class TestRunAudit(unittest.TestCase):
         self.assertEqual(summary["signals_sampled"], 1)
         self.assertEqual(summary["verdicts_written"], len(schema.CHECKS))
 
+    def test_no_limit_samples_beyond_the_old_twenty_signal_cap(self):
+        # U26: the operator dropped R9.7's literal min(20, all) cap. With no
+        # --limit, a backlog over 20 must ALL be sampled — bounded only by the
+        # budget, never a fixed count. FakeClient's default never reports
+        # over_budget, so every signal reaches 'ok'.
+        _bulk_signals(self.conn, 25)   # 3 fixture + 25 = 28 unaudited total
+        summary = run_audit(self.conn, FakeClient(), now=NOW)
+        self.assertEqual(summary["signals_sampled"], 28)
+        self.assertGreater(summary["signals_sampled"], 20)
+        self.assertEqual(summary["verdicts_written"], 28 * len(schema.CHECKS))
+
+    def test_explicit_limit_still_caps_a_large_backlog(self):
+        # An explicit --limit N remains a real cap even when the backlog is
+        # far bigger than N — only the IMPLICIT default became uncapped.
+        _bulk_signals(self.conn, 25)
+        summary = run_audit(self.conn, FakeClient(), now=NOW, limit=5)
+        self.assertEqual(summary["signals_sampled"], 5)
+
 
 class TestSampling(unittest.TestCase):
     def setUp(self):
@@ -343,6 +410,14 @@ class TestSampling(unittest.TestCase):
                 "SELECT trigger_id FROM signals WHERE signal_id = ?",
                 (sid,)).fetchone()["trigger_id"] for sid in ids}
         self.assertEqual(triggers, {"t_lead", "t_reg"})
+
+    def test_limit_none_selects_every_eligible_signal(self):
+        # U26: sample_signals' own default is now "no cap" — the caller no
+        # longer has to pass a large number to get everything.
+        _bulk_signals(self.conn, 25)
+        ids = sample_signals(self.conn, schema.PROMPT_VERSION, None, rng_seed=0)
+        self.assertEqual(len(ids), 28)
+        self.assertEqual(len(set(ids)), 28)   # no duplicates
 
 
 class TestReapStrandedRuns(unittest.TestCase):
@@ -455,6 +530,114 @@ class TestPriceSchedule(unittest.TestCase):
         # scheduled rate, never zero.
         in_rate, out_rate = cfg.price_per_mtok("claude-sonnet-5")
         self.assertIn((in_rate, out_rate), {(2.00, 10.00), (3.00, 15.00)})
+
+
+class TestEstimatePendingCost(unittest.TestCase):
+    """U26: a pre-run cost projection for the CURRENT pending batch. Read-only
+    by construction — it never builds an AuditClient and never calls .judge()."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_estimate_covers_every_pending_signal_and_is_read_only(self):
+        est = estimate_pending_cost(self.conn)
+        self.assertEqual(est["signals"], 3)
+        self.assertGreater(est["input_tokens"], 0)
+        self.assertEqual(est["output_tokens"], 3 * cfg.MAX_TOKENS)
+        self.assertGreater(est["cost_usd"], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM audit").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM audit_runs").fetchone()[0], 0)
+
+    def test_estimate_is_uncapped_over_a_large_backlog(self):
+        # Mirrors run_audit with no --limit: the estimate is for the WHOLE
+        # pending batch, not bounded by any CLI --limit the operator might
+        # also pass — the estimate answers "what would a full run cost".
+        _bulk_signals(self.conn, 25)
+        est = estimate_pending_cost(self.conn)
+        self.assertEqual(est["signals"], 28)
+
+    def test_estimate_excludes_already_audited_signals(self):
+        self.conn.execute(
+            "INSERT INTO audit (signal_id, check_type, result, prompt_version, "
+            " parser_version, ts) VALUES ('t_lead:src_a:1:EA1', 'entity_match', "
+            " 'pass', ?, ?, ?)",
+            (schema.PROMPT_VERSION, schema.PARSER_VERSION, NOW))
+        self.conn.commit()
+        est = estimate_pending_cost(self.conn)
+        self.assertEqual(est["signals"], 2)
+
+
+class TestCli(unittest.TestCase):
+    """CLI-level coverage for --estimate (U26): a throwaway file-backed store
+    via GRIDSIGNALS_DB, matching tests/test_precision_cli.py's pattern, since
+    cli() opens whatever get_connection() resolves rather than taking a conn."""
+
+    def test_estimate_prints_a_projection_and_touches_nothing(self):
+        with throwaway_db() as conn:
+            _seed_minimal_cli_fixture(conn)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = cli(["--estimate"])
+            self.assertEqual(code, 0)
+            output = buf.getvalue()
+            self.assertIn("audit --estimate:", output)
+            self.assertIn("estimated", output)
+            self.assertIn("signals", output)
+            self.assertIn("actual may vary", output)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM audit").fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM audit_runs").fetchone()[0], 0)
+
+    def test_estimate_never_takes_the_ingestion_lock(self):
+        # Read-only: --estimate must not contend with a concurrent ingest run
+        # for app/ingest/runner.py's single-writer lock.
+        with throwaway_db():
+            lock_path = os.path.join(tempfile.gettempdir(), "gs-estimate-test.lock")
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+            saved = os.environ.get("GRIDSIGNALS_LOCK")
+            os.environ["GRIDSIGNALS_LOCK"] = lock_path
+            try:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli(["--estimate"])
+                self.assertEqual(code, 0)
+                self.assertFalse(
+                    os.path.exists(lock_path),
+                    "--estimate must never create/take the ingestion lock",
+                )
+            finally:
+                if saved is None:
+                    os.environ.pop("GRIDSIGNALS_LOCK", None)
+                else:
+                    os.environ["GRIDSIGNALS_LOCK"] = saved
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+
+
+def _seed_minimal_cli_fixture(conn):
+    """The smallest store estimate_pending_cost can report on non-trivially:
+    one source, one trigger, one entity, one raw_event, one signal."""
+    conn.execute(
+        "INSERT INTO source_policies (source_id, name, evidence_rank) "
+        "VALUES ('src_a', 'Source A', 1)")
+    conn.execute(
+        "INSERT INTO triggers (trigger_id, name, base_strength, "
+        " decay_half_life_days) VALUES ('t_lead', 'Leadership change', 4, 90)")
+    conn.execute(
+        "INSERT INTO watchlist_entities (entity_id, name) "
+        "VALUES ('EA1', 'Acme Utilities')")
+    _raw_event(conn, "src_a:1", "src_a",
+               {"title": "Acme names new CISO", "body": "appointment"})
+    _signal(conn, "t_lead:src_a:1:EA1", "src_a:1", "EA1", "account", "t_lead",
+            "Acme Utilities names new CISO", "PC")
+    conn.commit()
 
 
 if __name__ == "__main__":

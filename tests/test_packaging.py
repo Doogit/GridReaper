@@ -435,6 +435,23 @@ class PackagingContractTest(unittest.TestCase):
             )
         self.assertIn("R4.2", self._crontab(), "deploy/crontab must record why the annual refresh is absent")
 
+    def test_crontab_never_schedules_the_audit_judge(self):
+        # U26: the operator overruled the original plan's "schedule it in
+        # cron" framing (and R9.7's literal weekly-cadence text) — the audit
+        # judge is operator-invoked only, uncapped-by-count, budget-capped at
+        # $1.00, with a --estimate dry run. Pin its absence so a future
+        # session cannot silently "fix" it back into the schedule.
+        for job in self._crontab_jobs():
+            self.assertNotIn(
+                "app.audit.judge", job,
+                "the audit judge must stay on-demand only (operator ruling, U26) — "
+                "never scheduled in deploy/crontab",
+            )
+        self.assertNotIn(
+            "app.audit.judge", self._pipeline(),
+            "the audit judge must not be inlined into the canonical pipeline either",
+        )
+
     def _scheduler_start(self, entry: str) -> int:
         match = re.search(r"&&\s*cron\b", entry)
         self.assertIsNotNone(
@@ -461,17 +478,60 @@ class PackagingContractTest(unittest.TestCase):
     def test_entrypoint_snapshots_environment_for_cron(self):
         # The snapshot lives outside the repo tree and is locked down BEFORE
         # anything is written into it, so no secret is ever readable at a laxer
-        # mode and none reaches a tracked file (R10.8).
+        # mode and none reaches a tracked file (R10.8). U13: an explicit
+        # allowlist replaces a bare `export -p` snapshot of the whole process
+        # environment, so anything set in this process that scheduled jobs do
+        # not actually read (e.g. build/orchestration secrets) never lands in
+        # the file cron sources.
         entry = self._entrypoint()
-        self.assertIn(f"export -p > {ENV_SNAPSHOT}", entry, "cron jobs need an environment snapshot to source")
-        self.assertIn(f"chmod 600 {ENV_SNAPSHOT}", entry, "the environment snapshot may hold an API key")
+        self.assertNotRegex(
+            entry, r"export -p > /etc/gridsignals\.env",
+            "the whole-environment snapshot must be replaced by an explicit allowlist",
+        )
+        self.assertIn(
+            f"export -p | grep -E", entry,
+            "the snapshot must filter export -p through an explicit allowlist",
+        )
+        self.assertIn(f">> {ENV_SNAPSHOT}", entry, "the filtered snapshot must be written to the env file")
+        self.assertIn(f"chmod 600 {ENV_SNAPSHOT}", entry, "the environment snapshot may hold secrets")
         self.assertLess(
-            entry.index(f"chmod 600 {ENV_SNAPSHOT}"), entry.index(f"export -p > {ENV_SNAPSHOT}"),
-            "the snapshot must be chmod'ed before it is written",
+            entry.index(f"chmod 600 {ENV_SNAPSHOT}"), entry.index(f">> {ENV_SNAPSHOT}"),
+            "the snapshot must be chmod'ed before anything is written",
         )
         self.assertLess(
             entry.index(ENV_SNAPSHOT), self._scheduler_start(entry),
             "the snapshot must exist before the daemon that reads it starts",
+        )
+
+    def test_entrypoint_env_allowlist_excludes_audit_secrets(self):
+        # U26: the audit judge is deliberately NOT scheduled, so cron's env
+        # snapshot has no business seeing ANTHROPIC_API_KEY or any
+        # GRIDSIGNALS_AUDIT_* knob — pin their absence so a future session
+        # cannot silently widen the allowlist back toward `export -p`.
+        entry = self._entrypoint()
+        allowlist_line = next(
+            (ln for ln in entry.splitlines() if "GRIDSIGNALS_ENV_ALLOWLIST=" in ln), None)
+        self.assertIsNotNone(allowlist_line, "no explicit env allowlist variable found in the entrypoint")
+        self.assertNotIn("ANTHROPIC_API_KEY", allowlist_line)
+        self.assertNotIn("GRIDSIGNALS_AUDIT", allowlist_line)
+        self.assertIn("GRIDSIGNALS_DB", allowlist_line, "GRIDSIGNALS_DB is required by every scheduled step")
+
+    def test_entrypoint_env_allowlist_includes_the_heartbeat_override(self):
+        # deploy/scheduled_run.sh documents GRIDSIGNALS_HEARTBEAT as
+        # overridable, matching GRIDSIGNALS_LOCK/GRIDSIGNALS_PIPELINE_LOCK —
+        # both of which ARE in the allowlist. Without this, a container-level
+        # override would be honored for the first-load invocation (runs in
+        # entrypoint.sh's own process env) but silently dropped for every cron
+        # tick (which only sees the allowlist-filtered snapshot), so the two
+        # invocations of the same guard would write heartbeats to two
+        # different files.
+        entry = self._entrypoint()
+        allowlist_line = next(
+            (ln for ln in entry.splitlines() if "GRIDSIGNALS_ENV_ALLOWLIST=" in ln), None)
+        self.assertIsNotNone(allowlist_line, "no explicit env allowlist variable found in the entrypoint")
+        self.assertIn(
+            "GRIDSIGNALS_HEARTBEAT", allowlist_line,
+            "GRIDSIGNALS_HEARTBEAT must be in the allowlist alongside the two lock overrides",
         )
 
     def test_entrypoint_scheduler_failure_does_not_block_serving(self):
@@ -493,9 +553,13 @@ class PackagingContractTest(unittest.TestCase):
     def test_scheduler_does_not_displace_first_load_ingest(self):
         # Pin the runtime first-load branch verbatim: adding a scheduler must not
         # regress "serve immediately, ingest in the background on an empty feed".
+        # U15: the pipeline invocation is routed through deploy/scheduled_run.sh
+        # (the same tick-lock guard the cron entry uses) so first-load and a
+        # cron tick contend via the SAME lock, not only the per-step one.
         entry = self._entrypoint()
         self.assertIn(
-            "sh deploy/ingest_pipeline.sh > /tmp/gridsignals-ingest.log 2>&1 &", entry,
+            "sh deploy/scheduled_run.sh sh deploy/ingest_pipeline.sh > /tmp/gridsignals-ingest.log 2>&1 &",
+            entry,
             "the first-load background ingest branch changed",
         )
         self.assertLess(
@@ -505,6 +569,16 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             entry.index("deploy/ingest_pipeline.sh"), self._scheduler_start(entry),
             "the scheduler is added after the first-load branch; it does not replace it",
+        )
+
+    def test_first_load_ingest_runs_under_the_lock_guard(self):
+        # U15: first-load ingest must go through deploy/scheduled_run.sh, the
+        # same tick-lock guard the crontab's writer job uses, so a first-load
+        # run and a cron tick can never become two writers on the same store.
+        entry = self._entrypoint()
+        self.assertRegex(
+            entry, r"sh deploy/scheduled_run\.sh sh deploy/ingest_pipeline\.sh",
+            "first-load ingest bypasses the tick-lock guard",
         )
 
     def test_dockerfile_installs_the_cron_daemon_and_crontab(self):
@@ -531,6 +605,44 @@ class PackagingContractTest(unittest.TestCase):
         for name in installed:
             self.assertNotIn(".", name, f"cron ignores /etc/cron.d entries whose name contains a dot: {name}")
 
+    def test_dockerfile_uses_tini_as_pid_1(self):
+        # U13: without a real init, cron double-forks and orphans to PID 1 and
+        # `exec uvicorn` then BECOMES PID 1 itself — a container stop SIGKILLs
+        # whichever process that is before its `finally: os.remove(lock)`
+        # (app/ingest/runner.py's ingest_lock) can run, leaving a stale lock.
+        # tini as the actual ENTRYPOINT (not just installed) reaps orphans and
+        # forwards signals so a stop can be a clean SIGTERM instead. `-g`
+        # forwards to tini's whole process group (not just its one tracked
+        # child), which is what actually reaches the backgrounded first-load
+        # ingest job — empirically verified against real Docker; without -g
+        # that job gets zero signal, only SIGKILLed by PID-namespace teardown.
+        # It does NOT reach a cron-spawned tick (cron daemonizes into its own
+        # session/process group) — that residual gap is U28, not this test.
+        df = self._dockerfile()
+        self.assertRegex(df, r"apt-get install[^\n]*\btini\b", "tini must be installed — the base image ships no init")
+        self.assertRegex(
+            df, r'ENTRYPOINT\s*\[\s*"tini"\s*,\s*"-g"\s*,\s*"--"\s*\]',
+            "tini must run with -g (process-group signal forwarding), or a stop never reaches the backgrounded first-load job",
+        )
+        self.assertIn('CMD ["sh", "deploy/entrypoint.sh"]', df, "the app still launches via deploy/entrypoint.sh, run under tini")
+
+    def test_dockerfile_installs_logrotate_for_the_cron_log(self):
+        # U13: deploy/crontab appends to /var/log/gridsignals-cron.log forever
+        # in a long-lived container with nothing to cap it. logrotate's package
+        # wires its own daily cron.daily hook, so installing it plus dropping a
+        # config in is the whole fix.
+        df = self._dockerfile()
+        self.assertRegex(df, r"apt-get install[^\n]*\blogrotate\b", "logrotate must be installed")
+        self.assertRegex(
+            df, r"tr -d '\\r' < deploy/logrotate\.conf > /etc/logrotate\.d/",
+            "the logrotate config must be installed CR-stripped, matching the crontab's own install step",
+        )
+        conf = (REPO / "deploy" / "logrotate.conf").read_text(encoding="utf-8")
+        self.assertIn("/var/log/gridsignals-cron.log", conf, "the config must target the cron log the crontab writes")
+        self.assertRegex(conf, r"\bdaily\b|\bweekly\b", "the log must rotate on a bounded cadence")
+        self.assertIn("rotate", conf, "the config must cap how many rotated copies are kept")
+        self.assertIn("compress", conf, "rotated copies should be compressed")
+
     # Both guard locks are redirected into a temp dir for every one of these:
     # a stray data/.ingest.lock in a checkout turns ~25 ui_web tests red with
     # assertions that blame the feature under test.
@@ -543,6 +655,7 @@ class PackagingContractTest(unittest.TestCase):
             os.environ,
             GRIDSIGNALS_LOCK=os.path.join(tmp, ".ingest.lock").replace("\\", "/"),
             GRIDSIGNALS_PIPELINE_LOCK=os.path.join(tmp, ".scheduled.lock").replace("\\", "/"),
+            GRIDSIGNALS_HEARTBEAT=os.path.join(tmp, ".cron_heartbeat").replace("\\", "/"),
         )
         return subprocess.run(
             [shell, "deploy/scheduled_run.sh", *(job or (["echo", SENTINEL]))],
@@ -644,6 +757,93 @@ class PackagingContractTest(unittest.TestCase):
             result = self._run_guard(tmp)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertTrue(self._job_ran(result), "the guard did not run its job")
+
+    # -- U23: tick-lock staleness by PID liveness, not mtime -----------------
+
+    def test_scheduled_run_pipeline_lock_dead_pid_is_broken(self):
+        # A dead PID is dead regardless of the lock file's age — write it
+        # FRESH (no backdating) to prove this is decided by liveness, not
+        # timing. 999999 is not a real process on any host running this test.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            Path(tmp, ".scheduled.lock").write_text("999999\n", encoding="utf-8")
+            result = self._run_guard(tmp)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("dead tick lock", result.stdout, "a dead-PID lock must be identified and broken")
+        self.assertTrue(self._job_ran(result), "a dead-PID lock must not stop the scheduled run")
+
+    def test_scheduled_run_pipeline_lock_live_pid_is_not_broken(self):
+        # A lock recording a genuinely live PID must be respected, not broken.
+        # Nested rather than a PID written from this test process directly:
+        # this host's POSIX layer (Git Bash / MSYS) can only `kill -0` a
+        # process within its own spawned process tree, not an arbitrary
+        # unrelated PID (even a real, running one) — so the live PID under
+        # test is the OUTER guard's own $$, which take_lock() records
+        # automatically at acquisition and which is unquestionably alive for
+        # the whole nested call. If pipeline_lock_dead() wrongly reported a
+        # live lock as dead, this would break it and run the job anyway.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            result = self._run_guard(
+                tmp, "sh", "deploy/scheduled_run.sh", "echo", SENTINEL,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("already in progress", result.stdout, "a live-PID lock must be respected, not broken")
+        self.assertFalse(self._job_ran(result), "a live-PID lock must stop the scheduled run")
+
+    def test_scheduled_run_pipeline_lock_records_its_own_pid(self):
+        # take_lock must write $$ into the lock, not an empty file, or the two
+        # tests above have nothing to check liveness against.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            lock = os.path.join(tmp, ".scheduled.lock")
+            result = self._run_guard(tmp, "sh", "-c", f'cat "{lock}"')
+        self.assertEqual(0, result.returncode, result.stderr)
+        digit_lines = [ln for ln in result.stdout.splitlines() if ln.strip().isdigit()]
+        self.assertTrue(digit_lines, f"the tick lock must record a numeric PID at acquisition; stdout={result.stdout!r}")
+        self.assertGreater(int(digit_lines[0]), 0)
+
+    # -- U13: heartbeat + timeout ---------------------------------------------
+
+    def test_scheduled_run_writes_a_heartbeat_on_every_attempt(self):
+        # Several source_policies carry a ttl shorter than the daily cadence,
+        # so the feed reads "stale" for most of every day even when cron is
+        # perfectly healthy — "silently dead" and "no tick due yet" need a
+        # separate signal. The heartbeat must land on every invocation,
+        # success OR guard-skip, not only a completed run.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            heartbeat = Path(tmp, ".cron_heartbeat")
+            self._run_guard(tmp)
+            self.assertTrue(heartbeat.exists(), "a normal run must write a heartbeat")
+            self.assertRegex(
+                heartbeat.read_text(encoding="utf-8").strip(),
+                r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+                "heartbeat must be UTC ISO-8601 (R10.2)",
+            )
+
+            # A guard-skip (live ingestion lock) must ALSO touch the heartbeat.
+            Path(tmp, ".ingest.lock").write_text("{}", encoding="utf-8")
+            result = self._run_guard(tmp)
+            self.assertIn("skipped", result.stdout)
+            self.assertRegex(
+                heartbeat.read_text(encoding="utf-8").strip(),
+                r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+                "a guard-skip must still update the heartbeat",
+            )
+
+    def test_scheduled_run_bounds_the_job_with_a_timeout(self):
+        # An ingest exceeding ~2h gets classified stale by BOTH this guard's
+        # STALE_MINUTES window and app/ingest/runner.py's LOCK_STALE_S,
+        # opening a second-writer race. `timeout` kills a hung tick
+        # comfortably before that window opens.
+        text = SCHEDULED_RUN.read_text(encoding="utf-8")
+        match = re.search(r"(?m)^TIMEOUT_MINUTES=(\d+)", text)
+        self.assertIsNotNone(match, "deploy/scheduled_run.sh no longer defines TIMEOUT_MINUTES")
+        self.assertLess(
+            int(match.group(1)), 120,
+            "the timeout must be comfortably under the 2h lock staleness window",
+        )
+        self.assertRegex(
+            text, r'timeout\s+"\$\{TIMEOUT_MINUTES\}m"\s+"\$@"',
+            "the job invocation must actually be wrapped in `timeout`, not just define the constant",
+        )
 
     def test_build_is_fetch_free(self):
         # The whole point of runtime first-load: no ingest at build. A `RUN`

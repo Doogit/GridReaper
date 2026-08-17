@@ -4,6 +4,8 @@ data/*.db-shm
 data/digests/
 data/backups/
 data/.ingest.lock
+data/.scheduled.lock
+data/.cron_heartbeat
 __pycache__/
 *.pyc
 .env
