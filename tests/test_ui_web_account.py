@@ -315,8 +315,55 @@ class TestComplianceCalendarTab(AccountTestBase):
         conn.commit()
         conn.close()
         dom = self.page(entity_id="E_ACME")
-        self.assertIn("No regulatory obligations apply to this account", dom)
+        # the class wording, which the exclusion wording must not cannibalize
+        self.assertIn("No regulatory obligations apply to this account&#39;s "
+                      "subsector class.", dom)
         self.assertIn("Checked 0 stored obligations", dom)
+        self.assertNotIn("exclude this account by name", dom)
+
+    def _exclude_from_both_iou_obligations(self, entity_id):
+        """Narrow both iou_electric rules so they name one account. E_SUB then
+        shares E_ACME's subsector label and matches nothing."""
+        conn = sqlite3.connect(self.path)
+        conn.execute(
+            "UPDATE regulatory_obligations SET applicability_rule = "
+            "applicability_rule || '|exclude_entities:' || ? "
+            "WHERE obligation_id IN ('ob_cip','ob_future')", (entity_id,))
+        conn.commit()
+        conn.close()
+
+    def test_individually_excluded_account_says_so_in_the_coverage_line(self):
+        """Two accounts in one subsector must not make contradictory claims
+        about that subsector with nothing explaining the difference (R4.1)."""
+        self._exclude_from_both_iou_obligations("E_SUB")
+        dom = self.page(entity_id="E_SUB")
+        self.assertIn("Checked 3 stored obligations; 0 apply to subsector "
+                      "&#39;iou_electric&#39;.", dom)
+        self.assertIn("2 apply to that subsector but exclude this account by "
+                      "name (not a plausible owner or operator of the "
+                      "regulated assets) and are not shown.", dom)
+        # the same-subsector account they DO bind still reads unchanged
+        self.assertIn("Checked 3 stored obligations; 2 apply to subsector "
+                      "&#39;iou_electric&#39;.", self.page(entity_id="E_ACME"))
+
+    def test_excluded_account_empty_state_does_not_deny_the_class(self):
+        self._exclude_from_both_iou_obligations("E_SUB")
+        dom = self.page(entity_id="E_SUB")
+        self.assertNotIn("No regulatory obligations apply to this account&#39;s "
+                         "subsector class.", dom)
+        self.assertIn("Ones that apply to its subsector class exclude this "
+                      "account by name", dom)
+        # the exclusion is about BES role, never about registration (R4.1)
+        self.assertIn("not a plausible owner or operator of the regulated "
+                      "assets", dom)
+        self.assertNotIn("not registered", dom)
+
+    def test_caption_no_longer_claims_subsector_only_matching(self):
+        dom = self.page(entity_id="E_ACME")
+        self.assertIn("may also exclude named accounts within that class", dom)
+        self.assertNotIn("regulatory obligations that apply to this "
+                         "account&#39;s subsector class. This is an "
+                         "effective-date calendar", dom)
 
 
 class TestEntityGraphTab(AccountTestBase):

@@ -357,6 +357,7 @@ class CipApplicabilitySetTest(unittest.TestCase):
         self.assertEqual([o["obligation_id"] for o in cal["obligations"]],
                          ["obligation:cip003"])
         self.assertEqual(cal["unscoped"], 0)
+        self.assertEqual(cal["excluded_by_entity"], 0)
 
     def test_equipment_maker_in_the_same_subsector_does_not(self):
         add_signal(self.conn, "cip003", CIP_003_DOC)
@@ -364,9 +365,11 @@ class CipApplicabilitySetTest(unittest.TestCase):
         # E0159 Sunrun — same 'renewables' label, an installer not an operator.
         cal = self._calendar("E0159", "A solar installer", "renewables")
         # An honest empty calendar, not a crash and not an unscoped disclosure:
-        # the rule WAS evaluated, and it does not bind this account.
+        # the rule WAS evaluated, and it does not bind this account. The
+        # exclusion is counted so the tab can say why it differs from E0154's.
         self.assertEqual(cal, {"subsector": "renewables", "obligations": [],
-                               "unscoped": 0, "total": 1})
+                               "unscoped": 0, "excluded_by_entity": 1,
+                               "total": 1})
 
     def test_storage_integrator_no_longer_matches(self):
         add_signal(self.conn, "cip003", CIP_003_DOC)
@@ -375,6 +378,9 @@ class CipApplicabilitySetTest(unittest.TestCase):
         cal = self._calendar("E0157", "A storage integrator", "storage")
         self.assertEqual(cal["obligations"], [])
         self.assertEqual(cal["unscoped"], 0)
+        # a class the rule never admitted, so nothing to disclose as an
+        # individual exclusion — this empty tab really is "none for this class"
+        self.assertEqual(cal["excluded_by_entity"], 0)
 
     def test_an_electric_utility_is_unaffected_by_the_narrowing(self):
         add_signal(self.conn, "cip003", CIP_003_DOC)

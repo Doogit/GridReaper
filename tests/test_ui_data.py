@@ -718,7 +718,8 @@ class TestAccountObligations(unittest.TestCase):
     def test_unknown_entity_returns_empty_shape(self):
         cal = data.account_obligations(self.conn, "nope", now=NOW)
         self.assertEqual(cal, {"subsector": "", "obligations": [],
-                               "unscoped": 0, "total": 0})
+                               "unscoped": 0, "excluded_by_entity": 0,
+                               "total": 0})
 
     def test_applicability_scope_parsing(self):
         self.assertEqual(data.applicability_scope("subsector_in:a;b"),
@@ -766,6 +767,36 @@ class TestAccountObligations(unittest.TestCase):
                  if o["obligation_id"] == "ob_narrow"], expected)
             # Excluded, not undecidable: the rule evaluated cleanly.
             self.assertEqual(cal["unscoped"], 1)
+
+    def test_entity_exclusion_is_counted_separately_from_a_class_miss(self):
+        """Two accounts in one subsector get different rows; without a count of
+        the individual exclusions the reader cannot tell "this class has no
+        obligation" from "this account was dropped from one" (R4.1)."""
+        self.conn.execute(
+            "INSERT INTO regulatory_obligations (obligation_id, source_url, "
+            " regulator, rule_name, affected_scope, applicability_rule, "
+            " effective_date, compliance_date, mapped_products, verified_at, "
+            " signal_id, derived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
+            ("ob_narrow", "http://fr/narrow", "Some Agency", "Narrowed rule",
+             "owners and operators (registration not verified per account)",
+             "subsector_in:iou_electric|exclude_entities:E_SUB",
+             days_ago_date(3), "S_SEC", iso(NOW)))
+        self.conn.commit()
+        # dropped by name from a rule its own subsector admits
+        excluded = data.account_obligations(self.conn, "E_SUB", now=NOW)
+        self.assertEqual(excluded["excluded_by_entity"], 1)
+        # same subsector, admitted: nothing to disclose
+        admitted = data.account_obligations(self.conn, "E_ACME", now=NOW)
+        self.assertEqual(admitted["excluded_by_entity"], 0)
+        self.assertIn("ob_narrow",
+                      [o["obligation_id"] for o in admitted["obligations"]])
+        # another class entirely — a class miss is not an individual exclusion
+        other = data.account_obligations(self.conn, "E_DARK", now=NOW)
+        self.assertEqual(other["excluded_by_entity"], 0)
+        # the pre-existing disclosures keep their meanings
+        for cal in (excluded, admitted, other):
+            self.assertEqual(cal["unscoped"], 1)
+            self.assertEqual(cal["total"], 6)
 
     def test_obligation_with_a_malformed_exclusion_is_shown_to_nobody(self):
         self.conn.execute(

@@ -930,12 +930,31 @@ def account_play_rows(plays):
 COMPLIANCE_DATE_UNKNOWN = "not in the fetched record"
 
 CALENDAR_CAPTION = (
-    "Effective dates of regulatory obligations that apply to this account's "
-    "subsector class. This is an effective-date calendar, not a deadline "
-    "calendar: compliance dates are stated in the order body, which is not in "
-    "the fetched record, so none is shown or derived. Subsector match is a "
+    "Effective dates of regulatory obligations that apply to this account. A "
+    "rule is matched on the account's subsector class and may also exclude "
+    "named accounts within that class. This is an effective-date calendar, not "
+    "a deadline calendar: compliance dates are stated in the order body, which "
+    "is not in the fetched record, so none is shown or derived. Matching is a "
     "regulated-class filter — it does not assert that this account is a "
     "registered entity."
+)
+
+# The empty tab has two different reasons and must not conflate them: nothing in
+# the store binds this account's class, or something binds the class and names
+# this account in its exclusion clause. The second wording states what the
+# exclusion means — not a plausible owner or operator of the regulated assets —
+# and never that the account is unregistered, which the store does not know.
+CALENDAR_EMPTY = (
+    "No regulatory obligations apply to this account's subsector class. "
+    "Obligations are derived from stored regulatory signals that carry a "
+    "durable compliance clock; when one applies to this class it appears here, "
+    "soonest effective date first."
+)
+CALENDAR_EMPTY_EXCLUDED = (
+    "No regulatory obligations apply to this account. Ones that apply to its "
+    "subsector class exclude this account by name — it is not a plausible "
+    "owner or operator of the regulated assets. The coverage line above counts "
+    "them."
 )
 
 
@@ -943,10 +962,12 @@ def account_calendar_view(calendar):
     """Assemble the Account 360 Compliance Calendar tab (R8.3, R7.2, R4.1).
 
     Takes data.account_obligations. Returns the account's matched subsector,
-    the shaped obligation rows, and a coverage line that discloses how many of
-    the store's obligations were checked and how many could not be evaluated —
-    an empty tab must read as "checked 3, none apply to this class", never as
-    an unexplained blank.
+    the shaped obligation rows, a coverage line that discloses how many of the
+    store's obligations were checked, how many could not be evaluated and how
+    many bind this account's class but exclude this account by name — an empty
+    tab must read as "checked 3, none apply to this class", never as an
+    unexplained blank — and the empty-state message that matches which of those
+    two reasons emptied it, so the template stays presentation-only.
     """
     rows = []
     for o in calendar["obligations"]:
@@ -974,8 +995,15 @@ def account_calendar_view(calendar):
     if calendar["unscoped"]:
         coverage += (f" {calendar['unscoped']} could not be evaluated "
                      "(unrecognized applicability rule) and are not shown.")
+    excluded = calendar["excluded_by_entity"]
+    if excluded:
+        coverage += (f" {excluded} apply to that subsector but exclude this "
+                     "account by name (not a plausible owner or operator of "
+                     "the regulated assets) and are not shown.")
     return {"subsector": calendar["subsector"] or "unknown",
-            "rows": rows, "coverage": coverage}
+            "rows": rows, "coverage": coverage,
+            "empty_message": CALENDAR_EMPTY_EXCLUDED if excluded
+                             else CALENDAR_EMPTY}
 
 
 _RELATIONSHIP_DIRECTION_LABELS = {"parent": "Parent of this account",

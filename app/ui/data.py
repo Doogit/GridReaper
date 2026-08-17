@@ -957,7 +957,7 @@ def applicability_scope(applicability_rule):
 def account_obligations(conn, entity_id, now=None):
     """Regulatory obligations applying to one account's subsector (R8.3, R7.2).
 
-    Returns ``{subsector, obligations, unscoped, total}``:
+    Returns ``{subsector, obligations, unscoped, excluded_by_entity, total}``:
 
         subsector    the account's own subsector — the value the predicate was
                      matched on, surfaced so the reader can see WHY these rows
@@ -968,6 +968,13 @@ def account_obligations(conn, entity_id, now=None):
                      ``in_effect`` computed against ``now``
         unscoped     obligations excluded because their applicability_rule could
                      not be evaluated. Disclosed, never silently dropped
+        excluded_by_entity
+                     obligations that matched this account's subsector but named
+                     this account in their exclusion clause. Without it two
+                     accounts sharing a subsector label render contradictory
+                     counts with nothing disclosing why, and an empty tab claims
+                     the class has no obligation when one applies to the class
+                     and this account alone was dropped (R4.1)
         total        obligations in the store, so "3 of 3 checked" is verifiable
 
     ``compliance_date`` is passed through untouched and is NULL on every derived
@@ -979,7 +986,8 @@ def account_obligations(conn, entity_id, now=None):
         "SELECT subsector FROM watchlist_entities WHERE entity_id = ?",
         (entity_id,)).fetchone()
     if entity is None:
-        return {"subsector": "", "obligations": [], "unscoped": 0, "total": 0}
+        return {"subsector": "", "obligations": [], "unscoped": 0,
+                "excluded_by_entity": 0, "total": 0}
     subsector = (entity["subsector"] or "").strip()
     today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
 
@@ -990,14 +998,17 @@ def account_obligations(conn, entity_id, now=None):
         "FROM regulatory_obligations "
         "ORDER BY effective_date, obligation_id").fetchall()
 
-    obligations, unscoped = [], 0
+    obligations, unscoped, excluded_by_entity = [], 0, 0
     for row in rows:
         scope = applicability_scope(row["applicability_rule"])
         if scope is None:
             unscoped += 1
             continue
         admitted, excluded = scope
-        if subsector not in admitted or entity_id in excluded:
+        if subsector not in admitted:
+            continue
+        if entity_id in excluded:
+            excluded_by_entity += 1
             continue
         effective = _parse_date(row["effective_date"])
         item = dict(row)
@@ -1006,7 +1017,8 @@ def account_obligations(conn, entity_id, now=None):
             conn, row["mapped_products"])
         obligations.append(item)
     return {"subsector": subsector, "obligations": obligations,
-            "unscoped": unscoped, "total": len(rows)}
+            "unscoped": unscoped, "excluded_by_entity": excluded_by_entity,
+            "total": len(rows)}
 
 
 def _obligation_product_names(conn, mapped_products):
