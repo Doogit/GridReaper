@@ -413,6 +413,23 @@ class G1WaiverTests(unittest.TestCase):
         self.assertIn(str(p.G1_MIN_RATED), lift)
         self.assertIn("rated", lift)
 
+    def test_lift_condition_text_reflects_a_patched_min_rated(self):
+        # PR #84 review Fix 1: the lift-condition TEXT must quote the same
+        # resolved min_rated the per-trigger `reasons` use, not the frozen
+        # import-time G1_WAIVER_LIFT_CONDITION string — else the same call
+        # could report "n<9999" in reasons but "reaches 20" in the waiver.
+        with mock.patch.object(p, "G1_MIN_RATED", 9999):
+            out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                              now=self.NOW, waiver_active=True)
+        lift = out["waiver"]["lift_condition"]
+        self.assertIn("reaches 9999 rated cards", lift)
+        self.assertNotIn("reaches 20 rated cards", lift)
+
+    def test_lift_condition_text_reflects_an_explicit_min_rated_argument(self):
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True, min_rated=42)
+        self.assertIn("reaches 42 rated cards", out["waiver"]["lift_condition"])
+
     def test_waiver_is_recorded_not_enforced(self):
         # The lift condition is RECORDED, not ENFORCED (Open Question 7): a
         # trigger that has since reached the rated-card floor does NOT make
@@ -497,7 +514,7 @@ class G1WaiverTests(unittest.TestCase):
         g2 = p.g2_status(rows)
         self.assertEqual(set(g2["good"]), {
             "precision", "n", "reason_codes", "below_threshold",
-            "demote_recommended", "note"})
+            "demote_recommended", "note", "threshold"})
         gated = p.g2_gated(g2, p.judge_human_disagreement_by_source([], rows))
         self.assertEqual(gated["good"]["gate"], "na")
         self.assertNotIn("waiver", gated["good"])
@@ -592,6 +609,25 @@ class G2GatedTests(unittest.TestCase):
         # Base result untouched (overlay is non-mutating).
         self.assertTrue(g2["bad"]["demote_recommended"])
 
+    def test_withheld_note_quotes_the_threshold_actually_used(self):
+        # PR #84 review Fix 1: the withheld note reconstructs "base precision
+        # was X%<Y%" — Y must be the threshold g2_status() actually used to
+        # produce demote_recommended on THIS cell, not the bare G2_THRESHOLD
+        # global, else an explicit threshold= override silently vanishes from
+        # the operator-facing note.
+        rows = [fb(f"bad:u{i}", "useful", source_id="bad") for i in range(4)]
+        rows += [fb(f"bad:n{i}", "not_useful", source_id="bad",
+                    reason_code="weak_evidence") for i in range(26)]
+        g2 = p.g2_status(rows, threshold=0.99)
+        self.assertEqual(g2["bad"]["threshold"], 0.99)
+        self.assertTrue(g2["bad"]["demote_recommended"])
+        dis = {"bad": {"comparable": p.G2_MIN_N, "agree": 14, "disagree": 6,
+                       "disagreement_rate": 0.30}}
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "withheld")
+        self.assertIn("99%", gated["bad"]["note"])
+        self.assertNotIn("40%", gated["bad"]["note"])
+
     def test_high_disagreement_without_demote_recommendation_stays_ok(self):
         # The disagreement gate withholds demotion guidance; it must not invent
         # a withheld demotion state for a source whose base G2 is healthy.
@@ -677,6 +713,147 @@ class SpotcheckCoverageTests(unittest.TestCase):
         self.assertEqual(sc["audited"], 1)
         self.assertEqual(sc["reviewed"], 0)
         self.assertFalse(sc["met"])
+
+
+class LateBoundConstantDefaultsTests(unittest.TestCase):
+    """U25: nine more module-constant defaults were bound at import time,
+    the same bug U17 already fixed for ``waiver_active``. Each function must
+    resolve its constant from the live module global at CALL time, so a
+    ``mock.patch.object`` of the constant is honored by a call that omits the
+    corresponding argument."""
+
+    NOW = "2026-03-01T00:00:00Z"  # ~59 days after the fb/au default ts
+
+    def _rated_feedback(self):
+        rows = [fb(f"u{i}", "useful", entity_id="e1", signal_scope="account")
+                for i in range(20)]
+        rows += [fb(f"n{i}", "not_useful", entity_id="e1",
+                    signal_scope="account", reason_code="other")
+                 for i in range(5)]
+        return rows
+
+    def _rated_audit(self):
+        rows = [au(f"a{i}", "entity_match", "pass", entity_id="e1",
+                   signal_scope="account") for i in range(9)]
+        rows.append(au("a9", "entity_match", "fail", entity_id="e1",
+                       signal_scope="account"))
+        return rows
+
+    def test_g1_min_days_patch_is_honored(self):
+        feedback, audit = self._rated_feedback(), self._rated_audit()
+        out = p.g1_status(feedback, audit,
+                          primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=False)
+        self.assertTrue(out["triggers"]["leadership_change"]["meets"])
+        with mock.patch.object(p, "G1_MIN_DAYS", 9999):
+            out = p.g1_status(feedback, audit,
+                              primary_triggers=("leadership_change",),
+                              now=self.NOW, waiver_active=False)
+        cell = out["triggers"]["leadership_change"]
+        self.assertFalse(cell["meets"])
+        self.assertTrue(any("span<9999d" in r for r in cell["reasons"]))
+
+    def test_g1_min_rated_patch_is_honored(self):
+        feedback, audit = self._rated_feedback(), self._rated_audit()
+        with mock.patch.object(p, "G1_MIN_RATED", 9999):
+            out = p.g1_status(feedback, audit,
+                              primary_triggers=("leadership_change",),
+                              now=self.NOW, waiver_active=False)
+        cell = out["triggers"]["leadership_change"]
+        self.assertFalse(cell["meets"])
+        self.assertTrue(any("n<9999" in r for r in cell["reasons"]))
+
+    def test_g2_threshold_patch_is_honored(self):
+        # 75% precision over n=20 — above the default 40% floor.
+        rows = [fb(f"u{i}", "useful", source_id="s") for i in range(15)]
+        rows += [fb(f"n{i}", "not_useful", source_id="s", reason_code="other")
+                 for i in range(5)]
+        out = p.g2_status(rows)
+        self.assertFalse(out["s"]["below_threshold"])
+        with mock.patch.object(p, "G2_THRESHOLD", 0.99):
+            out = p.g2_status(rows)
+        self.assertTrue(out["s"]["below_threshold"])
+        self.assertTrue(out["s"]["demote_recommended"])
+
+    def test_g2_min_n_patch_is_honored(self):
+        # 0% precision over n=20 — enough sample to recommend demotion by
+        # default.
+        rows = [fb(f"n{i}", "not_useful", source_id="s", reason_code="other")
+                for i in range(20)]
+        out = p.g2_status(rows)
+        self.assertTrue(out["s"]["demote_recommended"])
+        with mock.patch.object(p, "G2_MIN_N", 9999):
+            out = p.g2_status(rows)
+        self.assertFalse(out["s"]["demote_recommended"])
+        self.assertIn("sample too small", out["s"]["note"])
+
+    def _many_reviewed(self, n):
+        audit = [au(f"s{i}", "entity_match", "pass",
+                    ts="2026-08-10T00:00:00Z") for i in range(n)]
+        feedback = [fb(f"s{i}", "useful", ts="2026-08-11T00:00:00Z")
+                    for i in range(n)]
+        return audit, feedback
+
+    def test_spotcheck_abs_target_patch_is_honored(self):
+        # audited=100 -> frac_target=20, so the default abs_target=10 is the
+        # binding cap; raising it changes the target.
+        audit, feedback = self._many_reviewed(100)
+        sc = p.spotcheck_coverage(audit, feedback, now="2026-08-15T00:00:00Z")
+        self.assertEqual(sc["target"], 10)
+        with mock.patch.object(p, "SPOTCHECK_ABS_TARGET", 15):
+            sc = p.spotcheck_coverage(
+                audit, feedback, now="2026-08-15T00:00:00Z")
+        self.assertEqual(sc["target"], 15)
+
+    def test_spotcheck_fraction_patch_is_honored(self):
+        # audited=30 -> frac_target=6 is the binding cap under abs_target=10;
+        # raising the fraction pushes frac_target past abs_target.
+        audit, feedback = self._many_reviewed(30)
+        sc = p.spotcheck_coverage(audit, feedback, now="2026-08-15T00:00:00Z")
+        self.assertEqual(sc["target"], 6)
+        with mock.patch.object(p, "SPOTCHECK_FRACTION", 0.5):
+            sc = p.spotcheck_coverage(
+                audit, feedback, now="2026-08-15T00:00:00Z")
+        self.assertEqual(sc["target"], 10)
+
+    def test_spotcheck_min_floor_patch_is_honored(self):
+        # audited=1 -> the hard floor of 5 dominates; raising it changes the
+        # target even though abs_target/fraction are unaffected.
+        audit, feedback = self._many_reviewed(1)
+        sc = p.spotcheck_coverage(audit, feedback, now="2026-08-15T00:00:00Z")
+        self.assertEqual(sc["target"], 5)
+        with mock.patch.object(p, "SPOTCHECK_MIN_FLOOR", 50):
+            sc = p.spotcheck_coverage(
+                audit, feedback, now="2026-08-15T00:00:00Z")
+        self.assertEqual(sc["target"], 50)
+
+    def _withheld_scenario(self, comparable, disagreement_rate):
+        g2 = {"bad": {"precision": 0.1, "n": 30, "reason_codes": {},
+                      "below_threshold": True, "demote_recommended": True,
+                      "note": "n/a"}}
+        dis = {"bad": {"comparable": comparable,
+                       "agree": comparable - round(comparable
+                                                    * disagreement_rate),
+                       "disagree": round(comparable * disagreement_rate),
+                       "disagreement_rate": disagreement_rate}}
+        return g2, dis
+
+    def test_disagreement_gate_threshold_patch_is_honored(self):
+        g2, dis = self._withheld_scenario(p.G2_MIN_N, 0.25)
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "withheld")
+        with mock.patch.object(p, "DISAGREEMENT_GATE_THRESHOLD", 0.99):
+            gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "ok")
+        self.assertTrue(gated["bad"]["demote_recommended"])
+
+    def test_disagreement_min_comparable_patch_is_honored(self):
+        g2, dis = self._withheld_scenario(10, 0.30)
+        gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "below_floor")
+        with mock.patch.object(p, "DISAGREEMENT_MIN_COMPARABLE", 5):
+            gated = p.g2_gated(g2, dis)
+        self.assertEqual(gated["bad"]["gate"], "withheld")
 
 
 if __name__ == "__main__":

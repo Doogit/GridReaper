@@ -12,7 +12,8 @@ import unittest
 from pathlib import Path
 
 from app.db.migrate import apply_migrations
-from app.obligations import APPLICABILITY, derive_obligations
+from app.obligations import (APPLICABILITY, applicability_rule,
+                             derive_obligations, rederive_applicability)
 from app.ui import data
 
 SEEDS = Path(__file__).resolve().parent.parent / "seeds"
@@ -478,6 +479,94 @@ class CipApplicabilitySetTest(unittest.TestCase):
                    if e["subsector"] == "storage"]
         self.assertEqual(storage, ["E0157"])
         self.assertNotIn("storage", admitted_subsectors)
+
+
+class RederiveApplicabilityTest(unittest.TestCase):
+    """U20: applicability_rule/affected_scope are CODE-derived, not payload
+    fields, so they get an explicit re-derive path instead of riding the
+    payload-freezing insert-or-skip contract that protects regulator/
+    rule_name/effective_date/mapped_products."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+        self.addCleanup(self.conn.close)
+
+    def test_refreshes_stale_fields_and_freezes_payload_fields(self):
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        before = obligations(self.conn)[0]
+        stale_rule = "subsector_in:stale_subsector"
+        stale_scope = "a stale scope label from an old predicate version"
+        self.conn.execute(
+            "UPDATE regulatory_obligations "
+            "SET applicability_rule = ?, affected_scope = ? "
+            "WHERE obligation_id = ?",
+            (stale_rule, stale_scope, before["obligation_id"]))
+        self.conn.commit()
+
+        counts = rederive_applicability(self.conn)
+        self.assertEqual(counts,
+                         {"rederived": 1, "unchanged": 0, "skipped": 0,
+                          "rows_seen": 1})
+
+        after = obligations(self.conn)[0]
+        _, expected_scope, subsectors, excluded = (
+            APPLICABILITY["nerc_cip_revision"])
+        self.assertEqual(after["applicability_rule"],
+                         applicability_rule(subsectors, excluded))
+        self.assertEqual(after["affected_scope"], expected_scope)
+        self.assertNotEqual(after["applicability_rule"], stale_rule)
+        self.assertNotEqual(after["affected_scope"], stale_scope)
+        # Payload fields and provenance are byte-identical.
+        self.assertEqual(after["rule_name"], before["rule_name"])
+        self.assertEqual(after["effective_date"], before["effective_date"])
+        self.assertEqual(after["regulator"], before["regulator"])
+        self.assertEqual(after["mapped_products"], before["mapped_products"])
+        self.assertEqual(after["derived_at"], before["derived_at"])
+
+    def test_bare_rerun_is_a_noop_when_nothing_changed(self):
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        before = [tuple(r) for r in obligations(self.conn)]
+
+        counts = rederive_applicability(self.conn)
+        self.assertEqual(counts,
+                         {"rederived": 0, "unchanged": 1, "skipped": 0,
+                          "rows_seen": 1})
+        self.assertEqual([tuple(r) for r in obligations(self.conn)], before)
+
+    def test_row_with_no_resolvable_signal_is_left_alone(self):
+        # The 0013 migration made signal_id nullable specifically so ADD
+        # COLUMN was legal on a populated table; a NULL row (or one whose
+        # signal has since been retired/removed) is exactly the case this
+        # narrow field refresh must skip rather than delete or error on.
+        self.conn.execute(
+            "INSERT INTO regulatory_obligations (obligation_id, source_url, "
+            " regulator, rule_name, affected_scope, applicability_rule, "
+            " effective_date, mapped_products, signal_id, derived_at) "
+            "VALUES ('obligation:orphan', 'https://example.test/doc', "
+            " 'Some Regulator', 'Some Rule', 'a hand-written scope label', "
+            " 'subsector_in:iou_electric', '2026-01-01', NULL, NULL, "
+            " '2026-01-01T00:00:00+00:00')")
+        self.conn.commit()
+        before = [tuple(r) for r in obligations(self.conn)]
+
+        counts = rederive_applicability(self.conn)
+        self.assertEqual(counts,
+                         {"rederived": 0, "unchanged": 0, "skipped": 1,
+                          "rows_seen": 1})
+        self.assertEqual([tuple(r) for r in obligations(self.conn)], before)
+
+    def test_normal_insert_or_skip_path_is_unaffected_by_rederive(self):
+        # Adding --rederive must not change what a plain derive_obligations()
+        # run does: still insert-or-skip, still zero rewrites on a re-run.
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        first = derive_obligations(self.conn)
+        self.assertEqual(first["obligations_new"], 1)
+        rederive_applicability(self.conn)
+        second = derive_obligations(self.conn)
+        self.assertEqual(second["obligations_new"], 0)
+        self.assertEqual(second["obligations_existing"], 1)
 
 
 class PipelineWiringTest(unittest.TestCase):

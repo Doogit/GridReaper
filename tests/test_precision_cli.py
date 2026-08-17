@@ -8,11 +8,13 @@ override), FK enforcement on, no network. The report is read through
 """
 import io
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+from unittest import mock
 
 from app.audit import precision
 from app.db.migrate import apply_migrations
@@ -285,6 +287,104 @@ class CronTimeReportTests(unittest.TestCase):
             self.assertEqual(live["spotcheck"]["reviewed"], 12)
         finally:
             conn.close()
+
+
+class DurableReportFileTests(unittest.TestCase):
+    """R9.3's monthly record needs a durable home (U27): the container's
+    ``/var/log`` is not on the mounted volume, so the log line the scheduled
+    job printed there never survived a restart. ``--report`` now also writes
+    the same lines to a dated file beside the configured DB."""
+
+    def _report_dir(self, db_path):
+        return os.path.join(os.path.dirname(db_path), "precision-reports")
+
+    def test_report_writes_a_dated_file_with_the_same_content_as_stdout(self):
+        with throwaway_db() as conn:
+            self._august_store_minimal(conn)
+            db_path = os.environ["GRIDSIGNALS_DB"]
+            conn.close()
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = precision.main(["--report"], now=CRON_NOW)
+            self.assertEqual(code, 0)
+            report_dir = self._report_dir(db_path)
+            expected_file = os.path.join(report_dir, "2026-08.txt")
+            self.assertTrue(os.path.exists(expected_file))
+            with open(expected_file, encoding="utf-8") as fh:
+                written = fh.read()
+            self.assertEqual(written, buf.getvalue())
+            shutil.rmtree(report_dir, ignore_errors=True)
+
+    def test_rerunning_for_the_same_period_overwrites_not_appends(self):
+        with throwaway_db() as conn:
+            self._august_store_minimal(conn)
+            db_path = os.environ["GRIDSIGNALS_DB"]
+            conn.close()
+            report_dir = self._report_dir(db_path)
+            expected_file = os.path.join(report_dir, "2026-08.txt")
+            with redirect_stdout(io.StringIO()):
+                precision.main(["--report"], now=CRON_NOW)
+                precision.main(["--report"], now=CRON_NOW)
+            with open(expected_file, encoding="utf-8") as fh:
+                content = fh.read()
+            self.assertEqual(content.count("precision: success"), 1)
+            shutil.rmtree(report_dir, ignore_errors=True)
+
+    def test_write_path_is_derived_from_gridsignals_db_not_hardcoded(self):
+        with throwaway_db() as conn:
+            conn.close()
+            db_path = os.environ["GRIDSIGNALS_DB"]
+            path = precision.report_path("2026-08")
+            self.assertEqual(
+                os.path.dirname(path), self._report_dir(db_path))
+            # No hardcoded container path — it tracks wherever the test
+            # tempdir put the DB, not a fixed "/app/data".
+            self.assertNotIn("app/data", path.replace("\\", "/"))
+            shutil.rmtree(self._report_dir(db_path), ignore_errors=True)
+
+    def test_successful_write_leaves_no_temp_file_behind(self):
+        # Not a true crash-mid-write test (hard to force reliably here) — this
+        # confirms the atomic temp-file-then-replace pattern
+        # write_report_file() uses cleans up after itself, so a reader beside
+        # the final file never finds a stray partial write (U27).
+        with throwaway_db() as conn:
+            self._august_store_minimal(conn)
+            db_path = os.environ["GRIDSIGNALS_DB"]
+            conn.close()
+            with redirect_stdout(io.StringIO()):
+                precision.main(["--report"], now=CRON_NOW)
+            report_dir = self._report_dir(db_path)
+            leftovers = [f for f in os.listdir(report_dir)
+                        if f.startswith(".tmp-")]
+            self.assertEqual(leftovers, [])
+            shutil.rmtree(report_dir, ignore_errors=True)
+
+    def test_filesystem_failure_degrades_gracefully_not_fatally(self):
+        # --report runs unguarded/lock-free off cron; a filesystem problem
+        # persisting the durability copy must not crash a run whose report
+        # was already computed correctly and printed to stdout (U27).
+        with throwaway_db() as conn:
+            self._august_store_minimal(conn)
+            conn.close()
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch("app.audit.precision.tempfile.mkstemp",
+                            side_effect=OSError("disk full")):
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = precision.main(["--report"], now=CRON_NOW)
+            self.assertEqual(code, 0)
+            self.assertTrue(out.getvalue().startswith("precision: success "))
+            self.assertIn("NOT persisted", err.getvalue())
+
+    @staticmethod
+    def _august_store_minimal(conn):
+        conn.execute(
+            "INSERT INTO source_policies (source_id, name, evidence_rank) "
+            "VALUES ('src_a', 'Source A', 1)")
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, name, base_strength, "
+            " decay_half_life_days) "
+            "VALUES ('leadership_change', 'Leadership change', 3, 90)")
+        conn.commit()
 
 
 class MainTests(unittest.TestCase):
