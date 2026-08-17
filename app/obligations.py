@@ -18,15 +18,19 @@ How an obligation relates to entities
     So an obligation is stored once per rule, class-scoped, and the reader
     joins it to accounts through ``applicability_rule``, a machine-readable
     predicate of the form ``subsector_in:a;b;c`` over
-    watchlist_entities.subsector. The subsector sets live in APPLICABILITY
-    below, keyed by trigger.
+    watchlist_entities.subsector, optionally narrowed by a second clause
+    ``|exclude_entities:E0001;E0002`` naming the individual entity_ids the
+    subsector label over-admits. Both sets live in APPLICABILITY below, keyed
+    by trigger.
 
     That predicate is a FILTER, not a claim. NERC registration status is not
     in the store and is not derivable from it, so the affected_scope label
     says "registration not verified per account" and ``verified_at`` stays
     NULL on every derived row. The predicate's job is only to keep a FERC CIP
     deadline off a refiner's page - it never asserts that a matching account
-    is a registered entity.
+    is a registered entity. The exclusion clause is the same filter at entity
+    granularity: it removes accounts whose subsector label is the only reason
+    they were admitted, and it likewise asserts nothing about the ones left.
 
 Fields, and what stays NULL (R4.1: no field is invented)
     regulator       the matched agency's own ``name`` from the payload
@@ -68,15 +72,44 @@ OBLIGATION_ID_PREFIX = "obligation:"
 
 _CIP_STD_RE = re.compile(r"\bCIP-(\d{3})\b")
 
+# The predicate grammar app/ui/data.py reads back. Spelled out on both sides
+# rather than imported, so the reader does not drag the ingestion lock into the
+# UI import path; tests/test_obligations.py binds the two ends.
+SUBSECTOR_RULE_PREFIX = "subsector_in:"
+EXCLUDE_ENTITIES_RULE_PREFIX = "exclude_entities:"
+RULE_CLAUSE_SEPARATOR = "|"
+
 # trigger_id -> (agency slug that identifies the regulator in the payload,
-#                affected_scope label, applicable watchlist subsectors).
+#                affected_scope label, applicable watchlist subsectors,
+#                entity_ids the subsector label over-admits).
 #
-# The subsector sets are a coarse regulated-class filter, not a registration
-# claim (see the module docstring). NERC CIP binds owners/operators of Bulk
-# Electric System facilities, so the set is every subsector whose label denotes
-# an electric utility / generator / grid operator role; hydrocarbon and
+# The sets are a coarse regulated-class filter, not a registration claim (see
+# the module docstring). NERC CIP binds owners/operators of Bulk Electric
+# System facilities, so the subsector set is every subsector whose label
+# denotes an electric utility / generator / grid operator role; hydrocarbon and
 # oilfield-services subsectors are out of scope for CIP. TSA pipeline security
 # directives bind designated critical pipeline and LNG owner/operators.
+#
+# Two subsector labels do not survive that test on their own:
+#   storage      one member, a battery-systems integrator - it supplies BES
+#                assets, it does not own or operate them.
+#   renewables   one label over two populations. The generators (IPP-style
+#                project owners) plausibly own BES facilities; the panel,
+#                inverter, tracker, fuel-cell and turbine manufacturers listed
+#                below are equipment makers and installers. The seed CSV is
+#                read-only and has no finer subsector, so the manufacturers are
+#                named here as an entity-level exclusion.
+# "Registration not verified" hedges uncertainty about a plausible operator;
+# it does not license listing a category that has no BES role at all.
+_CIP_NON_OPERATOR_RENEWABLES = (
+    "E0155",  # First Solar - panel manufacturer
+    "E0156",  # Enphase Energy - inverter manufacturer
+    "E0158",  # Bloom Energy - fuel-cell manufacturer
+    "E0159",  # Sunrun - residential solar installer
+    "E0160",  # Array Technologies - tracker manufacturer
+    "E0161",  # Plug Power - hydrogen fuel-cell manufacturer
+    "E0164",  # GE Vernova - grid/turbine equipment manufacturer
+)
 APPLICABILITY = {
     "nerc_cip_revision": (
         "federal-energy-regulatory-commission",
@@ -84,16 +117,32 @@ APPLICABILITY = {
         "(registration not verified per account)",
         ("coop_distribution", "coop_gt", "coop_transmission", "federal",
          "federal_pma", "ipp", "iou_electric", "muni_public", "public",
-         "renewables", "rto_iso", "state_authority", "state_owned",
-         "storage"),
+         "renewables", "rto_iso", "state_authority", "state_owned"),
+        _CIP_NON_OPERATOR_RENEWABLES,
     ),
     "tsa_security_directive": (
         "transportation-security-administration",
         "TSA-designated critical pipeline and LNG owners and operators "
         "(designation not verified per account)",
         ("lng", "midstream"),
+        (),
     ),
 }
+
+
+def applicability_rule(subsectors, excluded_entities):
+    """The stored predicate for one applicability entry.
+
+    ``subsector_in:a;b;c``, plus ``|exclude_entities:E1;E2`` when the entry
+    names entities the subsector labels over-admit. The clause is omitted
+    entirely when there are none - an empty exclusion list is not written,
+    because the reader treats one as malformed and fails closed.
+    """
+    rule = SUBSECTOR_RULE_PREFIX + ";".join(subsectors)
+    if excluded_entities:
+        rule += (RULE_CLAUSE_SEPARATOR + EXCLUDE_ENTITIES_RULE_PREFIX
+                 + ";".join(excluded_entities))
+    return rule
 
 
 def _utcnow():
@@ -167,7 +216,8 @@ def derive_obligations(conn):
         # A durable compliance clock is the whole point of the row (R7.2).
         effective_date = payload.get("effective_on") or None
         rule_name = (payload.get("title") or "").strip()
-        slug, affected_scope, subsectors = APPLICABILITY[sig["trigger_id"]]
+        (slug, affected_scope, subsectors,
+         excluded_entities) = APPLICABILITY[sig["trigger_id"]]
         regulator = _regulator(payload, slug)
         if not (effective_date and rule_name and regulator):
             counts["skipped_no_clock"] += 1
@@ -179,7 +229,8 @@ def derive_obligations(conn):
             " signal_id, derived_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)",
             (obligation_id, sig["source_url"], regulator, rule_name,
-             affected_scope, "subsector_in:" + ";".join(subsectors),
+             affected_scope,
+             applicability_rule(subsectors, excluded_entities),
              effective_date,
              _mapped_products(
                  products_by_standard,

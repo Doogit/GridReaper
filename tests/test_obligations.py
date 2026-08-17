@@ -5,6 +5,7 @@ Federal Register payloads modelled on the rows actually stored today. No
 network. Focus is the derivation contract - which signals qualify, which
 fields are sourced vs deliberately NULL, and that a re-run is a no-op.
 """
+import csv
 import json
 import sqlite3
 import unittest
@@ -14,6 +15,8 @@ from app.db.migrate import apply_migrations
 from app.obligations import APPLICABILITY, derive_obligations
 from app.ui import data
 
+SEEDS = Path(__file__).resolve().parent.parent / "seeds"
+
 PIPELINE = (Path(__file__).resolve().parent.parent / "deploy"
             / "ingest_pipeline.sh")
 
@@ -22,6 +25,9 @@ FERC_AGENCY = {"raw_name": "Federal Energy Regulatory Commission",
                "id": 167, "slug": "federal-energy-regulatory-commission"}
 DOE_AGENCY = {"raw_name": "DEPARTMENT OF ENERGY", "name": "Energy Department",
               "id": 136, "slug": "energy-department"}
+TSA_AGENCY = {"raw_name": "TRANSPORTATION SECURITY ADMINISTRATION",
+              "name": "Transportation Security Administration",
+              "id": 480, "slug": "transportation-security-administration"}
 
 # Modelled on federal_register:2026-05711 (names CIP-003 in its own title).
 CIP_003_DOC = {
@@ -238,11 +244,29 @@ class ApplicabilityTest(unittest.TestCase):
         add_signal(self.conn, "cip003", CIP_003_DOC)
         derive_obligations(self.conn)
         rule = obligations(self.conn)[0]["applicability_rule"]
-        prefix, _, subsectors = rule.partition(":")
+        subsector_clause, sep, exclude_clause = rule.partition("|")
+        prefix, _, subsectors = subsector_clause.partition(":")
         self.assertEqual(prefix, "subsector_in")
         self.assertEqual(
             subsectors.split(";"),
             list(APPLICABILITY["nerc_cip_revision"][2]))
+        self.assertEqual(sep, "|")
+        self.assertEqual(
+            exclude_clause,
+            "exclude_entities:"
+            + ";".join(APPLICABILITY["nerc_cip_revision"][3]))
+
+    def test_rule_with_no_exclusions_carries_no_exclusion_clause(self):
+        """An empty exclusion list is never written: the reader treats an
+        empty clause as malformed and would drop the obligation entirely."""
+        self.assertEqual(APPLICABILITY["tsa_security_directive"][3], ())
+        add_signal(self.conn, "tsa", dict(CIP_003_DOC, agencies=[TSA_AGENCY]),
+                   trigger_id="tsa_security_directive")
+        derive_obligations(self.conn)
+        rule = obligations(self.conn)[0]["applicability_rule"]
+        self.assertEqual(rule, "subsector_in:lng;midstream")
+        self.assertEqual(data.applicability_scope(rule),
+                         ({"lng", "midstream"}, set()))
 
     def test_cip_scope_selects_electric_accounts_only(self):
         for entity_id, name, subsector in (
@@ -256,23 +280,31 @@ class ApplicabilityTest(unittest.TestCase):
         add_signal(self.conn, "cip003", CIP_003_DOC)
         derive_obligations(self.conn)
         rule = obligations(self.conn)[0]["applicability_rule"]
-        subsectors = rule.partition(":")[2].split(";")
+        subsectors = sorted(data.applicability_scope(rule)[0])
         matched = [r["entity_id"] for r in self.conn.execute(
             "SELECT entity_id FROM watchlist_entities WHERE subsector IN "
             "({}) ORDER BY entity_id".format(", ".join("?" * len(subsectors))),
             subsectors)]
         self.assertEqual(matched, ["E1", "E2"])
 
+    def test_cip_scope_drops_the_equipment_storage_subsector(self):
+        """``storage`` holds one battery-systems integrator — it supplies BES
+        assets rather than owning or operating them."""
+        self.assertNotIn("storage", APPLICABILITY["nerc_cip_revision"][2])
+
     def test_reader_parses_the_rule_this_producer_writes(self):
-        """The producer composes ``subsector_in:...`` and the Account 360
-        Compliance Calendar parses it back. The format literal is spelled out
-        in both modules, so this is the test that binds them — a drift on
-        either side fails here rather than silently emptying the tab."""
+        """The producer composes ``subsector_in:...|exclude_entities:...`` and
+        the Account 360 Compliance Calendar parses it back. The format literals
+        are spelled out in both modules, so this is the test that binds them —
+        a drift on either side fails here rather than silently emptying the
+        tab (or silently widening the rule)."""
         add_signal(self.conn, "cip003", CIP_003_DOC)
         derive_obligations(self.conn)
         rule = obligations(self.conn)[0]["applicability_rule"]
-        self.assertEqual(data.applicability_subsectors(rule),
-                         set(APPLICABILITY["nerc_cip_revision"][2]))
+        self.assertEqual(
+            data.applicability_scope(rule),
+            (set(APPLICABILITY["nerc_cip_revision"][2]),
+             set(APPLICABILITY["nerc_cip_revision"][3])))
 
     def test_scope_label_does_not_assert_registration(self):
         # NERC registration is not in the store; the label must hedge and
@@ -282,6 +314,107 @@ class ApplicabilityTest(unittest.TestCase):
         row = obligations(self.conn)[0]
         self.assertIn("not verified per account", row["affected_scope"])
         self.assertIsNone(row["verified_at"])
+
+
+class CipApplicabilitySetTest(unittest.TestCase):
+    """The narrowed CIP set, end to end and against the real watchlist.
+
+    The affected_scope label says "Bulk Electric System owners and operators".
+    "Registration not verified" hedges uncertainty about a plausible operator;
+    it does not license admitting equipment makers, who have no BES role to be
+    unverified about.
+    """
+
+    # Named here as well as in app/obligations.py so a silent edit to the
+    # excluded list fails this test instead of quietly widening the rule.
+    EQUIPMENT_MAKERS = ("E0155", "E0156", "E0158", "E0159", "E0160", "E0161",
+                        "E0164")
+    # The renewables entities that stay in: project owners/operators.
+    RENEWABLE_OPERATORS = ("E0152", "E0153", "E0154", "E0162", "E0163")
+    ADMITTED_ENTITY_COUNT = 88
+    WATCHLIST_ENTITY_COUNT = 171
+
+    def setUp(self):
+        self.conn = fixture_conn()
+        self.addCleanup(self.conn.close)
+
+    def _calendar(self, entity_id, name, subsector):
+        self.conn.execute(
+            "INSERT INTO watchlist_entities (entity_id, name, subsector) "
+            "VALUES (?, ?, ?)", (entity_id, name, subsector))
+        self.conn.commit()
+        return data.account_obligations(self.conn, entity_id)
+
+    def test_excluded_entity_list_is_exactly_the_equipment_makers(self):
+        self.assertEqual(APPLICABILITY["nerc_cip_revision"][3],
+                         self.EQUIPMENT_MAKERS)
+
+    def test_renewable_operator_still_sees_the_cip_obligation(self):
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        # E0154 Ormat Technologies — a geothermal project owner/operator.
+        cal = self._calendar("E0154", "A renewables generator", "renewables")
+        self.assertEqual([o["obligation_id"] for o in cal["obligations"]],
+                         ["obligation:cip003"])
+        self.assertEqual(cal["unscoped"], 0)
+
+    def test_equipment_maker_in_the_same_subsector_does_not(self):
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        # E0159 Sunrun — same 'renewables' label, an installer not an operator.
+        cal = self._calendar("E0159", "A solar installer", "renewables")
+        # An honest empty calendar, not a crash and not an unscoped disclosure:
+        # the rule WAS evaluated, and it does not bind this account.
+        self.assertEqual(cal, {"subsector": "renewables", "obligations": [],
+                               "unscoped": 0, "total": 1})
+
+    def test_storage_integrator_no_longer_matches(self):
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        # E0157 Fluence Energy — the sole 'storage' member, an integrator.
+        cal = self._calendar("E0157", "A storage integrator", "storage")
+        self.assertEqual(cal["obligations"], [])
+        self.assertEqual(cal["unscoped"], 0)
+
+    def test_an_electric_utility_is_unaffected_by_the_narrowing(self):
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        cal = self._calendar("E0001", "An electric utility", "iou_electric")
+        self.assertEqual([o["obligation_id"] for o in cal["obligations"]],
+                         ["obligation:cip003"])
+
+    def test_narrowed_rule_admits_88_of_the_171_watchlist_entities(self):
+        """Pins the count against the real seed CSV, so 96 -> 88 is measured
+        rather than asserted. The seed file is read-only; this test reads it."""
+        with (SEEDS / "watchlist_entities.csv").open(
+                newline="", encoding="utf-8") as fh:
+            entities = list(csv.DictReader(fh))
+        self.assertEqual(len(entities), self.WATCHLIST_ENTITY_COUNT)
+
+        add_signal(self.conn, "cip003", CIP_003_DOC)
+        derive_obligations(self.conn)
+        rule = obligations(self.conn)[0]["applicability_rule"]
+        admitted_subsectors, excluded = data.applicability_scope(rule)
+
+        admitted = [e["entity_id"] for e in entities
+                    if e["subsector"] in admitted_subsectors
+                    and e["entity_id"] not in excluded]
+        self.assertEqual(len(admitted), self.ADMITTED_ENTITY_COUNT)
+
+        renewables = [e["entity_id"] for e in entities
+                      if e["subsector"] == "renewables"]
+        self.assertEqual(sorted(renewables),
+                         sorted(self.RENEWABLE_OPERATORS
+                                + self.EQUIPMENT_MAKERS))
+        for entity_id in self.RENEWABLE_OPERATORS:
+            self.assertIn(entity_id, admitted)
+        for entity_id in self.EQUIPMENT_MAKERS:
+            self.assertNotIn(entity_id, admitted)
+        # 'storage' has exactly one member and the rule no longer names it.
+        storage = [e["entity_id"] for e in entities
+                   if e["subsector"] == "storage"]
+        self.assertEqual(storage, ["E0157"])
+        self.assertNotIn("storage", admitted_subsectors)
 
 
 class PipelineWiringTest(unittest.TestCase):

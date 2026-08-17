@@ -902,26 +902,56 @@ def account_license_plays(conn, entity_id, statuses=("active",)):
         [entity_id] + list(statuses)).fetchall()
 
 
-# The predicate format app/obligations.py writes. Spelled out on both sides
-# rather than imported, so the reader does not drag the ingestion lock into the
-# UI import path; tests/test_obligations.py binds the two ends so a drift on
-# either side fails a test instead of silently emptying the calendar tab.
+# The predicate format app/obligations.py writes:
+#     subsector_in:a;b;c
+#     subsector_in:a;b;c|exclude_entities:E0001;E0002
+# Spelled out on both sides rather than imported, so the reader does not drag
+# the ingestion lock into the UI import path; tests/test_obligations.py binds
+# the two ends so a drift on either side fails a test instead of silently
+# emptying the calendar tab.
 SUBSECTOR_RULE_PREFIX = "subsector_in:"
+EXCLUDE_ENTITIES_RULE_PREFIX = "exclude_entities:"
+RULE_CLAUSE_SEPARATOR = "|"
 
 
-def applicability_subsectors(applicability_rule):
-    """The subsector set a ``subsector_in:a;b;c`` predicate admits.
+def applicability_scope(applicability_rule):
+    """What a stored applicability predicate admits: ``(subsectors, excluded)``.
+
+    ``subsectors`` is the set a ``subsector_in:a;b;c`` clause admits;
+    ``excluded`` is the entity_id set an optional
+    ``|exclude_entities:E1;E2`` clause removes from it (empty when the rule
+    carries no such clause).
 
     Returns None when the rule is missing or in a form this reader does not
     understand — the caller then EXCLUDES the obligation rather than showing
     it. Fail-closed is the safe direction: the predicate exists to keep a FERC
     CIP deadline off a refiner's page, so an unevaluable rule must not default
     to "applies to everyone".
+
+    The two clauses fail closed in opposite-looking ways for the same reason.
+    An empty subsector clause is already closed — it admits nobody — so it
+    parses. An empty or unrecognized second clause is NOT: degrading it to "no
+    exclusions" would widen the rule back to everyone the subsector labels
+    over-admit, so it is treated as unevaluable and the obligation is dropped.
     """
     rule = (applicability_rule or "").strip()
     if not rule.startswith(SUBSECTOR_RULE_PREFIX):
         return None
-    return {s for s in rule[len(SUBSECTOR_RULE_PREFIX):].split(";") if s}
+    clauses = rule.split(RULE_CLAUSE_SEPARATOR)
+    if len(clauses) > 2:
+        return None
+    subsectors = {
+        s for s in clauses[0][len(SUBSECTOR_RULE_PREFIX):].split(";") if s}
+    if len(clauses) == 1:
+        return subsectors, set()
+    if not clauses[1].startswith(EXCLUDE_ENTITIES_RULE_PREFIX):
+        return None
+    excluded = {
+        e for e in clauses[1][len(EXCLUDE_ENTITIES_RULE_PREFIX):].split(";")
+        if e}
+    if not excluded:
+        return None
+    return subsectors, excluded
 
 
 def account_obligations(conn, entity_id, now=None):
@@ -931,7 +961,9 @@ def account_obligations(conn, entity_id, now=None):
 
         subsector    the account's own subsector — the value the predicate was
                      matched on, surfaced so the reader can see WHY these rows
-                     are here (and an empty tab can say which class it checked)
+                     are here (and an empty tab can say which class it checked).
+                     A rule may still drop this account by entity_id where its
+                     subsector label admits more than the rule binds
         obligations  matching rows, soonest effective date first, each carrying
                      ``in_effect`` computed against ``now``
         unscoped     obligations excluded because their applicability_rule could
@@ -960,11 +992,12 @@ def account_obligations(conn, entity_id, now=None):
 
     obligations, unscoped = [], 0
     for row in rows:
-        admitted = applicability_subsectors(row["applicability_rule"])
-        if admitted is None:
+        scope = applicability_scope(row["applicability_rule"])
+        if scope is None:
             unscoped += 1
             continue
-        if subsector not in admitted:
+        admitted, excluded = scope
+        if subsector not in admitted or entity_id in excluded:
             continue
         effective = _parse_date(row["effective_date"])
         item = dict(row)

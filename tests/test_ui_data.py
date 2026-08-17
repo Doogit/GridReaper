@@ -720,11 +720,69 @@ class TestAccountObligations(unittest.TestCase):
         self.assertEqual(cal, {"subsector": "", "obligations": [],
                                "unscoped": 0, "total": 0})
 
-    def test_applicability_subsectors_parsing(self):
-        self.assertEqual(data.applicability_subsectors("subsector_in:a;b"),
-                         {"a", "b"})
-        self.assertIsNone(data.applicability_subsectors("entity_in:E1"))
-        self.assertIsNone(data.applicability_subsectors(None))
+    def test_applicability_scope_parsing(self):
+        self.assertEqual(data.applicability_scope("subsector_in:a;b"),
+                         ({"a", "b"}, set()))
+        self.assertEqual(
+            data.applicability_scope("subsector_in:a;b|exclude_entities:E1;E2"),
+            ({"a", "b"}, {"E1", "E2"}))
+        self.assertIsNone(data.applicability_scope("entity_in:E1"))
+        self.assertIsNone(data.applicability_scope(None))
+
+    def test_malformed_exclusion_clause_fails_closed(self):
+        """The exclusion clause narrows the rule, so degrading an unreadable
+        one to "no exclusions" would WIDEN the rule instead of closing it.
+        Every unreadable form is unevaluable, and the obligation is dropped."""
+        for rule in (
+                # an exclusion clause that excludes nobody
+                "subsector_in:a;b|exclude_entities:",
+                "subsector_in:a;b|exclude_entities:;;",
+                # a trailing separator with no clause behind it
+                "subsector_in:a;b|",
+                # a second clause this reader does not know
+                "subsector_in:a;b|entity_in:E1",
+                # more clauses than the grammar defines
+                "subsector_in:a;b|exclude_entities:E1|exclude_entities:E2"):
+            with self.subTest(rule=rule):
+                self.assertIsNone(data.applicability_scope(rule))
+
+    def test_excluded_entity_is_dropped_from_its_own_subsector(self):
+        """E_ACME and E_SUB share a subsector; a rule naming E_SUB in its
+        exclusion clause must bind the first and not the second."""
+        self.conn.execute(
+            "INSERT INTO regulatory_obligations (obligation_id, source_url, "
+            " regulator, rule_name, affected_scope, applicability_rule, "
+            " effective_date, compliance_date, mapped_products, verified_at, "
+            " signal_id, derived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
+            ("ob_narrow", "http://fr/narrow", "Some Agency", "Narrowed rule",
+             "owners and operators (registration not verified per account)",
+             "subsector_in:iou_electric|exclude_entities:E_SUB",
+             days_ago_date(3), "S_SEC", iso(NOW)))
+        self.conn.commit()
+        for entity_id, expected in (("E_ACME", ["ob_narrow"]), ("E_SUB", [])):
+            cal = data.account_obligations(self.conn, entity_id, now=NOW)
+            self.assertEqual(
+                [o["obligation_id"] for o in cal["obligations"]
+                 if o["obligation_id"] == "ob_narrow"], expected)
+            # Excluded, not undecidable: the rule evaluated cleanly.
+            self.assertEqual(cal["unscoped"], 1)
+
+    def test_obligation_with_a_malformed_exclusion_is_shown_to_nobody(self):
+        self.conn.execute(
+            "INSERT INTO regulatory_obligations (obligation_id, source_url, "
+            " regulator, rule_name, affected_scope, applicability_rule, "
+            " effective_date, compliance_date, mapped_products, verified_at, "
+            " signal_id, derived_at) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?)",
+            ("ob_broken", "http://fr/broken", "Some Agency", "Broken rule",
+             "unknown", "subsector_in:iou_electric|exclude_entities:",
+             days_ago_date(3), "S_SEC", iso(NOW)))
+        self.conn.commit()
+        for entity_id in ("E_ACME", "E_SUB", "E_DARK"):
+            cal = data.account_obligations(self.conn, entity_id, now=NOW)
+            self.assertNotIn(
+                "ob_broken", [o["obligation_id"] for o in cal["obligations"]])
+            self.assertEqual(cal["unscoped"], 2)
+            self.assertEqual(cal["total"], 6)
 
 
 class TestAccountRelationships(unittest.TestCase):
