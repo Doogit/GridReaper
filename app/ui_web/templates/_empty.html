@@ -1,1 +1,1 @@
-<div class="gs-empty">{{ message }}</div>
+<div class="gs-empty"{% if state %} data-state="{{ state }}"{% endif %}>{{ message }}</div>

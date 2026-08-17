@@ -4,5 +4,5 @@
   {% include "_account_header.html" %}
   {% include "_account_tabs.html" %}
 {% else %}
-  {% with message = empty_message or "That account could not be loaded." %}{% include "_empty.html" %}{% endwith %}
+  {% with message = empty_message or "That account could not be loaded.", state = empty_state or "load-error" %}{% include "_empty.html" %}{% endwith %}
 {% endif %}
