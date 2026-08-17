@@ -325,6 +325,154 @@ class G1StatusTests(unittest.TestCase):
         self.assertEqual(cell["useful_n"], 0)  # denominator present
 
 
+class G1WaiverTests(unittest.TestCase):
+    """The R9.4 Gate G1 operator waiver (KTD1).
+
+    A waiver is a DISCLOSURE, never a pass: it adds a ``waived`` state no
+    computation can produce, while every underlying number keeps computing with
+    its real denominator. With the waiver inactive the pre-existing behavior is
+    unchanged, so the waiver is provably additive.
+    """
+    NOW = "2026-03-01T00:00:00Z"  # ~59 days after the fb/au default ts
+
+    def _rated(self):
+        """25 account cards on leadership_change, 20 useful -> 80% over n=25."""
+        rows = [fb(f"u{i}", "useful") for i in range(20)]
+        return rows + [fb(f"n{i}", "not_useful", reason_code="other")
+                       for i in range(5)]
+
+    def _judged(self):
+        """10 scored judge checks, 9 pass -> 90% auto-accuracy over n=10."""
+        rows = [au(f"a{i}", "entity_match", "pass") for i in range(9)]
+        return rows + [au("a9", "entity_match", "fail")]
+
+    def test_waived_state_carries_ruling_date_and_is_not_pass(self):
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True)
+        self.assertEqual(out["state"], "waived")
+        self.assertEqual(out["waiver"]["date"], p.G1_WAIVER_DATE)
+        self.assertEqual(out["waiver"]["date"], "2026-08-16")
+        # The most trust-loaded string on the most trust-loaded page — pinned
+        # verbatim so it can never drift into sounding like a pass.
+        self.assertEqual(out["waiver"]["reason"], (
+            "Overall: WAIVED by operator ruling 2026-08-16 — not passed. The "
+            "gate's own conditions below are unmet and are shown unchanged."))
+        # Never coerced to a pass: the computed gate is still not eligible,
+        # and the state stays inside its closed three-value vocabulary.
+        self.assertIn(out["state"], ("waived", "eligible", "blocked"))
+        self.assertFalse(out["eligible"])
+
+    def test_shipped_default_waives_without_an_explicit_argument(self):
+        # Every other test in this class passes waiver_active explicitly, so
+        # none of them would notice G1_WAIVER_ACTIVE being flipped. This one
+        # pins the SHIPPED default — the value production actually runs under,
+        # since data.precision_report calls g1_status with no override.
+        self.assertTrue(p.G1_WAIVER_ACTIVE)
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW)
+        self.assertEqual(out["state"], "waived")
+
+    def test_waiver_records_lift_condition(self):
+        # The condition that ENDS the waiver must be readable off the state, so
+        # a reader can see what would bring the gate back.
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True)
+        lift = out["waiver"]["lift_condition"]
+        self.assertEqual(lift, p.G1_WAIVER_LIFT_CONDITION)
+        self.assertIn(str(p.G1_MIN_RATED), lift)
+        self.assertIn("rated", lift)
+
+    def test_waiver_is_recorded_not_enforced(self):
+        # The lift condition is RECORDED, not ENFORCED (Open Question 7): a
+        # trigger that has since reached the rated-card floor does NOT make
+        # g1_status fall back to the computed state on its own.
+        out = p.g1_status(self._rated(), self._judged(),
+                          primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True)
+        self.assertGreaterEqual(out["triggers"]["leadership_change"]["useful_n"],
+                                p.G1_MIN_RATED)
+        self.assertEqual(out["state"], "waived")
+
+    def test_underlying_numbers_keep_their_real_sample_sizes(self):
+        # The computation keeps running underneath the waiver: real rates, real
+        # denominators — nothing suppressed, nothing fabricated.
+        out = p.g1_status(self._rated(), self._judged(),
+                          primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True)
+        cell = out["triggers"]["leadership_change"]
+        self.assertEqual(cell["useful_rate"], 0.8)
+        self.assertEqual(cell["useful_n"], 25)
+        self.assertEqual(cell["auto_accuracy"], 0.9)
+        self.assertEqual(cell["auto_n"], 10)
+
+    def test_waiver_does_not_hide_blocked_reasons(self):
+        # The gate's unmet conditions stay visible under the waiver.
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True)
+        cell = out["triggers"]["leadership_change"]
+        self.assertFalse(cell["meets"])
+        self.assertTrue(any("n<20" in r for r in cell["reasons"]))
+        self.assertTrue(out["blocked_reasons"])
+
+    def test_inactive_waiver_is_byte_identical_to_prior_behavior(self):
+        # Characterization test: with the waiver inactive the whole returned
+        # structure equals the pre-waiver output, plus the two additive keys
+        # reporting the un-waived computed state.
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=False)
+        self.assertEqual(out, {
+            "triggers": {"leadership_change": {
+                "useful_rate": None,
+                "useful_n": 0,
+                "auto_accuracy": None,
+                "auto_n": 0,
+                "days_span": 0,
+                "meets": False,
+                "reasons": [
+                    "n<20 rated account cards (have 0)",
+                    "span<30d (have 0.0d)",
+                    "no rated account cards for useful-rate",
+                    "no scored judge checks for auto-accuracy",
+                ],
+            }},
+            "reported_separately": {
+                "feedback": {"useful": 0, "total": 0, "rate": None},
+                "auto": {"correct": 0, "scored": 0, "accuracy": None},
+            },
+            "eligible": False,
+            "blocked_reasons": [
+                "leadership_change: n<20 rated account cards (have 0)",
+                "leadership_change: span<30d (have 0.0d)",
+                "leadership_change: no rated account cards for useful-rate",
+                "leadership_change: no scored judge checks for auto-accuracy",
+            ],
+            "state": "blocked",
+            "waiver": None,
+        })
+
+    def test_waived_state_unreachable_by_computation(self):
+        # No data can compute a "waived" state — only the recorded waiver.
+        for rows in ([[], []], [self._rated(), self._judged()]):
+            out = p.g1_status(rows[0], rows[1],
+                              primary_triggers=("leadership_change",),
+                              now=self.NOW, waiver_active=False)
+            self.assertIn(out["state"], ("eligible", "blocked"))
+            self.assertIsNone(out["waiver"])
+
+    def test_g2_and_disagreement_gate_unaffected(self):
+        # G2 (R9.5) and the R9.11 disagreement overlay carry no waiver: G1's
+        # waiver is G1's alone.
+        rows = [fb(f"u{i}", "useful", source_id="good") for i in range(20)]
+        g2 = p.g2_status(rows)
+        self.assertEqual(set(g2["good"]), {
+            "precision", "n", "reason_codes", "below_threshold",
+            "demote_recommended", "note"})
+        gated = p.g2_gated(g2, p.judge_human_disagreement_by_source([], rows))
+        self.assertEqual(gated["good"]["gate"], "na")
+        self.assertNotIn("waiver", gated["good"])
+        self.assertNotIn("state", gated["good"])
+
+
 class G2StatusTests(unittest.TestCase):
     def test_below_threshold_with_enough_n_recommends_demote(self):
         # 30% precision over n=20 (6 useful, 14 not_useful).
