@@ -48,7 +48,7 @@ fi
 # — would crash-loop the container because the SCHEDULER failed. A stale feed is
 # bad; an unreachable app is worse. The && chain also means a failed chmod stops
 # the snapshot from being written at all rather than leaving it world-readable.
-GRIDSIGNALS_ENV_ALLOWLIST="GRIDSIGNALS_DB|GRIDSIGNALS_LOCK|GRIDSIGNALS_PIPELINE_LOCK|PORT"
+GRIDSIGNALS_ENV_ALLOWLIST="GRIDSIGNALS_DB|GRIDSIGNALS_LOCK|GRIDSIGNALS_PIPELINE_LOCK|GRIDSIGNALS_HEARTBEAT|PORT"
 if : > /etc/gridsignals.env \
     && chmod 600 /etc/gridsignals.env \
     && { export -p | grep -E "^export (${GRIDSIGNALS_ENV_ALLOWLIST})=" >> /etc/gridsignals.env || true; } \

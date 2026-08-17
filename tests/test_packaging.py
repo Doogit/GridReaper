@@ -516,6 +516,24 @@ class PackagingContractTest(unittest.TestCase):
         self.assertNotIn("GRIDSIGNALS_AUDIT", allowlist_line)
         self.assertIn("GRIDSIGNALS_DB", allowlist_line, "GRIDSIGNALS_DB is required by every scheduled step")
 
+    def test_entrypoint_env_allowlist_includes_the_heartbeat_override(self):
+        # deploy/scheduled_run.sh documents GRIDSIGNALS_HEARTBEAT as
+        # overridable, matching GRIDSIGNALS_LOCK/GRIDSIGNALS_PIPELINE_LOCK —
+        # both of which ARE in the allowlist. Without this, a container-level
+        # override would be honored for the first-load invocation (runs in
+        # entrypoint.sh's own process env) but silently dropped for every cron
+        # tick (which only sees the allowlist-filtered snapshot), so the two
+        # invocations of the same guard would write heartbeats to two
+        # different files.
+        entry = self._entrypoint()
+        allowlist_line = next(
+            (ln for ln in entry.splitlines() if "GRIDSIGNALS_ENV_ALLOWLIST=" in ln), None)
+        self.assertIsNotNone(allowlist_line, "no explicit env allowlist variable found in the entrypoint")
+        self.assertIn(
+            "GRIDSIGNALS_HEARTBEAT", allowlist_line,
+            "GRIDSIGNALS_HEARTBEAT must be in the allowlist alongside the two lock overrides",
+        )
+
     def test_entrypoint_scheduler_failure_does_not_block_serving(self):
         # The script runs under `set -e`, so an unguarded scheduler step would
         # crash-loop the container on a read-only /etc, a future USER directive,
