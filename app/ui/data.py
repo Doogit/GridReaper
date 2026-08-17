@@ -801,18 +801,18 @@ def _reporting_month_rows(rows, now):
     scheduled job (``now=prior_month_end(...)``) it is the month that just
     ended. A row whose ``ts`` does not parse is dropped — unevaluable is
     excluded, never defaulted into the window.
+
+    Windowing itself (U31) is shared code, not shared convention: both the
+    ``now`` normalization and the per-row month key delegate to
+    ``app.audit.precision.resolve_now``/``month_key``, the same helpers
+    ``spotcheck_coverage`` uses, so this can no longer independently drift
+    from that module's "month containing now" definition.
     """
-    if isinstance(now, datetime):
-        now_dt = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    else:
-        now_dt = _parse_dt(now)
-    if now_dt is None:
-        now_dt = datetime.now(timezone.utc)
+    now_dt = precision.resolve_now(now)
     month = (now_dt.year, now_dt.month)
     out = []
     for r in rows:
-        dt = _parse_dt(r.get("ts"))
-        if dt is not None and (dt.year, dt.month) == month:
+        if precision.month_key(r.get("ts")) == month:
             out.append(r)
     return out
 

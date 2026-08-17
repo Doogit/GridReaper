@@ -49,7 +49,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 
-from app.db.connection import DEFAULT_DB_PATH, get_connection
+from app.db.connection import get_connection, resolve_db_path
 
 # Verdicts counted as a human positive vs negative (R9.1).
 POSITIVE_VERDICTS = frozenset({"useful", "converted"})
@@ -174,8 +174,13 @@ def _parse_ts(value):
     return dt.astimezone(timezone.utc)
 
 
-def _now(now):
-    """Normalize an injected ``now`` (datetime or ISO string) to aware UTC."""
+def resolve_now(now):
+    """Normalize an injected ``now`` (datetime or ISO string) to aware UTC.
+
+    Public (U31) so ``app.ui.data._reporting_month_rows`` can share this exact
+    "now" normalization instead of maintaining its own copy — the two must
+    agree on what "now" means for the SAME month-windowing convention
+    ``month_key`` below defines."""
     if now is None:
         return datetime.now(timezone.utc)
     if isinstance(now, datetime):
@@ -413,12 +418,17 @@ GATE_WITHHELD_NOTE = (
     "judge verdicts withheld from demotion — revise rubric")
 
 
-def _month_key(value):
+def month_key(value):
     """UTC calendar-month key ``(year, month)`` for an ISO ts, or None.
 
     WINDOW DECISION (Open Q#2, default): the spot-check window is a UTC CALENDAR
     month. The operator may prefer a trailing-30-day window instead — flagged,
     not silently chosen.
+
+    Public (U31) so ``app.ui.data._reporting_month_rows`` shares this exact
+    "calendar month containing now" convention instead of maintaining its own
+    copy — the two windowing implementations only agreed by docstring
+    convention before, never by shared code.
     """
     dt = _parse_ts(value)
     if dt is None:
@@ -600,7 +610,7 @@ def spotcheck_coverage(audit_rows, feedback_rows, now=None,
     already uses), so a ``mock.patch.object`` of ``SPOTCHECK_ABS_TARGET``/
     ``SPOTCHECK_FRACTION``/``SPOTCHECK_MIN_FLOOR`` takes effect (U25/U17).
     """
-    now_dt = _now(now)
+    now_dt = resolve_now(now)
     if abs_target is None:
         abs_target = SPOTCHECK_ABS_TARGET
     if fraction is None:
@@ -613,7 +623,7 @@ def spotcheck_coverage(audit_rows, feedback_rows, now=None,
     for row in audit_rows:
         if row.get("check_type") not in AUTO_ACCURACY_CHECKS:
             continue
-        if _month_key(row.get("ts")) != month:
+        if month_key(row.get("ts")) != month:
             continue
         audited.add(row.get("signal_id"))
 
@@ -622,7 +632,7 @@ def spotcheck_coverage(audit_rows, feedback_rows, now=None,
         verdict = row.get("verdict")
         if verdict not in POSITIVE_VERDICTS and verdict not in NEGATIVE_VERDICTS:
             continue
-        if _month_key(row.get("ts")) != month:
+        if month_key(row.get("ts")) != month:
             continue
         human_signals.add(row.get("signal_id"))
 
@@ -762,7 +772,7 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
     RECORDED, not ENFORCED: a waived gate stays waived even once a trigger
     reaches ``min_rated``.
     """
-    now_dt = _now(now)
+    now_dt = resolve_now(now)
     if waiver_active is None:
         waiver_active = G1_WAIVER_ACTIVE
     # min_days/min_rated default to None and are resolved here from the live
@@ -980,7 +990,7 @@ def report_path(period, db_path=None):
     Pure path computation only — does not touch the filesystem. The
     directory is created (and the file written) by ``write_report_file``.
     """
-    resolved = db_path or os.environ.get("GRIDSIGNALS_DB") or DEFAULT_DB_PATH
+    resolved = resolve_db_path(db_path)
     directory = os.path.join(os.path.dirname(resolved) or ".",
                               "precision-reports")
     return os.path.join(directory, f"{period}.txt")
@@ -1042,7 +1052,7 @@ def prior_month_end(now=None):
     asks about the current month, which is right for a live view. It is only
     what the SCHEDULED invocation asks for.
     """
-    now_dt = _now(now)
+    now_dt = resolve_now(now)
     first_of_month = now_dt.replace(
         day=1, hour=0, minute=0, second=0, microsecond=0)
     return first_of_month - timedelta(microseconds=1)
@@ -1069,8 +1079,13 @@ def format_report(report, as_of=None):
     so a log record states the instant it was computed for — which, for the
     scheduled run, is the last instant of the month being reported and NOT the
     run's own wall clock. ``spotcheck_window`` names that month outright.
-    The overall useful/auto rates are lifetime-cumulative, not monthly, so no
-    line claims the whole record is scoped to one month.
+    The overall useful/auto rates (and every per-dimension rate below them) are
+    windowed to that SAME calendar month by ``app.ui.data.precision_report``
+    (U22) — every line in this record describes one reporting month, not a
+    lifetime cumulative. The record this function shapes is also durably
+    persisted: ``main`` writes these same lines to a dated file under
+    ``report_path()``, beside the configured DB (U27), so the monthly record
+    survives a container restart, not just stdout/the cron log.
     """
     useful = report["useful_overall"]
     auto = report["auto_overall"]
