@@ -1,6 +1,6 @@
 """Precision computation for the Feedback / Precision view (R9.3, R9.4, R9.5).
 
-PURE computations. No network, no Streamlit. Every computation function takes
+PURE computations. No network, no UI framework. Every computation function takes
 lists of plain dict rows (fetched and shaped by the UI layer) and returns plain
 dicts / lists. Any date/age reasoning accepts an injectable ``now`` so callers
 and tests stay deterministic; all timestamps are UTC ISO-8601 (R10.2).

@@ -1,6 +1,6 @@
 """Read-only data-access layer for the GridSignals UI (R8.1-R8.3).
 
-Plain stdlib functions the Streamlit pages share, so the pages stay thin and
+Plain stdlib functions the FastAPI routes share, so the pages stay thin and
 every query is covered by a hermetic test. The app is a reader; its writes are
 each an explicitly sanctioned, transactional seam: ``record_feedback`` (R9.1),
 ``triage_decision`` (R8.2 human match decisions + review-queue disposition),
@@ -1271,7 +1271,7 @@ def triage_decision(conn, raw_event_id, entity_id, accept, now=None, sleep=None)
 
 # -- config writes (R8.7 Admin/Config) ---------------------------------------
 #
-# The first Streamlit writes into *seeded* config tables. Three rules hold every
+# The first UI writes into *seeded* config tables. Three rules hold every
 # one (see the plan's KTDs):
 #   * Provenance (R3.3): each edit writes a config_audit row (field, old->new,
 #     editor, reason, ts) in the SAME transaction as the edit. Append-only:
@@ -1390,7 +1390,8 @@ def config_write_conn(db_path=None, lock_path=None):
     """Fresh connection holding the single-writer ingestion lock (R3.2) for one
     Admin save. Raises RuntimeError if an ingestion/scoring run holds the lock
     (the page catches it -> "ingestion in progress"). Acquire this INSIDE the
-    save handler, never at page render (Streamlit reruns top-to-bottom).
+    save handler, never while rendering a GET route (a template render must
+    never hold the lock).
 
     ``lock_path`` is passed straight through to ``ingest_lock``, whose own
     resolution order (explicit arg -> GRIDSIGNALS_LOCK env var -> LOCK_PATH)

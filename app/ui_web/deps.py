@@ -2,7 +2,7 @@
 
 Read path: ``get_db`` yields a short-lived connection (WAL, FK on) honoring
 GRIDSIGNALS_DB, reusing ``app.db.connection.get_connection`` so the web UI opens
-the DB exactly like the CLIs and the Streamlit UI.
+the DB exactly like the CLIs.
 
 Write path (later chunks): ``config_write`` re-exports
 ``app.ui.data.config_write_conn`` — the single-writer lock context manager

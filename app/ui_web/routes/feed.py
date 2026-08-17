@@ -12,9 +12,10 @@ Feedback writes go through data.record_feedback (R9.1:
 not_useful requires a reason code) — enforced server-side, so a missing reason
 returns the reason form with the error, never a bad row.
 
-Reads bind the same data.py functions the Streamlit UI uses; the card shape is
-assembled by render.card_view. The feed is a reader that writes only feedback
-rows (not a config write — no single-writer lock needed, matching app/ui/Home.py).
+Reads bind the same data.py functions the retired Streamlit UI used; the card
+shape is assembled by render.card_view. The feed is a reader that writes only
+feedback rows (not a config write — no single-writer lock needed, matching the
+retired Streamlit Home page).
 """
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
