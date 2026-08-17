@@ -14,8 +14,14 @@ WORKDIR /app
 # The in-container scheduler (R3.1). python:3.12-slim ships no cron binary, so
 # deploy/crontab would otherwise be inert — the image would pass its file-content
 # checks with nothing to run it. Debian's daemon is `cron`, not `crond`.
+# tini is PID 1 (see ENTRYPOINT below): cron double-forks and orphans to PID 1,
+# and without a real init/reaper the app process itself becomes PID 1 and a
+# container stop SIGKILLs an in-flight tick before its lock cleanup can run.
+# logrotate keeps /var/log/gridsignals-cron.log bounded in a long-lived
+# container; its package wires a daily cron.daily hook automatically, so
+# dropping deploy/logrotate.conf in below is all that's needed.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cron \
+ && apt-get install -y --no-install-recommends cron tini logrotate \
  && rm -rf /var/lib/apt/lists/*
 
 # The pipeline + data layer are stdlib-only; requirements.txt installs UI-only
@@ -37,6 +43,12 @@ COPY . .
 RUN tr -d '\r' < deploy/crontab > /etc/cron.d/gridsignals \
  && chmod 644 /etc/cron.d/gridsignals
 
+# Log rotation config for the cron log (same CR-stripping belt-and-braces as
+# the crontab above — the build context is whatever working tree the build was
+# handed).
+RUN tr -d '\r' < deploy/logrotate.conf > /etc/logrotate.d/gridsignals \
+ && chmod 644 /etc/logrotate.d/gridsignals
+
 ENV GRIDSIGNALS_DB=/app/data/gridsignals.db
 
 # App Service routes to the port named by the WEBSITES_PORT app setting; keep it
@@ -44,9 +56,14 @@ ENV GRIDSIGNALS_DB=/app/data/gridsignals.db
 ENV PORT=8000
 EXPOSE 8000
 
+# tini is PID 1, not the app or cron (see the apt-get RUN above): it reaps
+# cron's double-forked orphans and forwards signals, so a container stop can
+# actually SIGTERM an in-flight tick instead of SIGKILLing whatever
+# double-forked its way to PID 1 without a chance to release its lock.
 # Runtime bootstrap: seed schema + config (blocking), background-ingest on first
 # load, start the cron scheduler, then exec uvicorn (bind 0.0.0.0 so App Service
 # can reach it; Easy Auth, when enabled, fronts the app). Ingestion stays a
 # backend process, never the UI (R3.1). See deploy/entrypoint.sh,
 # deploy/ingest_pipeline.sh, deploy/crontab.
+ENTRYPOINT ["tini", "--"]
 CMD ["sh", "deploy/entrypoint.sh"]

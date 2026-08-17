@@ -6,9 +6,14 @@ code change, and secrets stay out of the repo (R10.8). Nothing here reads or
 logs the API key; `client.py` reads ``ANTHROPIC_API_KEY`` from the environment
 at call time and never logs it.
 
-Budget model: a per-run ceiling in USD (``MAX_USD_PER_RUN``) and a per-run
-signal cap (``MAX_SIGNALS_PER_RUN``, the R9.7 min(20, all) bound). When either
-is hit the job skips and flags the gap (R9.12) rather than overspending.
+Budget model: a per-run ceiling in USD (``MAX_USD_PER_RUN``). R9.7's literal
+text also specified a fixed signal cap (min(20, all)); the operator overruled
+that (same pattern as the G1 waiver, #78) in favor of an uncapped default
+sample bounded only by this budget, since the judge is now run on-demand
+rather than scheduled — see app/audit/judge.py (there is no
+``MAX_SIGNALS_PER_RUN`` here any more). An explicit ``--limit`` on the CLI
+still caps a deliberately small trial run. When the budget is hit mid-run the
+job stops and flags the gap (R9.12) rather than overspending.
 """
 import os
 from datetime import datetime, timezone
@@ -66,13 +71,12 @@ def _env_int(name, default):
         return default
 
 
-# Per-run budget ceiling (R9.12/R10.1). Sized well above one small run
-# (5 signals x 4 checks well under a cent at Haiku rates) so a normal weekly
-# run never trips it; a runaway loop or a pricier model does.
-MAX_USD_PER_RUN = _env_float("GRIDSIGNALS_AUDIT_MAX_USD", 0.50)
-
-# R9.7 sampling cap: min(20, all). Env-overridable for a smaller trial run.
-MAX_SIGNALS_PER_RUN = _env_int("GRIDSIGNALS_AUDIT_MAX_SIGNALS", 20)
+# Per-run budget ceiling (R9.12/R10.1). Operator-raised from $0.50 to $1.00
+# alongside dropping the R9.7 signal cap below: an operator-invoked run now
+# samples the whole unaudited backlog by default, so this ceiling is what
+# actually bounds spend — tripping it on a normal run is expected, not a sign
+# something is wrong.
+MAX_USD_PER_RUN = _env_float("GRIDSIGNALS_AUDIT_MAX_USD", 1.00)
 
 # Hard per-request timeout (seconds) so one slow call can't wedge the job.
 REQUEST_TIMEOUT_S = _env_float("GRIDSIGNALS_AUDIT_TIMEOUT_S", 30.0)

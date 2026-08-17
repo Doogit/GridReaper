@@ -6,6 +6,7 @@ degradation results (unavailable / over_budget / error) that keep the pipeline
 from crashing.
 """
 import json
+import os
 import unittest
 
 from app.audit import config as cfg
@@ -102,6 +103,21 @@ class TestSchema(unittest.TestCase):
         resp = {"content": [{"type": "text", "text": "not json"}]}
         with self.assertRaises(ValueError):
             schema.parse_response(resp)
+
+
+class TestConfigDefaults(unittest.TestCase):
+    def test_max_usd_per_run_defaults_to_one_dollar(self):
+        # U26: the operator raised the per-run budget from $0.50 to $1.00
+        # alongside dropping the R9.7 signal-count cap.
+        if "GRIDSIGNALS_AUDIT_MAX_USD" in os.environ:
+            self.skipTest("GRIDSIGNALS_AUDIT_MAX_USD is overridden in this environment")
+        self.assertEqual(cfg.MAX_USD_PER_RUN, 1.00)
+
+    def test_max_signals_per_run_no_longer_exists(self):
+        # U26: the fixed R9.7 sampling cap is gone, not just unused — pin its
+        # absence so a future session cannot silently reintroduce a cap that
+        # nothing enforces against (a dead knob that looks load-bearing).
+        self.assertFalse(hasattr(cfg, "MAX_SIGNALS_PER_RUN"))
 
 
 class TestClient(unittest.TestCase):

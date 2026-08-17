@@ -47,7 +47,10 @@ Consequences:
   in `deploy/entrypoint.sh` before uvicorn, so it never blocks serving. See
   [Scheduled refresh](#scheduled-refresh) below.
 - `ANTHROPIC_API_KEY` is **not** required — the app runs without it; only the
-  optional accuracy-audit judge uses it.
+  optional accuracy-audit judge uses it. The judge is **operator-invoked only**
+  (`python -m app.audit.judge`, or `--estimate` for a cost projection first) —
+  it is never scheduled in `deploy/crontab`, so cron's environment snapshot
+  never needs to see the key.
 
 ## Scheduled refresh
 
@@ -64,15 +67,37 @@ not freeze at first boot (R3.1).
 Two container facts the schedule has to work around:
 
 - **cron strips the environment.** A scheduled job inherits nothing from the
-  container, so `GRIDSIGNALS_DB` and any optional API key would be invisible to
-  every tick. The entrypoint snapshots the exported environment to
-  `/etc/gridsignals.env` (mode 600, outside the repo tree) and each crontab line
-  sources it first. No secret is ever written into a tracked file.
+  container, so `GRIDSIGNALS_DB` would be invisible to every tick. The
+  entrypoint snapshots an explicit allowlist of the variables scheduled jobs
+  actually read (`GRIDSIGNALS_DB`, the lock-path overrides, `PORT`) — not the
+  whole process environment — to `/etc/gridsignals.env` (mode 600, outside the
+  repo tree), and each crontab line sources it first. No secret is ever written
+  into a tracked file, and nothing the audit judge reads (`ANTHROPIC_API_KEY`,
+  `GRIDSIGNALS_AUDIT_*`) is in the allowlist, since it is never scheduled.
 - **A tick can collide with another run.** `deploy/scheduled_run.sh` holds a
   tick-scoped lock for the whole run, so two scheduled ticks can never overlap,
   and it probes the per-step ingestion lock at tick start so a manual run already
-  in flight yields a clean skip. A lock older than 2h is treated as abandoned, so
-  a crashed run cannot wedge the schedule permanently.
+  in flight yields a clean skip. That tick lock's staleness is decided by PID
+  liveness (`kill -0` on the PID recorded at acquisition), not by file age, so a
+  dead lock is identified definitively and a live one is never mistakenly broken
+  out from under a run still in progress. The first-load background ingest (see
+  above) is routed through this SAME guard, so it and a cron tick contend for one
+  lock rather than only the per-step ingestion lock.
+- **A hung tick is bounded.** The guard wraps its job in `timeout` (110 minutes),
+  comfortably inside the 2h staleness window, so a stuck run is killed before that
+  window could open a second-writer race.
+- **A dead scheduler looks different from a healthy one that just hasn't ticked
+  yet.** Several sources' TTLs are shorter than the daily cadence, so the feed
+  reads "stale" for most of the day even when everything works. Every guard
+  invocation — a real run or a clean skip — writes a heartbeat timestamp,
+  separate from `source_runs`, so a truly dead cron daemon is distinguishable
+  from one that simply hasn't ticked.
+- **PID 1 is `tini`, not the app or cron.** cron double-forks and orphans to
+  PID 1; without a real init, a container stop can SIGKILL whatever ended up
+  there before its lock cleanup runs. `tini` reaps orphans and forwards signals.
+- **The cron log rotates.** `logrotate` (daily, a handful of compressed
+  generations) keeps `/var/log/gridsignals-cron.log` bounded in a long-lived
+  container.
 - **Line endings matter more than usual here.** `az acr build` uploads the local
   working tree as the build context. A CRLF shell script fails loudly, but a CRLF
   `/etc/cron.d` entry just never fires — cron reports that only via syslog/mail,
@@ -84,9 +109,7 @@ Scheduled output goes to `/var/log/gridsignals-cron.log` inside the container.
 Known gap, not closed here: the R3.2 ingestion lock is acquired and released
 **per step**, so the guard's single probe cannot stop a manual run started
 mid-tick from interleaving with a scheduled one. Serializing that needs a lock
-the Python steps honor. Routing the first-load ingest through the guard is the
-related follow-up, deliberately left alone so this change cannot regress
-first-load behavior.
+the Python steps themselves honor — still a follow-up.
 
 **Not scheduled: the annual entity-identifier refresh (R4.2).**
 `app/enrich_entities.py` writes reviewable seed CSVs and never writes the store —

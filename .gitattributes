@@ -12,4 +12,5 @@
 # Deliberately scoped to the files that ship: no repo-wide `* text=auto`, which
 # would renormalize unrelated files.
 deploy/crontab text eol=lf
+deploy/logrotate.conf text eol=lf
 *.sh text eol=lf

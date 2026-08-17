@@ -8,10 +8,15 @@ injectable ``AuditClient`` (client.py) and the versioned prompt/parser
   1. Reaps any ``audit_runs`` row stranded at 'running' by a killed run (marked
      'error', never deleted) and records its own row up front (status 'running',
      R9.12: a skip is recorded, never silent).
-  2. Samples up to ``min(limit, MAX_SIGNALS_PER_RUN)`` signals NOT yet audited
-     at the current PROMPT_VERSION (R9.7 dedupe), stratified across
-     (trigger_id, source_id, signal_scope) so one busy trigger cannot crowd out
-     the rest of the sample (deterministic: sorted strata + a seeded RNG).
+  2. Samples signals NOT yet audited at the current PROMPT_VERSION (R9.7
+     dedupe), stratified across (trigger_id, source_id, signal_scope) so one
+     busy trigger cannot crowd out the rest of the sample (deterministic:
+     sorted strata + a seeded RNG). With no explicit ``--limit`` this samples
+     EVERY unaudited signal, bounded only by the per-run USD budget stopping
+     the loop mid-run — R9.7's literal text specified a fixed min(20, all)
+     cap, which the operator overruled (same pattern as the G1 waiver, #78)
+     now that this runs on-demand rather than scheduled (U26). An explicit
+     ``--limit N`` still caps a deliberately small trial run.
   3. Assembles the objective-check record (R9.7/R9.8: the card plus its raw
      source text, extracted evidence, and license play) and asks the judge.
   4. Writes one ``audit`` row per check in ``schema.CHECKS`` for each 'ok'
@@ -19,9 +24,13 @@ injectable ``AuditClient`` (client.py) and the versioned prompt/parser
   5. Degrades cleanly (R9.12): no key / over budget / nothing to sample finalize
      the run as a recorded skip and return without raising; a per-signal error
      is contained (that signal gets no rows) and never becomes a synthetic pass.
+  6. ``--estimate`` (read-only): projects a cost for the current pending batch
+     without calling the judge or writing any rows, so the operator can see
+     the likely spend before committing to a real run.
 
 Concurrency: ``run_audit`` is lock-free so tests can drive it on an in-memory
-connection; only ``cli()`` wraps it in the single-writer ingestion lock (R3.2).
+connection; only ``cli()`` wraps it in the single-writer ingestion lock (R3.2)
+— and only for a real run; ``--estimate`` is read-only and takes no lock.
 """
 import argparse
 import json
@@ -113,18 +122,26 @@ def _pretty_payload(payload):
 
 # -- sampling (R9.7) ---------------------------------------------------------
 
-def sample_signals(conn, prompt_version, limit, rng_seed=0):
-    """Pick up to ``limit`` signal_ids to audit, deterministically.
+def sample_signals(conn, prompt_version, limit=None, rng_seed=0):
+    """Pick signal_ids to audit, deterministically.
+
+    ``limit=None`` (the CLI default) selects EVERY eligible signal — there is
+    no implicit cap; the caller's per-run USD budget is what bounds a real
+    run. Pass an explicit ``limit`` to cap the sample (e.g. a deliberately
+    small trial run).
 
     Excludes any signal that already has an ``audit`` row at this
     ``prompt_version`` (R9.7 re-run dedupe). Stratifies the remaining candidates
     by (trigger_id, source_id, signal_scope): strata are sorted, then filled
     round-robin so the sample spreads across triggers/sources/scopes instead of
-    draining one busy stratum. Selection is deterministic for a fixed
-    ``rng_seed`` — a seeded ``random.Random`` shuffles within each stratum and
-    the round-robin order is fixed by the sorted strata keys.
+    draining one busy stratum — this ordering still matters with no cap: a
+    budget-limited run stops mid-loop, so fair coverage on a partial run
+    depends on the round-robin order, not just on the final size. Selection is
+    deterministic for a fixed ``rng_seed`` — a seeded ``random.Random``
+    shuffles within each stratum and the round-robin order is fixed by the
+    sorted strata keys.
     """
-    if limit <= 0:
+    if limit is not None and limit <= 0:
         return []
     rows = conn.execute(
         "SELECT s.signal_id, s.trigger_id, s.signal_scope, "
@@ -150,14 +167,14 @@ def sample_signals(conn, prompt_version, limit, rng_seed=0):
         rng.shuffle(strata[key])
 
     selected = []
-    while len(selected) < limit:
+    while limit is None or len(selected) < limit:
         progressed = False
         for key in ordered_keys:
             bucket = strata[key]
             if bucket:
                 selected.append(bucket.pop())
                 progressed = True
-                if len(selected) >= limit:
+                if limit is not None and len(selected) >= limit:
                     break
         if not progressed:
             break
@@ -231,8 +248,8 @@ def run_audit(conn, client, now=None, limit=None, rng_seed=0):
             conn, run_id, now, "skipped_no_key", 0, 0, 0.0,
             skipped_reason="ANTHROPIC_API_KEY not set")
 
-    limit = cfg.MAX_SIGNALS_PER_RUN if limit is None \
-        else min(limit, cfg.MAX_SIGNALS_PER_RUN)
+    # limit=None samples every unaudited signal (U26: no fixed cap, only the
+    # budget bounds a real run); an explicit limit still caps a trial run.
     signal_ids = sample_signals(conn, schema.PROMPT_VERSION, limit, rng_seed)
     signals_sampled = len(signal_ids)
     if not signal_ids:
@@ -327,6 +344,50 @@ def run_audit(conn, client, now=None, limit=None, rng_seed=0):
         round(budget_spent, 6), error_state=error_state)
 
 
+# -- cost estimation (U26) ---------------------------------------------------
+
+# Real token counts are only known after a judge call. This projects a rough
+# estimate for the CURRENT pending batch without spending anything: input
+# tokens from the actual assembled prompt text (the real SYSTEM_PROMPT plus
+# the real per-signal build_judge_input text — nothing guessed there) via the
+# standard chars/4 rough token heuristic, and output tokens at cfg.MAX_TOKENS
+# per signal (the judge's hard output cap) as a conservative ceiling.
+CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def estimate_pending_cost(conn, model_id=None, rng_seed=0):
+    """Project a cost estimate for the current pending (unaudited) batch.
+
+    Uncapped by design (mirrors ``run_audit`` with no ``--limit``): samples
+    every signal ``sample_signals`` would currently select, regardless of any
+    CLI ``--limit``, since the point is to see the full pending batch's cost
+    before deciding how to bound a real run. Never calls the judge client and
+    never writes any row. Returns a dict: signals, input_tokens, output_tokens,
+    cost_usd, model_id — all approximate; see CHARS_PER_TOKEN_ESTIMATE.
+    """
+    model_id = model_id or cfg.DEFAULT_MODEL_ID
+    signal_ids = sample_signals(conn, schema.PROMPT_VERSION, None, rng_seed)
+    system_chars = len(schema.SYSTEM_PROMPT)
+    total_chars = 0
+    counted = 0
+    for signal_id in signal_ids:
+        record = assemble_record(conn, signal_id)
+        if record is None:
+            continue
+        total_chars += system_chars + len(schema.build_judge_input(record))
+        counted += 1
+    input_tokens = total_chars // CHARS_PER_TOKEN_ESTIMATE
+    output_tokens = counted * cfg.MAX_TOKENS
+    cost_usd = cfg.estimate_cost_usd(model_id, input_tokens, output_tokens)
+    return {
+        "signals": counted,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd,
+        "model_id": model_id,
+    }
+
+
 # -- CLI (R3.2, R9.12) -------------------------------------------------------
 
 def cli(argv=None):
@@ -335,16 +396,39 @@ def cli(argv=None):
     ANTHROPIC_API_KEY from the env — an absent key exercises the R9.12
     skipped_no_key dry-run). Prints a one-line summary. Returns 0 for a clean
     run OR a clean skip (a skip is success, never a crash — R9.12); 1 only if
-    the run finalized 'error'."""
+    the run finalized 'error'.
+
+    ``--estimate`` is a separate, read-only mode: it prints a projected cost
+    for the pending batch and returns without calling the judge, writing any
+    row, or taking the ingestion lock (nothing here mutates the store)."""
     parser = argparse.ArgumentParser(
         description="Run the automated accuracy audit (LLM-as-judge).")
     parser.add_argument("--limit", type=int, default=None,
                         help="max signals to audit this run "
-                             f"(capped at MAX_SIGNALS_PER_RUN="
-                             f"{cfg.MAX_SIGNALS_PER_RUN})")
+                             "(default: no cap — sample every unaudited "
+                             "signal, bounded only by the budget)")
     parser.add_argument("--rng-seed", type=int, default=0,
                         help="seed for deterministic stratified sampling")
+    parser.add_argument("--estimate", action="store_true",
+                        help="print a projected cost for the pending batch "
+                             "and exit; makes no judge calls and writes no "
+                             "audit/audit_runs rows")
     args = parser.parse_args(argv)
+
+    if args.estimate:
+        conn = get_connection()
+        try:
+            est = estimate_pending_cost(conn, rng_seed=args.rng_seed)
+        finally:
+            conn.close()
+        per_signal = est["input_tokens"] // est["signals"] if est["signals"] else 0
+        print(
+            f"audit --estimate: ~${est['cost_usd']:.4f} estimated, "
+            f"{est['signals']} signals, based on {per_signal} input "
+            f"tokens/signal (rough char/{CHARS_PER_TOKEN_ESTIMATE} estimate, "
+            f"model {est['model_id']}) — actual may vary"
+        )
+        return 0
 
     with ingest_runner.ingest_lock():
         conn = get_connection()
