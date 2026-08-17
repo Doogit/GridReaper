@@ -11,7 +11,7 @@
   </div>
   <div class="gs-meta">Gov-cloud likelihood: <strong>{{ account.gov_cloud }}</strong> · tenant environment: {{ account.tenant_env }}</div>
   {% if account.parent %}
-  <div class="gs-meta">Parent: <a class="gs-source-link" href="/account?entity_id={{ account.parent.entity_id | urlencode }}">{{ account.parent.name }}</a></div>
+  <div class="gs-meta">Parent (watchlist roster, not a sourced edge): <a class="gs-source-link" href="/account?entity_id={{ account.parent.entity_id | urlencode }}">{{ account.parent.name }}</a></div>
   {% endif %}
   {% if account.children %}
   <div class="gs-meta">Subsidiaries: {% for c in account.children %}<a class="gs-source-link" href="/account?entity_id={{ c.entity_id | urlencode }}">{{ c.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</div>

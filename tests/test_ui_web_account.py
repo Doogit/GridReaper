@@ -58,6 +58,14 @@ def seed(conn):
         "richness, coverage_flag, gov_cloud_likelihood, tenant_cloud_environment)"
         " VALUES ('E_DARK','Dark Muni Co','muni_public',NULL,'low','dark',"
         "'likely','gcc_high')")
+    # A seeded parent_id hint with NO entity_relationships row -- the header's
+    # "roster, not a sourced edge" fallback path (only one such row exists in
+    # the real store; this fixture creates the equivalent case).
+    conn.execute(
+        "INSERT INTO watchlist_entities (entity_id, name, subsector, parent_id, "
+        "richness, coverage_flag, gov_cloud_likelihood, tenant_cloud_environment)"
+        " VALUES ('E_ORPHAN','Orphan Grid Sub','iou_electric','E_ACME','medium',"
+        "'dark','unknown','unknown')")
     conn.execute(
         "INSERT INTO entity_relationships (parent_entity_id, child_entity_id, "
         "relationship_type) VALUES ('E_ACME','E_SUB','subsidiary')")
@@ -65,7 +73,8 @@ def seed(conn):
         "INSERT INTO entity_relationships (parent_entity_id, child_entity_id, "
         "relationship_type) VALUES ('E_ACME','E_SUB&BR','subsidiary')")
 
-    # product + play + a primary fact for the snapshot provenance
+    # product + play + a primary fact and a non-primary fact for the snapshot
+    # provenance (the non-primary one drives the Products-tab badge test).
     conn.execute("INSERT INTO products (product_id, name) VALUES "
                  "('p_sentinel','Microsoft Sentinel')")
     conn.execute(
@@ -77,6 +86,11 @@ def seed(conn):
         "source_quality, source_url, verified_date) VALUES "
         "('f_primary','p_sentinel','commercial',?,'primary',"
         "'http://primary','2026-07-01')", (FORBIDDEN_PRICE,))
+    conn.execute(
+        "INSERT INTO license_facts (fact_id, product_id, segment, price_note, "
+        "source_quality, source_url, verified_date) VALUES "
+        "('f_nonprimary','p_sentinel','commercial','$9/GB rumored',"
+        "'non-primary','http://blog','2026-07-01')")
 
     # raw event -> account signal on E_ACME (evidence + snapshot)
     conn.execute(
@@ -98,8 +112,8 @@ def seed(conn):
     conn.execute(
         "INSERT INTO license_play_snapshots (signal_id, play_id, fact_ids, "
         "generated_at, generation_version, display_text, outreach_safe_text) "
-        "VALUES ('S_ACC1','play1','[\"f_primary\"]', ?, 'plays/1.0', "
-        "'Recommended path: Adopt E5 grant', "
+        "VALUES ('S_ACC1','play1','[\"f_primary\",\"f_nonprimary\"]', ?, "
+        "'plays/1.0', 'Recommended path: Adopt E5 grant', "
         "'Given the recent development, a licensing check may be timely.')",
         (iso(NOW),))
 
@@ -176,8 +190,8 @@ class AccountTestBase(unittest.TestCase):
 class TestSelector(AccountTestBase):
     def test_selector_lists_all_active_entities(self):
         dom = self.page()
-        # name-ordered: Acme Energy, Acme Grid Sub, Dark Muni Co
-        self.assertEqual(dom.count("<option "), 3)
+        # name-ordered: Acme Energy, Acme Grid Sub, Dark Muni Co, Orphan Grid Sub
+        self.assertEqual(dom.count("<option "), 4)
         self.assertIn("Acme Energy  ·  E_ACME", dom)
         self.assertIn("Dark Muni Co  ·  E_DARK", dom)
 
@@ -204,9 +218,21 @@ class TestHeader(AccountTestBase):
 
     def test_child_page_links_to_parent(self):
         dom = self.page(entity_id="E_SUB")
-        self.assertIn("Parent:", dom)
+        self.assertIn("Parent (watchlist roster, not a sourced edge):", dom)
         self.assertIn('href="/account?entity_id=E_ACME"', dom)
         self.assertIn("Acme Energy", dom)
+
+    def test_unsourced_parent_hint_agrees_with_the_entity_graph_empty_state(self):
+        """E_ORPHAN carries a seeded parent_id but no entity_relationships row
+        (the header's fallback path). The header must still show the parent,
+        labelled as a roster hint rather than a sourced edge, and the Entity
+        Graph tab's own empty state must use the SAME word ("sourced") rather
+        than contradicting the header (R8.3)."""
+        dom = self.page(entity_id="E_ORPHAN")
+        self.assertIn("Parent (watchlist roster, not a sourced edge):", dom)
+        self.assertIn('href="/account?entity_id=E_ACME"', dom)
+        self.assertIn("Acme Energy", dom)
+        self.assertIn("No sourced corporate relationships recorded", dom)
 
 
 class TestTabs(AccountTestBase):
@@ -259,6 +285,14 @@ class TestProductsTab(AccountTestBase):
         # play's own strings rather than the product name
         self.assertNotIn("Recommended path: Adopt E5 grant", dom)
         self.assertNotIn("What is your SIEM?", dom)
+
+    def test_non_primary_badge_matches_the_feed_cards_wording(self):
+        """S_ACC1's play cites a non-primary fact (f_nonprimary): the Signals
+        tab's reused feed card and the Products tab row must badge it with
+        IDENTICAL text/tooltip (R4.3) — no invented wording on the tab."""
+        dom = self.page(entity_id="E_ACME")
+        self.assertEqual(dom.count("Non-primary: commercial"), 2)
+        self.assertIn("Backed in part by non-primary licensing sources", dom)
 
 
 class TestComplianceCalendarTab(AccountTestBase):
@@ -377,6 +411,20 @@ class TestComplianceCalendarTab(AccountTestBase):
                          "account&#39;s subsector class. This is an "
                          "effective-date calendar", dom)
 
+    def test_mapped_products_label_precedes_the_pills_not_beside_the_regulator(self):
+        """The product pills used to sit in the same badge row as
+        status_label, one line under the regulator's name — reading as more
+        regulator metadata. They must carry their own label naming GridSignals
+        (not the regulator) as the source of the mapping."""
+        dom = self.page(entity_id="E_ACME")
+        # this label is static template text, not a Jinja variable, so its
+        # apostrophes are NOT HTML-entity-escaped the way calendar_caption's
+        # (a Python-string variable) are elsewhere on this page
+        self.assertIn(
+            "Mapped products — GridSignals' suggestion from the "
+            "trigger→product map, not Federal Energy Regulatory "
+            "Commission's recommendation:", dom)
+
 
 class TestEntityGraphTab(AccountTestBase):
     """R8.3 13c: a sourced relationship list, not a drawn graph."""
@@ -419,15 +467,110 @@ class TestBodySwap(AccountTestBase):
         self.assertIn("Acme Grid Sub", dom)
         self.assertIn('href="/account?entity_id=E_ACME"', dom)  # parent link
 
-    def test_body_unknown_entity_falls_back_to_first(self):
-        dom = self.body(entity_id="does_not_exist")
-        # resolves to the first active entity rather than crashing
-        self.assertIn("Acme Energy", dom)
-
     def test_switching_across_all_entities_never_500s(self):
-        for eid in ("E_ACME", "E_SUB", "E_DARK"):
+        for eid in ("E_ACME", "E_SUB", "E_DARK", "E_ORPHAN"):
             resp = self.client.get("/account/body", params={"entity_id": eid})
             self.assertEqual(resp.status_code, 200)
+
+
+class TestNotFound(AccountTestBase):
+    """R6.6/R8.3: an unknown, stale, or soft-disabled id must render an honest
+    not-found panel naming the id that was requested — never a silent HTTP 200
+    substitution of a different (e.g. the first) company."""
+
+    UNKNOWN_ID = "E9999"
+
+    def test_body_names_the_requested_id_and_no_company_name_leaks(self):
+        dom = self.body(entity_id=self.UNKNOWN_ID)
+        self.assertIn('No account matches id &#34;E9999&#34;.', dom)
+        self.assertIn("removed from the watchlist", dom)
+        # the body fragment alone (no selector, since that lives in
+        # account.html) — no active entity's name may leak in as though it
+        # were rendered for the wrong requested id
+        self.assertNotIn("Acme Energy", dom)
+        self.assertNotIn("Acme Grid Sub", dom)
+        self.assertNotIn("Dark Muni Co", dom)
+        self.assertNotIn("Orphan Grid Sub", dom)
+
+    def test_body_returns_200_not_404(self):
+        resp = self.client.get(
+            "/account/body", params={"entity_id": self.UNKNOWN_ID})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_page_returns_200_and_selector_shows_the_placeholder(self):
+        resp = self.client.get(
+            "/account", params={"entity_id": self.UNKNOWN_ID})
+        self.assertEqual(resp.status_code, 200)
+        dom = resp.text
+        self.assertIn("E9999 — not found", dom)
+        self.assertIn("disabled selected", dom)
+        # never silently reads as the selector's own deterministic default
+        self.assertNotIn('value="E_ACME" selected', dom)
+
+    def test_page_body_names_the_requested_id(self):
+        dom = self.page(entity_id=self.UNKNOWN_ID)
+        self.assertIn('No account matches id &#34;E9999&#34;.', dom)
+
+    def test_soft_disabled_entity_is_not_found_not_silently_substituted(self):
+        # E_SUB&BR is active=0 (soft-disabled, R8.7): it drops out of the
+        # selector's pool entirely, so it must resolve as not-found too.
+        dom = self.body(entity_id="E_SUB&BR")
+        self.assertIn("No account matches id", dom)
+        self.assertIn("E_SUB&amp;BR", dom)
+        self.assertNotIn("Acme Energy", dom)
+
+    def test_bare_route_with_no_id_still_renders_the_deterministic_default(self):
+        dom = self.page()
+        self.assertIn("Acme Energy", dom)
+        self.assertNotIn("not found", dom)
+
+
+class TestAccountPlayRowsBadging(unittest.TestCase):
+    """render.account_play_rows (pure, no DB/route): a play's non-primary
+    provenance badge must read identically to render.card_view's feed badge
+    (R4.3), and the discovery question must render exactly once (R7.6)."""
+
+    LEGEND = {"source_quality": {"non-primary": {"label": "Non-primary"}}}
+
+    @staticmethod
+    def _play(**overrides):
+        base = {"signal_id": "s1", "play_id": "p1", "product_name": "X",
+                "product_id": "p_x", "headline": "h", "event_date": "2026-01-01",
+                "display_text": "Recommended path: Adopt E5 grant",
+                "discovery_question": "What is your SIEM?",
+                "generation_version": "plays/1.0", "facts": []}
+        base.update(overrides)
+        return base
+
+    def test_non_primary_fact_badges_the_play(self):
+        play = self._play(facts=[{"fact_id": "f1", "segment": "commercial",
+                                  "source_quality": "non-primary"}])
+        rows = render.account_play_rows([play], self.LEGEND)
+        self.assertEqual(len(rows[0]["badges"]), 1)
+        self.assertEqual(rows[0]["badges"][0]["text"], "Non-primary: commercial")
+        self.assertIn("R4.3", rows[0]["badges"][0]["title"])
+
+    def test_primary_only_facts_render_no_badge(self):
+        play = self._play(facts=[{"fact_id": "f1", "segment": "commercial",
+                                  "source_quality": "primary"}])
+        rows = render.account_play_rows([play], self.LEGEND)
+        self.assertEqual(rows[0]["badges"], [])
+
+    def test_no_facts_render_no_badge(self):
+        rows = render.account_play_rows([self._play(facts=[])], self.LEGEND)
+        self.assertEqual(rows[0]["badges"], [])
+
+    def test_discovery_question_rendered_once_when_frozen_text_contains_it(self):
+        play = self._play(
+            display_text="Ask: What is your SIEM? Then pitch Sentinel.",
+            discovery_question="What is your SIEM?")
+        rows = render.account_play_rows([play], self.LEGEND)
+        self.assertEqual(rows[0]["discovery_question"], "")
+        self.assertEqual(rows[0]["display_text"].count("What is your SIEM?"), 1)
+
+    def test_discovery_question_kept_separate_when_not_in_frozen_text(self):
+        rows = render.account_play_rows([self._play()], self.LEGEND)
+        self.assertEqual(rows[0]["discovery_question"], "What is your SIEM?")
 
 
 if __name__ == "__main__":

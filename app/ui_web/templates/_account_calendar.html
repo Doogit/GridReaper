@@ -15,8 +15,13 @@
   <div class="gs-evidence"><span class="gs-locator">Applies to</span> &nbsp; {{ o.affected_scope }}</div>
   <div class="gs-badges">
     <span class="gs-badge scope">{{ o.status_label }}</span>
+  </div>
+  {% if o.products %}
+  <div class="gs-meta">Mapped products — GridSignals' suggestion from the trigger→product map, not {{ o.regulator }}'s recommendation:</div>
+  <div class="gs-badges">
     {% for name in o.products %}<span class="gs-badge">{{ name }}</span>{% endfor %}
   </div>
+  {% endif %}
   {% if o.source_url %}<a class="gs-source-link" href="{{ o.source_url }}" target="_blank" rel="noopener noreferrer">Source</a>{% endif %}
   {% if o.card_key %}<a class="gs-permalink" href="/card/{{ o.card_key }}" title="Permalink to the signal this obligation was derived from">permalink</a>{% endif %}
 </div>

@@ -32,7 +32,14 @@ from app.ui import data
 from app.ui_web import render
 from app.ui_web.app import app
 
-NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+# Real current time, not a fixed past date: data.precision_report now windows
+# its headline useful=/auto= rate, its G2 recommendation, and its per-dimension
+# tables to the UTC calendar month containing `now` (R9.3/R9.5), and the
+# `/precision` and `/admin` routes call it with no `now` override (real
+# wall-clock time). A fixed historical NOW would drift out of that window as
+# real time moves past it, silently breaking every fixture below that relies
+# on its feedback/audit rows landing in the "current" reporting month.
+NOW = datetime.now(timezone.utc)
 
 
 def iso(dt):
@@ -228,14 +235,21 @@ def seed_populated(conn):
             (f"re_{i:02d}", days_ago_date(40)))
         _signal(conn, sid, "E_ACME", "account", "leadership_change",
                 f"re_{i:02d}", incident="confirmed", score_decay=0.7)
+        # Feedback ts is left at the _feedback default (iso(NOW)) rather than
+        # backdated: data.precision_report now windows useful_overall/g2/the
+        # per-dimension tables to the calendar month containing `now` (R9.3/
+        # R9.5), and this route calls it with no `now` override (real
+        # wall-clock time) - a backdated ts would fall out of that window and
+        # this fixture's 25 account cards would silently stop counting toward
+        # the headline. No assertion below needs G1's days_span (G1 stays on
+        # the full, unwindowed history), so there is nothing to preserve by
+        # backdating.
         if i < 20:
-            _feedback(conn, sid, "useful",
-                      ts=iso(NOW - timedelta(days=40 - i)))
+            _feedback(conn, sid, "useful")
             _audit(conn, sid, "entity_match", "pass")
             _audit(conn, sid, "evidence_support", "pass")
         else:
-            _feedback(conn, sid, "not_useful", reason="weak_evidence",
-                      ts=iso(NOW - timedelta(days=40 - i)))
+            _feedback(conn, sid, "not_useful", reason="weak_evidence")
             _audit(conn, sid, "entity_match", "pass")
             _audit(conn, sid, "evidence_support", "fail")
     # a sector card reported separately
