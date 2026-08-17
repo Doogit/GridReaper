@@ -5,10 +5,13 @@ lists of plain dict rows (fetched and shaped by the UI layer) and returns plain
 dicts / lists. Any date/age reasoning accepts an injectable ``now`` so callers
 and tests stay deterministic; all timestamps are UTC ISO-8601 (R10.2).
 
-The ONE piece of I/O in this file is the ``--materialize`` CLI at the bottom —
+The ONE piece of I/O in this file is the ``--report`` CLI at the bottom —
 R9.3's monthly job. It opens a connection, reads its rows through
 ``app.ui.data.precision_report`` and prints what the functions above compute; it
-adds no computation of its own and writes nothing to the store.
+adds no computation of its own and writes nothing to the store. It is named
+``--report``, not ``--materialize``, because it prints: in this repo
+"materialize" means a durable write (``app.obligations``), and the monthly
+record is deliberately the LOG LINE, not a new table.
 
 TRUST INVARIANT (returning-maintainer rule): a rate is *never* returned as a
 bare percentage. Every computed rate ships alongside its ``n`` (denominator),
@@ -42,7 +45,7 @@ evidence_support feed auto-accuracy, and only "pass"/"fail" are scored
 import argparse
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.db.connection import get_connection
 
@@ -874,7 +877,7 @@ def g2_status(feedback_rows, threshold=G2_THRESHOLD, min_n=G2_MIN_N, now=None):
 
 # -- CLI: the monthly precision job (R9.3) -----------------------------------
 #
-#     python -m app.audit.precision --materialize
+#     python -m app.audit.precision --report
 #
 # NO new table, and no ingest lock. The report is a pure function of rows that
 # are already durable and append-only (``feedback`` + ``audit``), so it is
@@ -885,7 +888,33 @@ def g2_status(feedback_rows, threshold=G2_THRESHOLD, min_n=G2_MIN_N, now=None):
 # than only in the moment someone opens the Precision page. The job reads and
 # prints; it never writes the store, so it takes no single-writer lock (R3.2) —
 # ``ingest_lock()`` RAISES on a live lock, which would turn a read-only report
-# into a spurious failure whenever a pipeline happened to be running.
+# into a spurious failure whenever a pipeline happened to be running. For the
+# same reason the crontab does NOT wrap it in deploy/scheduled_run.sh: that
+# guard exists to serialize WRITERS, and it exits 0 on contention, so wrapping a
+# read-only monthly job would silently discard that month's record whenever a
+# first-load or manual ingest happened to be in flight.
+
+def prior_month_end(now=None):
+    """Last instant of the UTC calendar month BEFORE ``now``.
+
+    The scheduled job fires just after midnight-ish on the 1st, so ``now`` is a
+    few hours into a month that has barely started. Every windowed metric in the
+    report (today: ``spotcheck_coverage``) windows to the calendar month
+    CONTAINING the ``now`` it is given, so asking it about the run's own instant
+    would summarize ~16 hours of the new month and never once report the month
+    that just ended — a permanently, always-false line in a permanent record.
+    Handing it this instant instead makes the scheduled record summarize the
+    completed month.
+
+    This does NOT change ``spotcheck_coverage``'s semantics: the Precision page
+    asks about the current month, which is right for a live view. It is only
+    what the SCHEDULED invocation asks for.
+    """
+    now_dt = _now(now)
+    first_of_month = now_dt.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0)
+    return first_of_month - timedelta(microseconds=1)
+
 
 def _fmt_rate(value):
     """A rate as a percent, or ``n/a`` when the denominator was empty.
@@ -896,27 +925,43 @@ def _fmt_rate(value):
     return "n/a" if value is None else f"{value:.1%}"
 
 
-def format_report(report):
+def format_report(report, as_of=None):
     """Render a ``app.ui.data.precision_report`` dict as the R9.3 record.
 
     One summary line (``precision: success …``, matching the other producers'
     one-line convention) followed by one line per dimension bucket for each of
     ``REPORT_DIMENSIONS``. Every rate is printed beside its ``n``. Returns the
     lines as a list so the shaping is testable without a store.
+
+    ``as_of`` (an ISO-8601 string) is appended to the summary line when given,
+    so a log record states the instant it was computed for — which, for the
+    scheduled run, is the last instant of the month being reported and NOT the
+    run's own wall clock. ``spotcheck_window`` names that month outright.
+    The overall useful/auto rates are lifetime-cumulative, not monthly, so no
+    line claims the whole record is scoped to one month.
     """
     useful = report["useful_overall"]
     auto = report["auto_overall"]
     spot = report["spotcheck"]
     g2 = report["g2"]
-    demote = sum(1 for cell in g2.values() if cell["demote_recommended"])
-    lines = [
+    # Sector and regulatory cards have no raw_event, so g2_status buckets their
+    # NULL source_id together as though it were a source. That bucket is not a
+    # source and must not be counted on either side of the headline: this store
+    # is dominated by sector/regulatory cards, so counting it would report
+    # sources as "assessed" when zero real sources were (R9.5).
+    real_sources = [cell for sid, cell in g2.items() if sid is not None]
+    demote = sum(1 for cell in real_sources if cell["demote_recommended"])
+    summary = (
         f"precision: success useful={_fmt_rate(useful['rate'])} "
         f"n={useful['total']} auto={_fmt_rate(auto['accuracy'])} "
         f"n={auto['scored']} g1={report['g1']['state']} "
-        f"g2_demote_recommended={demote}/{len(g2)} "
+        f"g2_demote_recommended={demote}/{len(real_sources)} "
         f"spotcheck={spot['reviewed']}/{spot['target']} "
         f"spotcheck_window={spot['window']}"
-    ]
+    )
+    if as_of is not None:
+        summary += f" as_of={as_of}"
+    lines = [summary]
     for dimension in REPORT_DIMENSIONS:
         useful_buckets = report["useful_by_dimension"][dimension]
         auto_buckets = report["auto_by_dimension"][dimension]
@@ -933,18 +978,27 @@ def format_report(report):
     return lines
 
 
-def main(argv=None):
-    """Compute and emit the monthly precision report (R9.3). Returns 0."""
+def main(argv=None, now=None):
+    """Compute and emit the monthly precision report (R9.3). Returns 0.
+
+    The report is computed as of the last instant of the PRIOR calendar month
+    (``prior_month_end``), because the job is scheduled on the 1st: asking for
+    the run's own instant would summarize a few hours of the month that just
+    started and never once report the month that ended. ``now`` is injectable so
+    a test can pin the real cron instant.
+    """
     parser = argparse.ArgumentParser(
         prog="python -m app.audit.precision",
         description="Compute precision per trigger, source and signal_scope "
-                    "over the stored feedback and audit verdicts (R9.3).")
+                    "over the stored feedback and audit verdicts, for the "
+                    "calendar month that just ended, and print it (R9.3). "
+                    "Writes nothing to the store.")
     parser.add_argument(
-        "--materialize", action="store_true",
+        "--report", action="store_true",
         help="compute the report and emit it to stdout (the monthly R9.3 job)")
     args = parser.parse_args(argv)
-    if not args.materialize:
-        parser.error("no action requested; pass --materialize")
+    if not args.report:
+        parser.error("no action requested; pass --report")
 
     # Deferred import: app.ui.data imports THIS module, so a module-level
     # import would be a cycle. precision_report is the ONE place the four
@@ -952,12 +1006,13 @@ def main(argv=None):
     # is what keeps this job and the Precision page from ever disagreeing.
     from app.ui import data
 
+    as_of = prior_month_end(now)
     conn = get_connection()
     try:
-        report = data.precision_report(conn)
+        report = data.precision_report(conn, now=as_of)
     finally:
         conn.close()
-    for line in format_report(report):
+    for line in format_report(report, as_of=as_of.isoformat()):
         print(line)
     return 0
 

@@ -32,18 +32,33 @@ from app.ui import data
 
 
 def _utcnow_iso(now=None):
-    """UTC ISO-8601 (R10.2); ``now`` injectable so a sweep is deterministic."""
-    now = now or datetime.now(timezone.utc)
+    """UTC ISO-8601 (R10.2); ``now`` injectable so a sweep is deterministic.
+
+    A NAIVE ``now`` is REJECTED rather than guessed at. The two sides of this
+    seam read a naive datetime differently — here it would be assumed UTC
+    (``.replace(tzinfo=utc)``), while ``data.stale_facts`` assumes host-local
+    (``.astimezone()``) — so on a non-UTC host ``as_of`` and the ages beside it
+    could describe different days. There is no correct guess to make, so the
+    contract is explicit: pass an aware datetime, or pass ``None`` for real UTC
+    now (what ``main()`` does).
+    """
+    if now is None:
+        return datetime.now(timezone.utc).isoformat()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        raise ValueError(
+            "reverify: now must be a timezone-aware datetime — a naive one "
+            "would be read as UTC here and as host-local by "
+            "app.ui.data.stale_facts")
     return now.astimezone(timezone.utc).isoformat()
 
 
 def sweep(conn, now=None):
     """The facts due for re-verification, with the denominator they came from.
 
-    ``now`` is an injectable aware datetime, the type ``data.stale_facts``
-    takes, so the sweep and the banner age a fact identically.
+    ``now`` is an injectable AWARE datetime, the type ``data.stale_facts``
+    takes, so the sweep and the banner age a fact identically. A naive ``now``
+    raises ``ValueError`` (see ``_utcnow_iso``) — it is validated before any
+    read, so the sweep never half-runs on an ambiguous clock.
 
     Returns ``{"due": [rows], "facts_total": int, "as_of": iso}``. ``due`` is
     ``data.stale_facts`` verbatim (oldest first, unknown-verified last), so each
@@ -51,10 +66,11 @@ def sweep(conn, now=None):
     not just that it crossed a threshold. ``facts_total`` is the denominator:
     "3 due" means nothing without "of how many".
     """
+    as_of = _utcnow_iso(now)
     due = data.stale_facts(conn, now=now)
     facts_total = conn.execute(
         "SELECT COUNT(*) AS n FROM license_facts").fetchone()["n"]
-    return {"due": due, "facts_total": facts_total, "as_of": _utcnow_iso(now)}
+    return {"due": due, "facts_total": facts_total, "as_of": as_of}
 
 
 def format_sweep(result):

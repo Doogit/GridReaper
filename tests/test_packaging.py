@@ -300,25 +300,30 @@ class PackagingContractTest(unittest.TestCase):
         # marked resolved against a scheduler that did not schedule them, so pin
         # the cadence fields — a job present at the wrong cadence is the same
         # false green in slower motion.
-        jobs = {}
+        # A LIST of (schedule, command), never a dict keyed by command: two
+        # lines running the same command would collapse into one key, hiding a
+        # duplicate or a mis-scheduled twin behind an "exactly once" assertion
+        # that could no longer see it.
+        entries = []
         for job in self._crontab_jobs():
             match = re.match(r"^(\S+ \S+ \S+ \S+ \S+)\s+\S+\s+(.*)$", job)
             self.assertIsNotNone(match, f"not a 6-field /etc/cron.d entry: {job}")
-            jobs[match.group(2)] = match.group(1)
+            entries.append((match.group(1), match.group(2)))
 
-        precision = [cmd for cmd in jobs if "app.audit.precision" in cmd]
+        precision = [e for e in entries if "app.audit.precision" in e[1]]
         self.assertEqual(len(precision), 1, "R9.3's monthly precision job is not scheduled exactly once")
-        self.assertIn("--materialize", precision[0], "the precision job must run its --materialize entry point")
+        schedule, command = precision[0]
+        self.assertIn("--report", command, "the precision job must run its --report entry point")
         # dom is a single day and mon is every month -> monthly (R9.3).
-        _m, _h, dom, mon, _dow = jobs[precision[0]].split()
+        _m, _h, dom, mon, _dow = schedule.split()
         self.assertRegex(dom, r"^\d+$", f"R9.3 asks for a MONTHLY job; day-of-month is {dom!r}")
         self.assertEqual(mon, "*", f"R9.3 asks for a MONTHLY job; month field is {mon!r}")
 
-        reverify = [cmd for cmd in jobs if "app.reverify" in cmd]
+        reverify = [e for e in entries if "app.reverify" in e[1]]
         self.assertEqual(len(reverify), 1, "R10.7's re-verification sweep is not scheduled exactly once")
         # Two months named, six apart -> semi-annual (R10.7). cron has no
         # "every 6 months", so the month list is the only honest spelling.
-        _m, _h, dom, mon, _dow = jobs[reverify[0]].split()
+        _m, _h, dom, mon, _dow = reverify[0][0].split()
         self.assertRegex(dom, r"^\d+$", f"R10.7 asks for a SEMI-ANNUAL job; day-of-month is {dom!r}")
         months = sorted(int(part) for part in mon.split(","))
         self.assertEqual(len(months), 2, f"R10.7 asks for a SEMI-ANNUAL job; month field is {mon!r}")
@@ -347,7 +352,7 @@ class PackagingContractTest(unittest.TestCase):
         for job in self._crontab_jobs():
             self.assertIn(f". {ENV_SNAPSHOT}", job, f"scheduled job does not source {ENV_SNAPSHOT}: {job}")
             self.assertLess(
-                job.index(f". {ENV_SNAPSHOT}"), job.index("deploy/"),
+                job.index(f". {ENV_SNAPSHOT}"), job.index("cd /app"),
                 "the environment snapshot must be sourced before the job runs",
             )
 
@@ -360,12 +365,27 @@ class PackagingContractTest(unittest.TestCase):
             "deploy/crontab must never assign a secret (R10.8)",
         )
 
-    def test_crontab_jobs_run_under_the_lock_guard(self):
+    def test_store_writing_crontab_jobs_run_under_the_lock_guard(self):
         # app/ingest/runner.py RAISES on a live lock and ingest_pipeline.sh runs
         # under `set -e`, so an unguarded tick during a manual/first-load run
-        # aborts mid-pipeline.
-        for job in self._crontab_jobs():
+        # aborts mid-pipeline. That is a WRITER's problem: the guard serializes
+        # writes and exits 0 on contention. Wrapping the read-only reporting jobs
+        # in it bought nothing (they take no lock) and cost the record — a skip
+        # discards a month of R9.3 or six of R10.7 while cron logs success. So
+        # the guard is required of the jobs that write, and pinned as absent from
+        # the jobs that do not.
+        writers = [job for job in self._crontab_jobs() if "ingest_pipeline.sh" in job]
+        self.assertTrue(writers, "no scheduled job writes the store — the dataset freezes at first boot")
+        for job in writers:
             self.assertIn("deploy/scheduled_run.sh", job, f"scheduled job bypasses the lock guard: {job}")
+        for job in self._crontab_jobs():
+            if job in writers:
+                continue
+            self.assertNotIn(
+                "deploy/scheduled_run.sh", job,
+                f"a read-only reporting job is wrapped in the write guard, whose skip-on-contention "
+                f"would discard the record instead of delaying it: {job}",
+            )
 
     def test_crontab_logs_the_whole_job_and_disables_mail(self):
         # A bare `cmd >> log` binds the redirect to the LAST command only, so a

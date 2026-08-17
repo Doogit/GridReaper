@@ -8,6 +8,7 @@ The load-bearing property is the SHARED notion of "due": the sweep reads
 ``app.ui.data.stale_facts``, the same call the Admin banner makes, so the
 scheduled job and the page can never disagree about which facts are stale.
 """
+import inspect
 import io
 import os
 import sqlite3
@@ -83,6 +84,18 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("due=0 facts=1", lines[0])
 
+    def test_a_naive_now_is_rejected_rather_than_read_two_ways(self):
+        # This module would read a naive datetime as UTC while
+        # data.stale_facts reads it as host-local (.astimezone()), so on a
+        # non-UTC host as_of and the ages beside it could describe different
+        # days. There is no correct guess, so the seam refuses one — and it
+        # refuses BEFORE any read, so the sweep never half-runs.
+        with self.assertRaises(ValueError):
+            reverify.sweep(self.conn, now=datetime(2026, 8, 16))
+        # An aware datetime and None both still work.
+        self.assertEqual(reverify.sweep(self.conn, now=NOW)["facts_total"], 3)
+        self.assertEqual(reverify.sweep(self.conn)["facts_total"], 3)
+
     def test_the_sweep_writes_nothing(self):
         # R10.7's task is a human walking the validation checklist. The job
         # announces the work; it must never invent a verified_date.
@@ -94,6 +107,35 @@ class SweepTests(unittest.TestCase):
             "SELECT fact_id, verified_date FROM license_facts "
             "ORDER BY fact_id").fetchall()
         self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
+
+
+class StaleWindowDriftTests(unittest.TestCase):
+    """One window, three declarations — pinned equal (R10.7).
+
+    ``test_due_set_is_exactly_the_admin_banner_list`` compares default to
+    default, so it stays green through a drift: if someone changed
+    ``STALE_FACT_WINDOW_DAYS`` in one route and not the other, the sweep and the
+    Admin banner would silently disagree about which facts are due while every
+    other test passed. These imports are READ-ONLY — the sweep never touches the
+    UI layer at runtime.
+    """
+
+    def test_the_sweep_and_both_admin_constants_name_the_same_window(self):
+        from app.ui_web import render
+        from app.ui_web.routes import admin
+
+        sweep_default = inspect.signature(data.stale_facts).parameters["days"].default
+        self.assertEqual(
+            sweep_default, render.STALE_FACT_WINDOW_DAYS,
+            "app.reverify takes data.stale_facts' default window; "
+            "app/ui_web/render.py declares a different one",
+        )
+        self.assertEqual(
+            render.STALE_FACT_WINDOW_DAYS, admin.STALE_FACT_WINDOW_DAYS,
+            "the Admin banner and the review surface declare different stale "
+            "windows — the same fact would read due on one page and fresh on "
+            "the other",
+        )
 
 
 class MainTests(unittest.TestCase):
