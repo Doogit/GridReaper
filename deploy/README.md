@@ -39,10 +39,60 @@ Consequences:
   (`app.first_load`) runs ingest only when the signals table is empty. Point
   `GRIDSIGNALS_DB` at a durable volume (Azure Files) and a restart reuses the
   existing dataset instead of re-fetching. Without a durable volume, each fresh
-  container is a first load and re-ingests. Scheduled refresh (an in-container
-  cron over the same `deploy/ingest_pipeline.sh`) is the planned follow-up.
+  container is a first load and re-ingests.
+- **Scheduled refresh keeps a durable volume current.** Because first load skips
+  a populated volume, a scheduler is what stops that container from freezing at
+  its first boot. `deploy/crontab` (installed to `/etc/cron.d/gridsignals`) runs
+  the same `deploy/ingest_pipeline.sh` daily at **03:17 UTC**; the daemon starts
+  in `deploy/entrypoint.sh` before uvicorn, so it never blocks serving. See
+  [Scheduled refresh](#scheduled-refresh) below.
 - `ANTHROPIC_API_KEY` is **not** required — the app runs without it; only the
   optional accuracy-audit judge uses it.
+
+## Scheduled refresh
+
+An in-container cron daemon re-runs the canonical pipeline so the dataset does
+not freeze at first boot (R3.1).
+
+| Piece | Role |
+|---|---|
+| `deploy/crontab` | The schedule. Installed by the Dockerfile to `/etc/cron.d/gridsignals` (mode 644 — cron ignores anything else). |
+| `deploy/scheduled_run.sh` | Lock guard. Serializes scheduled ticks against each other, and records a dated skip (exit 0) rather than aborting mid-pipeline when a manual run already holds the ingestion lock. |
+| `deploy/entrypoint.sh` | Starts `cron` before `exec uvicorn`, so the scheduler never blocks the web process. |
+| `deploy/ingest_pipeline.sh` | The one canonical step list, shared with the first-load path. The crontab must never inline its own copy. |
+
+Two container facts the schedule has to work around:
+
+- **cron strips the environment.** A scheduled job inherits nothing from the
+  container, so `GRIDSIGNALS_DB` and any optional API key would be invisible to
+  every tick. The entrypoint snapshots the exported environment to
+  `/etc/gridsignals.env` (mode 600, outside the repo tree) and each crontab line
+  sources it first. No secret is ever written into a tracked file.
+- **A tick can collide with another run.** `deploy/scheduled_run.sh` holds a
+  tick-scoped lock for the whole run, so two scheduled ticks can never overlap,
+  and it probes the per-step ingestion lock at tick start so a manual run already
+  in flight yields a clean skip. A lock older than 2h is treated as abandoned, so
+  a crashed run cannot wedge the schedule permanently.
+- **Line endings matter more than usual here.** `az acr build` uploads the local
+  working tree as the build context. A CRLF shell script fails loudly, but a CRLF
+  `/etc/cron.d` entry just never fires — cron reports that only via syslog/mail,
+  neither of which exists in this image. `.gitattributes` pins these files to LF
+  and the Dockerfile strips CRs on install.
+
+Scheduled output goes to `/var/log/gridsignals-cron.log` inside the container.
+
+Known gap, not closed here: the R3.2 ingestion lock is acquired and released
+**per step**, so the guard's single probe cannot stop a manual run started
+mid-tick from interleaving with a scheduled one. Serializing that needs a lock
+the Python steps honor. Routing the first-load ingest through the guard is the
+related follow-up, deliberately left alone so this change cannot regress
+first-load behavior.
+
+**Not scheduled: the annual entity-identifier refresh (R4.2).**
+`app/enrich_entities.py` writes reviewable seed CSVs and never writes the store —
+generated fills are reviewed in a PR by design, and in a container those CSVs
+land on ephemeral storage and are never loaded. It stays an operator-run refresh:
+`python -m app.enrich_entities` → review the diff → `python -m app.db.load_seeds`.
 
 ## What it serves, and the auth boundary
 
@@ -73,7 +123,7 @@ az webapp auth update -g rg-gridsignals -n <app-name> `
 - **State is ephemeral and demo-only by default.** The SQLite store is created at
   container startup inside the container filesystem; first-load signals and
   feedback persist only until the container is replaced. For a real deployment,
-  point `GRIDSIGNALS_DB` at durable storage (Azure Files) and run ingestion as a
-  scheduled job.
+  point `GRIDSIGNALS_DB` at durable storage (Azure Files); the scheduled refresh
+  above then keeps that volume current.
 - **Single container, always-on B1 plan.** For a rarely-used demo you can switch
   the plan SKU to `F1` (free, but no Always On → cold starts).

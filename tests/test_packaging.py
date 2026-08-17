@@ -8,9 +8,21 @@ dataset). The Dockerfile CMD runs deploy/entrypoint.sh, which seeds the schema,
 background-runs deploy/ingest_pipeline.sh on first load, then execs uvicorn.
 The pipeline's ordering invariants (licensing before plays, classify before
 score, digest last) live in the pipeline script and are pinned below.
+
+Scheduled refresh (R3.1): the same pipeline is re-run by an in-container cron
+daemon (deploy/crontab), started by the entrypoint before uvicorn. The crontab is
+a SECOND caller of the canonical pipeline, so the same anti-drift contract
+applies to it — it must drive deploy/ingest_pipeline.sh rather than inline its
+own step list, and every module it names must exist.
 """
 
+import importlib.util
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +30,10 @@ REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 ENTRYPOINT = REPO / "deploy" / "entrypoint.sh"
 PIPELINE = REPO / "deploy" / "ingest_pipeline.sh"
+CRONTAB = REPO / "deploy" / "crontab"
+SCHEDULED_RUN = REPO / "deploy" / "scheduled_run.sh"
+ENV_SNAPSHOT = "/etc/gridsignals.env"
+SENTINEL = "GUARD-RAN-THE-JOB"
 DEPLOY_README = REPO / "deploy" / "README.md"
 PACKAGE_WORKFLOW = REPO / ".github" / "workflows" / "package.yml"
 AZURE_DEPLOY = REPO / "deploy" / "azure-deploy.ps1"
@@ -39,6 +55,22 @@ class PackagingContractTest(unittest.TestCase):
     def _pipeline(self) -> str:
         self.assertTrue(PIPELINE.exists(), "deploy/ingest_pipeline.sh missing — first-load ingest cannot run")
         return PIPELINE.read_text(encoding="utf-8")
+
+    def _crontab(self) -> str:
+        self.assertTrue(CRONTAB.exists(), "deploy/crontab missing — the container never re-ingests")
+        return CRONTAB.read_text(encoding="utf-8")
+
+    def _crontab_jobs(self):
+        # Scheduled entries only: drop comments, blank lines, and cron's own
+        # NAME=value settings (SHELL, PATH).
+        jobs = []
+        for line in self._crontab().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", stripped):
+                continue
+            jobs.append(stripped)
+        self.assertTrue(jobs, "deploy/crontab schedules nothing")
+        return jobs
 
     def test_config_seeds_present(self):
         # load_seeds bakes the config layer from these (at runtime first-load).
@@ -240,6 +272,293 @@ class PackagingContractTest(unittest.TestCase):
             entry, r"deploy/ingest_pipeline\.sh[^\n]*&",
             "first-load ingest must run in the background (trailing &)",
         )
+
+    # -- scheduled refresh (R3.1) --------------------------------------------
+
+    def test_crontab_drives_the_canonical_pipeline(self):
+        # The crontab is the pipeline's second caller. It must invoke the shared
+        # script; a hardcoded chain of its own would be exactly the drift these
+        # packaging tests exist to prevent (one caller would silently lose a
+        # classifier the other kept).
+        jobs = self._crontab_jobs()
+        self.assertTrue(
+            any("deploy/ingest_pipeline.sh" in job for job in jobs),
+            "no scheduled entry runs deploy/ingest_pipeline.sh — the dataset freezes at first boot",
+        )
+        for job in jobs:
+            for step in ("app.licensing", "app.ingest.", "app.classify.",
+                         "app.scoring", "app.plays", "app.aggregates", "app.ui_web.digest"):
+                self.assertNotIn(
+                    step, job,
+                    f"crontab inlines a pipeline step ({step}) instead of calling "
+                    f"deploy/ingest_pipeline.sh — a second step list will drift",
+                )
+
+    def test_crontab_targets_exist(self):
+        # Mirror of test_pipeline_modules_present for the scheduler: a crontab
+        # naming a module that does not exist fails only at 3am in a container.
+        text = self._crontab()
+        for module in re.findall(r"python -m ([\w.]+)", text):
+            try:
+                spec = importlib.util.find_spec(module)
+            except (ImportError, ValueError):
+                spec = None
+            self.assertIsNotNone(spec, f"crontab schedules {module}, which is not importable")
+        scripts = set(re.findall(r"deploy/[\w.\-]+\.sh", text))
+        self.assertIn("deploy/scheduled_run.sh", scripts, "crontab must wrap jobs in the lock guard")
+        for script in scripts:
+            self.assertTrue((REPO / script).exists(), f"crontab references {script}, which is missing")
+
+    def test_crontab_jobs_source_the_env_snapshot(self):
+        # cron strips the environment: without this a scheduled run cannot see
+        # GRIDSIGNALS_DB (a Dockerfile ENV) or any optional API key, so a source
+        # that skips on a missing key silently never runs while the ledger reads
+        # healthy. A scheduled run must see what an interactive run sees.
+        for job in self._crontab_jobs():
+            self.assertIn(f". {ENV_SNAPSHOT}", job, f"scheduled job does not source {ENV_SNAPSHOT}: {job}")
+            self.assertLess(
+                job.index(f". {ENV_SNAPSHOT}"), job.index("deploy/"),
+                "the environment snapshot must be sourced before the job runs",
+            )
+
+    def test_crontab_holds_no_secret(self):
+        # R10.8: keys live outside the repo. The snapshot is written at startup
+        # to a 600 file; nothing secret is ever assigned in this tracked file.
+        text = self._crontab()
+        self.assertNotRegex(
+            text, r"(?i)\b\w*(api_key|apikey|secret|token|password|credential)\w*\s*=",
+            "deploy/crontab must never assign a secret (R10.8)",
+        )
+
+    def test_crontab_jobs_run_under_the_lock_guard(self):
+        # app/ingest/runner.py RAISES on a live lock and ingest_pipeline.sh runs
+        # under `set -e`, so an unguarded tick during a manual/first-load run
+        # aborts mid-pipeline.
+        for job in self._crontab_jobs():
+            self.assertIn("deploy/scheduled_run.sh", job, f"scheduled job bypasses the lock guard: {job}")
+
+    def test_crontab_logs_the_whole_job_and_disables_mail(self):
+        # A bare `cmd >> log` binds the redirect to the LAST command only, so a
+        # failure of the env source or the `cd` — the two likeliest tick-killers
+        # — would log zero bytes and go to cron's mail channel, which has no MTA
+        # in this image. Brace-group the job, redirect outside the group, and
+        # make the env source fatal rather than a silently-skipped prefix.
+        self.assertIn('MAILTO=""', self._crontab(), "cron mail is a black hole here; disable it explicitly")
+        for job in self._crontab_jobs():
+            self.assertRegex(
+                job, r"\{.*\}\s*>>",
+                f"the log redirect must sit outside the brace group, or only the last command is logged: {job}",
+            )
+            self.assertRegex(
+                job, rf"\. {re.escape(ENV_SNAPSHOT)}\s*&&",
+                "a failed environment source must abort the tick, not run it blind",
+            )
+
+    def test_crontab_keeps_the_cron_d_format_rules_that_fail_silently(self):
+        # Each of these makes cron ignore work with no error anywhere.
+        raw = CRONTAB.read_bytes()
+        self.assertNotIn(b"\r", raw, "a CRLF /etc/cron.d entry corrupts its trailing field and never fires")
+        self.assertTrue(raw.endswith(b"\n"), "a cron.d file without a trailing newline drops its last job")
+        for job in self._crontab_jobs():
+            self.assertNotIn("%", job, "cron translates an unescaped % into a newline, truncating the job")
+
+    def test_scheduled_run_guard_ships_lf_only(self):
+        # Same CRLF trap as the crontab, one step removed: .gitattributes is what
+        # keeps a Windows clone from shipping CR-terminated shell scripts.
+        self.assertNotIn(b"\r", SCHEDULED_RUN.read_bytes(), "the guard must ship LF-only (see .gitattributes)")
+        attributes = (REPO / ".gitattributes").read_text(encoding="utf-8")
+        self.assertRegex(attributes, r"(?m)^deploy/crontab\s+text\s+eol=lf")
+        self.assertRegex(attributes, r"(?m)^\*\.sh\s+text\s+eol=lf")
+
+    def test_crontab_does_not_pretend_to_automate_entity_enrichment(self):
+        # R4.2 is NOT automatable as a cron job: app/enrich_entities.py writes
+        # reviewable seed CSVs and never writes the store, so in a container the
+        # output lands on ephemeral storage and is never loaded. It stays an
+        # operator-run refresh; the crontab must say so rather than schedule it.
+        for job in self._crontab_jobs():
+            self.assertNotIn(
+                "app.enrich_entities", job,
+                "the annual identifier refresh writes seed CSVs for review, not the store — "
+                "scheduling it would only pretend R4.2 was automated",
+            )
+        self.assertIn("R4.2", self._crontab(), "deploy/crontab must record why the annual refresh is absent")
+
+    def _scheduler_start(self, entry: str) -> int:
+        match = re.search(r"&&\s*cron\b", entry)
+        self.assertIsNotNone(
+            match,
+            "entrypoint must start the cron daemon (Debian: cron, not crond), guarded so a "
+            "failure cannot take the web process down with it",
+        )
+        return match.start()
+
+    def test_entrypoint_starts_scheduler_before_exec_uvicorn(self):
+        # A scheduler that blocks the web process is worse than no scheduler:
+        # cron is started (backgrounded daemon) and uvicorn is still exec'd last.
+        entry = self._entrypoint()
+        self.assertLess(
+            self._scheduler_start(entry), entry.index("exec uvicorn"),
+            "the scheduler must start before uvicorn is exec'd, or it never starts at all",
+        )
+        executable = [ln for ln in entry.splitlines() if ln.strip()]
+        self.assertTrue(
+            executable[-1].startswith("exec uvicorn"),
+            "uvicorn must remain the last (exec'd) step so the web process is PID 1's successor",
+        )
+
+    def test_entrypoint_snapshots_environment_for_cron(self):
+        # The snapshot lives outside the repo tree and is locked down BEFORE
+        # anything is written into it, so no secret is ever readable at a laxer
+        # mode and none reaches a tracked file (R10.8).
+        entry = self._entrypoint()
+        self.assertIn(f"export -p > {ENV_SNAPSHOT}", entry, "cron jobs need an environment snapshot to source")
+        self.assertIn(f"chmod 600 {ENV_SNAPSHOT}", entry, "the environment snapshot may hold an API key")
+        self.assertLess(
+            entry.index(f"chmod 600 {ENV_SNAPSHOT}"), entry.index(f"export -p > {ENV_SNAPSHOT}"),
+            "the snapshot must be chmod'ed before it is written",
+        )
+        self.assertLess(
+            entry.index(ENV_SNAPSHOT), self._scheduler_start(entry),
+            "the snapshot must exist before the daemon that reads it starts",
+        )
+
+    def test_entrypoint_scheduler_failure_does_not_block_serving(self):
+        # The script runs under `set -e`, so an unguarded scheduler step would
+        # crash-loop the container on a read-only /etc, a future USER directive,
+        # or a locked cron pidfile. A stale feed is bad; an unreachable app is
+        # worse. The && chain also stops a failed chmod from leaving the
+        # environment snapshot (which may hold an API key) world-readable.
+        entry = self._entrypoint()
+        self.assertRegex(
+            entry, r"(?s)if\s*:\s*>\s*/etc/gridsignals\.env.*?&&\s*cron\s*\n\s*then",
+            "the scheduler startup must be a guarded conditional, not bare commands under `set -e`",
+        )
+        self.assertRegex(
+            entry, r"WARN: scheduler",
+            "a scheduler that fails to start must degrade to a warning, matching the pipeline's convention",
+        )
+
+    def test_scheduler_does_not_displace_first_load_ingest(self):
+        # Pin the runtime first-load branch verbatim: adding a scheduler must not
+        # regress "serve immediately, ingest in the background on an empty feed".
+        entry = self._entrypoint()
+        self.assertIn(
+            "sh deploy/ingest_pipeline.sh > /tmp/gridsignals-ingest.log 2>&1 &", entry,
+            "the first-load background ingest branch changed",
+        )
+        self.assertLess(
+            entry.index("app.first_load"), entry.index("deploy/ingest_pipeline.sh"),
+            "first-load ingest must stay gated on the empty-feed check",
+        )
+        self.assertLess(
+            entry.index("deploy/ingest_pipeline.sh"), self._scheduler_start(entry),
+            "the scheduler is added after the first-load branch; it does not replace it",
+        )
+
+    def test_dockerfile_installs_the_cron_daemon_and_crontab(self):
+        # python:3.12-slim ships NO cron binary. Without this the crontab passes
+        # every file-content test above and still never runs.
+        df = self._dockerfile()
+        self.assertRegex(
+            df, r"apt-get install[^\n]*\bcron\b",
+            "the base image has no cron binary — the schedule would be inert",
+        )
+        instructions = "\n".join(ln for ln in df.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotRegex(
+            instructions, r"\bcrond\b",
+            "Debian's daemon is `cron`; `crond` is the busybox/RHEL name and does not exist here",
+        )
+        self.assertRegex(
+            df, r"tr -d '\\r' < deploy/crontab > /etc/cron\.d/",
+            "the crontab must be installed CR-stripped into /etc/cron.d — the build context is "
+            "whatever working tree the build was handed, and a CRLF entry never fires",
+        )
+        self.assertRegex(df, r"chmod 644 /etc/cron\.d/", "cron ignores an /etc/cron.d entry that is not mode 644")
+        installed = set(re.findall(r"/etc/cron\.d/([^\s'\"]+)", df))
+        self.assertTrue(installed, "the Dockerfile installs no crontab")
+        for name in installed:
+            self.assertNotIn(".", name, f"cron ignores /etc/cron.d entries whose name contains a dot: {name}")
+
+    # Both guard locks are redirected into a temp dir for every one of these:
+    # a stray data/.ingest.lock in a checkout turns ~25 ui_web tests red with
+    # assertions that blame the feature under test.
+    def _run_guard(self, tmp, *job):
+        shell = shutil.which("sh") or shutil.which("bash")
+        if not shell:
+            self.skipTest("no POSIX shell available to execute deploy/scheduled_run.sh")
+        self.assertTrue(SCHEDULED_RUN.exists(), "deploy/scheduled_run.sh missing — scheduled runs are unguarded")
+        env = dict(
+            os.environ,
+            GRIDSIGNALS_LOCK=os.path.join(tmp, ".ingest.lock").replace("\\", "/"),
+            GRIDSIGNALS_PIPELINE_LOCK=os.path.join(tmp, ".scheduled.lock").replace("\\", "/"),
+        )
+        return subprocess.run(
+            [shell, "deploy/scheduled_run.sh", *(job or (["echo", SENTINEL]))],
+            cwd=str(REPO), env=env, capture_output=True, text=True,
+        )
+
+    @staticmethod
+    def _backdate(path, hours):
+        stamp = time.time() - hours * 3600
+        os.utime(path, (stamp, stamp))
+
+    @staticmethod
+    def _job_ran(result) -> bool:
+        # Exact-line match: the guard also ECHOES the command it is about to run
+        # ("scheduled-run: starting echo GUARD-RAN-THE-JOB"), so a substring test
+        # would report the job as having run when it was only announced.
+        return SENTINEL in result.stdout.splitlines()
+
+    def test_scheduled_run_skips_cleanly_when_the_ingest_lock_is_held(self):
+        # A tick colliding with a manual/first-load run must be a recorded skip,
+        # not a propagated RuntimeError that aborts the pipeline mid-way.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            Path(tmp, ".ingest.lock").write_text("{}", encoding="utf-8")
+            result = self._run_guard(tmp)
+        self.assertEqual(0, result.returncode, f"a lock collision must not fail the tick: {result.stderr}")
+        self.assertIn("skipped", result.stdout, "the skip must be recorded, not silent")
+        self.assertIn(".ingest.lock", result.stdout, "the skip must name the lock it saw")
+        self.assertFalse(self._job_ran(result), "the job ran anyway despite a live lock")
+
+    def test_scheduled_run_proceeds_when_the_ingest_lock_is_stale(self):
+        # The anti-wedge half of the same branch. app/ingest/runner.py breaks a
+        # lock older than 2h, so the guard must not skip forever on the residue
+        # of a crashed run — that is the "never re-ingests" defect this whole
+        # unit exists to close, arriving from the other direction.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            lock = Path(tmp, ".ingest.lock")
+            lock.write_text("{}", encoding="utf-8")
+            self._backdate(lock, hours=3)
+            result = self._run_guard(tmp)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("stale", result.stdout, "the guard must say it decided the lock was abandoned")
+        self.assertTrue(self._job_ran(result), "a stale lock must not stop the scheduled run")
+
+    def test_scheduled_run_skips_a_second_tick_while_the_first_holds_the_pipeline_lock(self):
+        # The R3.2 ingestion lock is taken and released PER STEP, so probing it
+        # once at tick start cannot keep two pipelines apart. The guard owns a
+        # tick-scoped lock for exactly that. Nested rather than timed: the outer
+        # guard holds the lock while its job (a second guard) runs, which is the
+        # real overlap without a sleep to go flaky on.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            result = self._run_guard(
+                tmp, "sh", "deploy/scheduled_run.sh", "echo", SENTINEL,
+            )
+            self.assertFalse(
+                Path(tmp, ".scheduled.lock").exists(),
+                "the guard must release its tick lock on exit, or one run wedges the schedule",
+            )
+        self.assertEqual(0, result.returncode, f"a second tick must not fail the first: {result.stderr}")
+        self.assertIn("already in progress", result.stdout, "the overlapping tick must record why it stopped")
+        self.assertFalse(self._job_ran(result), "two scheduled pipelines ran against the same store")
+
+    def test_scheduled_run_runs_the_job_when_no_lock_is_held(self):
+        # The other half of the guard: it must not swallow the run in the normal
+        # case, or the schedule is decorative.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            result = self._run_guard(tmp)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(self._job_ran(result), "the guard did not run its job")
 
     def test_build_is_fetch_free(self):
         # The whole point of runtime first-load: no ingest at build. A `RUN`
