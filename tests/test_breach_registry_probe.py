@@ -467,6 +467,57 @@ class TestCollect(unittest.TestCase):
                                                "WA": {"status": status["WA"]}}))
 
 
+class TestOtherPublishingStates(unittest.TestCase):
+    """U36: the 13 non-CA/WA publishing states, checked live and found not
+    machine-accessible. A state confirmed structurally inaccessible must be
+    reported as such, not silently omitted -- that omission is exactly what
+    U5 left behind ("not tested" read as a gap, not a finding)."""
+
+    def test_thirteen_states_are_recorded_and_ca_wa_are_not(self):
+        self.assertEqual(len(probe.OTHER_PUBLISHING_STATES), 13)
+        self.assertNotIn("CA", probe.OTHER_PUBLISHING_STATES)
+        self.assertNotIn("WA", probe.OTHER_PUBLISHING_STATES)
+
+    def test_every_state_carries_a_url_and_a_non_empty_reason(self):
+        for state, (url, reason) in probe.OTHER_PUBLISHING_STATES.items():
+            self.assertTrue(url.startswith("https://"), state)
+            self.assertTrue(reason, state)
+
+    def test_analyze_reports_all_thirteen_unconditionally(self):
+        """Reported beside a non-zero hit count too, not just under a STOP
+        band -- coverage is a fact about the measurement, not a caveat that
+        only matters when the number is 0."""
+        conn = fixture_conn()
+        try:
+            result = probe.analyze(conn, fixture_rows(),
+                                   state_status={"CA": "ok", "WA": "ok"},
+                                   now=NOW)
+        finally:
+            conn.close()
+        self.assertEqual(result["hit_count"], 2)
+        self.assertEqual(set(result["other_publishing_states"]),
+                         set(probe.OTHER_PUBLISHING_STATES))
+
+    def test_report_lists_every_other_state_and_its_reason(self):
+        conn = fixture_conn()
+        try:
+            result = probe.analyze(conn, fixture_rows(),
+                                   state_status={"CA": "ok", "WA": "ok"},
+                                   now=NOW)
+        finally:
+            conn.close()
+        text = probe.format_report(result)
+        text.encode("ascii")   # same discipline as the rest of the report
+        for state, (_, reason) in probe.OTHER_PUBLISHING_STATES.items():
+            self.assertIn(state, text)
+            self.assertIn(reason, text)
+        self.assertIn("15 US states", text)
+
+    def test_negative_finding_cites_the_live_check_not_an_absence_of_one(self):
+        self.assertIn("checked live", probe.NEGATIVE_FINDING)
+        self.assertNotIn("untested", probe.NEGATIVE_FINDING)
+
+
 class TestRecommendation(unittest.TestCase):
     OK = {"CA": {"status": "ok"}, "WA": {"status": "ok"}}
 
