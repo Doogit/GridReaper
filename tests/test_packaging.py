@@ -539,9 +539,12 @@ class PackagingContractTest(unittest.TestCase):
     def test_scheduled_run_removes_the_lock_it_declares_abandoned(self):
         # Announcing the lock abandoned and leaving it in place is not a
         # decision, it is a lie: the Python steps the guard then invokes take
-        # that same lock and raise on it, and every step in
-        # deploy/ingest_pipeline.sh swallows failures, so the tick prints
-        # "pipeline complete" over a dataset that never moved.
+        # that same lock and raise on it. The 12 ingest steps and
+        # aggregates/digest swallow that with `|| echo WARN`, so the tick keeps
+        # going over a dataset that never moved; classify -> obligations ->
+        # scoring -> plays are hard under `set -e` and abort the tick non-zero
+        # instead. Either way the run is a loss - the swallowing half is just
+        # the one that hides it.
         with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
             lock = Path(tmp, ".ingest.lock")
             lock.write_text("{}", encoding="utf-8")

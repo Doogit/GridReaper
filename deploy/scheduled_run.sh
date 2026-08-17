@@ -29,8 +29,13 @@
 #
 # Usage: sh deploy/scheduled_run.sh <command> [args...]
 # Env:   GRIDSIGNALS_LOCK           per-step ingestion lock (default data/.ingest.lock);
-#                                   app/ingest/runner.py reads the same variable, so the
-#                                   guard and the writers cannot be pointed at different files
+#                                   app/ingest/runner.py reads the same variable, so every
+#                                   writer that calls ingest_lock() bare agrees with the guard.
+#                                   ONE caller does not: app/ui/data.py:config_write_conn
+#                                   passes an explicit path, which wins over the variable, so
+#                                   an Admin save still locks data/.ingest.lock. Setting this
+#                                   variable therefore splits the UI writer off from the rest
+#                                   until that call site is fixed - follow-up, not this unit.
 #        GRIDSIGNALS_PIPELINE_LOCK  this guard's tick lock  (default data/.scheduled.lock)
 set -e
 
