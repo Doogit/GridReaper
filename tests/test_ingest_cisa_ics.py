@@ -117,6 +117,35 @@ class TestFetchEvents(IcsTestCase):
         events = self._events(feed, 30)
         self.assertEqual(events[0]["source_native_id"], "fallback-guid-1")
 
+    def test_advisory_id_strips_query_string_and_fragment(self):
+        # R10.4: a tracking param or anchor on the link must not mint a
+        # second raw_event for the same advisory.
+        feed = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<rss version="2.0"><channel>'
+            '<item><title>Tracked Link Advisory</title>'
+            '<link>https://www.cisa.gov/news-events/ics-advisories/'
+            'icsa-26-225-05?utm_source=rss#top</link>'
+            '<description>no sectors line</description>'
+            '<guid isPermaLink="false">/node/1</guid></item>'
+            '</channel></rss>')
+        events = self._events(feed, 30)
+        self.assertEqual(events[0]["source_native_id"], "icsa-26-225-05")
+
+    def test_advisory_id_falls_back_to_guid_for_bare_domain_link(self):
+        # A link with no path segment (e.g. just the host) must not collapse
+        # onto a hostname-shaped id; fall back to guid instead.
+        feed = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<rss version="2.0"><channel>'
+            '<item><title>Bare Domain Advisory</title>'
+            '<link>https://www.cisa.gov/</link>'
+            '<description>no sectors line</description>'
+            '<guid isPermaLink="false">fallback-guid-2</guid></item>'
+            '</channel></rss>')
+        events = self._events(feed, 30)
+        self.assertEqual(events[0]["source_native_id"], "fallback-guid-2")
+
     def test_limit(self):
         events = self._events(FIXTURE, 3650, limit=1)
         self.assertEqual(len(events), 1)

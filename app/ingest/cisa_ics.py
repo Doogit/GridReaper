@@ -23,6 +23,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit
 
 from app.ingest import runner
 
@@ -62,11 +63,14 @@ def _parse_pubdate(raw):
 
 
 def _advisory_id(link, guid):
-    """The advisory slug from the link path (e.g. "icsa-26-225-05"); falls
-    back to the item guid when the link is missing."""
-    link = (link or "").strip().rstrip("/")
-    if link:
-        return link.rsplit("/", 1)[-1]
+    """The advisory slug from the link's PATH (e.g. "icsa-26-225-05"), so a
+    query string or fragment CISA's feed might one day add (tracking params,
+    an anchor) can't mint a second raw_event for the same advisory (R10.4).
+    Falls back to the item guid when the link has no usable path (missing,
+    or a bare domain)."""
+    path = urlsplit((link or "").strip()).path.rstrip("/")
+    if path:
+        return path.rsplit("/", 1)[-1]
     return (guid or "").strip()
 
 
