@@ -275,6 +275,28 @@ def all_signal_ids(conn):
             for r in conn.execute("SELECT signal_id FROM signals").fetchall()]
 
 
+def _facts_for(conn, fact_ids_json):
+    """License facts for one play's stored ``fact_ids`` JSON array (R4.3/R7.11).
+
+    Parses the column (empty/unparseable -> no facts) and, when non-empty,
+    reads fact_id/product_id/segment/source_quality/source_url from
+    license_facts — never price_note, so a non-primary price can never reach
+    the DOM. Shared by ``signal_detail`` (card fact provenance) and
+    ``account_license_plays`` (Products tab badge) so the no-price_note
+    guarantee is enforced in exactly one place instead of two.
+    """
+    try:
+        fact_ids = json.loads(fact_ids_json or "[]")
+    except ValueError:
+        fact_ids = []
+    if not fact_ids:
+        return []
+    return conn.execute(
+        "SELECT fact_id, product_id, segment, source_quality, source_url "
+        f"FROM license_facts WHERE fact_id IN ({_placeholders(len(fact_ids))}) "
+        "ORDER BY fact_id", fact_ids).fetchall()
+
+
 def signal_detail(conn, signal_id):
     """Full detail for one signal: the card row, its evidence rows, and its
     license-play snapshots with per-play fact provenance. Returns None if the
@@ -300,18 +322,7 @@ def signal_detail(conn, signal_id):
         "WHERE sn.signal_id = ? ORDER BY sn.play_id", (signal_id,)).fetchall()
     snapshots = []
     for sn in snap_rows:
-        try:
-            fact_ids = json.loads(sn["fact_ids"] or "[]")
-        except ValueError:
-            fact_ids = []
-        facts = []
-        if fact_ids:
-            # No price_note in this projection - a non-primary price must never
-            # reach the card DOM (R4.3). Chips show source_quality + segment.
-            facts = conn.execute(
-                "SELECT fact_id, product_id, segment, source_quality, source_url "
-                f"FROM license_facts WHERE fact_id IN ({_placeholders(len(fact_ids))}) "
-                "ORDER BY fact_id", fact_ids).fetchall()
+        facts = _facts_for(conn, sn["fact_ids"])
         snapshots.append({
             "play_id": sn["play_id"],
             "product_id": sn["product_id"],
@@ -931,10 +942,9 @@ def account_license_plays(conn, entity_id, statuses=("active",)):
 
     Each row also carries its play's fact provenance under ``facts``
     (fact_id/product_id/segment/source_quality/source_url — the same
-    no-price_note projection ``signal_detail`` builds around
-    ``app/ui/data.py:307-313``): ``fact_ids`` was never selected here before,
-    so the Products tab could not badge a non-primary-sourced play the way the
-    feed card does (R4.3).
+    no-price_note projection ``_facts_for`` builds for ``signal_detail``):
+    ``fact_ids`` was never selected here before, so the Products tab could
+    not badge a non-primary-sourced play the way the feed card does (R4.3).
     """
     statuses = tuple(statuses)
     rows = conn.execute(
@@ -952,19 +962,7 @@ def account_license_plays(conn, entity_id, statuses=("active",)):
     out = []
     for r in rows:
         d = dict(r)
-        try:
-            fact_ids = json.loads(d.pop("fact_ids") or "[]")
-        except ValueError:
-            fact_ids = []
-        facts = []
-        if fact_ids:
-            # No price_note in this projection - a non-primary price must
-            # never reach the tab (R4.3).
-            facts = conn.execute(
-                "SELECT fact_id, product_id, segment, source_quality, source_url "
-                f"FROM license_facts WHERE fact_id IN ({_placeholders(len(fact_ids))}) "
-                "ORDER BY fact_id", fact_ids).fetchall()
-        d["facts"] = facts
+        d["facts"] = _facts_for(conn, d.pop("fact_ids"))
         out.append(d)
     return out
 
