@@ -611,12 +611,18 @@ class PackagingContractTest(unittest.TestCase):
         # whichever process that is before its `finally: os.remove(lock)`
         # (app/ingest/runner.py's ingest_lock) can run, leaving a stale lock.
         # tini as the actual ENTRYPOINT (not just installed) reaps orphans and
-        # forwards signals so a stop can be a clean SIGTERM instead.
+        # forwards signals so a stop can be a clean SIGTERM instead. `-g`
+        # forwards to tini's whole process group (not just its one tracked
+        # child), which is what actually reaches the backgrounded first-load
+        # ingest job — empirically verified against real Docker; without -g
+        # that job gets zero signal, only SIGKILLed by PID-namespace teardown.
+        # It does NOT reach a cron-spawned tick (cron daemonizes into its own
+        # session/process group) — that residual gap is U28, not this test.
         df = self._dockerfile()
         self.assertRegex(df, r"apt-get install[^\n]*\btini\b", "tini must be installed — the base image ships no init")
         self.assertRegex(
-            df, r'ENTRYPOINT\s*\[\s*"tini"\s*,\s*"--"\s*\]',
-            "tini must be the actual ENTRYPOINT (PID 1), not merely installed",
+            df, r'ENTRYPOINT\s*\[\s*"tini"\s*,\s*"-g"\s*,\s*"--"\s*\]',
+            "tini must run with -g (process-group signal forwarding), or a stop never reaches the backgrounded first-load job",
         )
         self.assertIn('CMD ["sh", "deploy/entrypoint.sh"]', df, "the app still launches via deploy/entrypoint.sh, run under tini")
 

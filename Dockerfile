@@ -60,10 +60,15 @@ EXPOSE 8000
 # cron's double-forked orphans and forwards signals, so a container stop can
 # actually SIGTERM an in-flight tick instead of SIGKILLing whatever
 # double-forked its way to PID 1 without a chance to release its lock.
+# -g forwards the shutdown signal to tini's WHOLE process group, not just its
+# one tracked child — covers the backgrounded first-load ingest job (same
+# group, forked before exec). It does NOT cover a cron-spawned tick: cron
+# daemonizes into its own session/process group, so that gap is real and
+# stays a follow-up (U28), not fixed by this flag.
 # Runtime bootstrap: seed schema + config (blocking), background-ingest on first
 # load, start the cron scheduler, then exec uvicorn (bind 0.0.0.0 so App Service
 # can reach it; Easy Auth, when enabled, fronts the app). Ingestion stays a
 # backend process, never the UI (R3.1). See deploy/entrypoint.sh,
 # deploy/ingest_pipeline.sh, deploy/crontab.
-ENTRYPOINT ["tini", "--"]
+ENTRYPOINT ["tini", "-g", "--"]
 CMD ["sh", "deploy/entrypoint.sh"]
