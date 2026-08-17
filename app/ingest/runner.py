@@ -29,8 +29,8 @@ from datetime import datetime, timedelta, timezone
 
 from app.db.connection import get_connection
 
-LOCK_PATH = "data/.ingest.lock"
-LOCK_STALE_S = 2 * 60 * 60
+LOCK_PATH = "data/.ingest.lock"   # default; GRIDSIGNALS_LOCK overrides
+LOCK_STALE_S = 2 * 60 * 60        # == STALE_MINUTES in deploy/scheduled_run.sh
 COMMIT_EVERY = 200          # short transactions per R3.2
 
 
@@ -41,10 +41,15 @@ def _utcnow():
 # -- single-writer ingestion lock (R3.2) -------------------------------------
 
 @contextlib.contextmanager
-def ingest_lock(path=LOCK_PATH):
+def ingest_lock(path=None):
     """Exclusive-create lockfile holding {pid, ts}. A lock older than
     LOCK_STALE_S is presumed abandoned (crashed run) and is broken; a live
-    one raises a clear error naming the holder."""
+    one raises a clear error naming the holder.
+
+    The path is resolved at call time: an explicit argument, else the
+    GRIDSIGNALS_LOCK override deploy/scheduled_run.sh documents, else
+    LOCK_PATH."""
+    path = path or os.environ.get("GRIDSIGNALS_LOCK") or LOCK_PATH
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -53,7 +58,7 @@ def ingest_lock(path=LOCK_PATH):
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         holder = _read_lock(path)
-        age = _lock_age_seconds(holder)
+        age = _lock_age_seconds(path, holder)
         if age is None or age < LOCK_STALE_S:
             raise RuntimeError(
                 f"Ingestion lock held: {path} ({holder}). Another ingestion "
@@ -79,13 +84,20 @@ def _read_lock(path):
         return None
 
 
-def _lock_age_seconds(holder):
-    if not holder or "ts" not in holder:
-        return None
-    try:
-        ts = datetime.fromisoformat(holder["ts"])
-    except ValueError:
-        return None
+def _lock_age_seconds(path, holder):
+    """Seconds since the lock was taken. The JSON `ts` is authoritative; the
+    lockfile's mtime is the fallback when it is missing or unparseable, so a
+    zero-byte lock — the residue of a crash between the O_EXCL create and the
+    payload write — ages out instead of wedging ingestion forever."""
+    ts = None
+    if holder and "ts" in holder:
+        with contextlib.suppress(ValueError):
+            ts = datetime.fromisoformat(holder["ts"])
+    if ts is None:
+        try:
+            ts = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc)
+        except OSError:
+            return None
     return (datetime.now(timezone.utc) - ts).total_seconds()
 
 

@@ -21,19 +21,27 @@
 # steps themselves honor — follow-up, not this unit.
 #
 # Staleness: a lock whose mtime is older than the window below is treated as
-# abandoned, so the residue of a crashed run cannot wedge the schedule forever —
-# that is the "never re-ingests" defect from the other side. This APPROXIMATES
-# the runner's rule rather than mirroring it: the runner reads the lock's JSON
-# `ts` field, not its mtime, and never breaks a lock whose `ts` will not parse.
+# abandoned and REMOVED, so the residue of a crashed run cannot wedge the
+# schedule forever — that is the "never re-ingests" defect from the other side.
+# The runner prefers the lock's JSON `ts` and falls back to the same mtime when
+# it is missing or unparseable, so the two agree on which locks are breakable;
+# tests/test_packaging.py pins the two windows equal.
 #
 # Usage: sh deploy/scheduled_run.sh <command> [args...]
-# Env:   GRIDSIGNALS_LOCK           per-step ingestion lock (default data/.ingest.lock)
+# Env:   GRIDSIGNALS_LOCK           per-step ingestion lock (default data/.ingest.lock);
+#                                   app/ingest/runner.py reads the same variable, so every
+#                                   writer that calls ingest_lock() bare agrees with the guard.
+#                                   ONE caller does not: app/ui/data.py:config_write_conn
+#                                   passes an explicit path, which wins over the variable, so
+#                                   an Admin save still locks data/.ingest.lock. Setting this
+#                                   variable therefore splits the UI writer off from the rest
+#                                   until that call site is fixed - follow-up, not this unit.
 #        GRIDSIGNALS_PIPELINE_LOCK  this guard's tick lock  (default data/.scheduled.lock)
 set -e
 
 LOCK="${GRIDSIGNALS_LOCK:-data/.ingest.lock}"
 PIPELINE_LOCK="${GRIDSIGNALS_PIPELINE_LOCK:-data/.scheduled.lock}"
-STALE_MINUTES=120        # approximates LOCK_STALE_S (2h) in app/ingest/runner.py
+STALE_MINUTES=120        # == LOCK_STALE_S (2h) in app/ingest/runner.py
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }   # UTC ISO-8601 (R10.2)
 
@@ -59,7 +67,11 @@ trap 'rm -f "$PIPELINE_LOCK"' EXIT INT TERM
 # -- do not collide with a manual / first-load run already in flight ---------
 if [ -e "$LOCK" ]; then
   if is_stale "$LOCK"; then
-    echo "$(now) scheduled-run: stale ingestion lock ($LOCK) — proceeding"
+    # Remove it, do not merely announce it: the Python steps take this same
+    # lock per step and raise on a live one, so leaving the file in place would
+    # abort the pipeline the guard just decided to run.
+    rm -f "$LOCK"
+    echo "$(now) scheduled-run: broke a stale ingestion lock ($LOCK) — proceeding"
   else
     echo "$(now) scheduled-run: skipped — ingestion lock held ($LOCK)"
     exit 0

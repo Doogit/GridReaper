@@ -26,6 +26,8 @@ import time
 import unittest
 from pathlib import Path
 
+from app.ingest.runner import LOCK_STALE_S
+
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 ENTRYPOINT = REPO / "deploy" / "entrypoint.sh"
@@ -533,6 +535,39 @@ class PackagingContractTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("stale", result.stdout, "the guard must say it decided the lock was abandoned")
         self.assertTrue(self._job_ran(result), "a stale lock must not stop the scheduled run")
+
+    def test_scheduled_run_removes_the_lock_it_declares_abandoned(self):
+        # Announcing the lock abandoned and leaving it in place is not a
+        # decision, it is a lie: the Python steps the guard then invokes take
+        # that same lock and raise on it. The 12 ingest steps and
+        # aggregates/digest swallow that with `|| echo WARN`, so the tick keeps
+        # going over a dataset that never moved; classify -> obligations ->
+        # scoring -> plays are hard under `set -e` and abort the tick non-zero
+        # instead. Either way the run is a loss - the swallowing half is just
+        # the one that hides it.
+        with tempfile.TemporaryDirectory(prefix="gs-sched-") as tmp:
+            lock = Path(tmp, ".ingest.lock")
+            lock.write_text("{}", encoding="utf-8")
+            self._backdate(lock, hours=3)
+            result = self._run_guard(tmp)
+            self.assertFalse(
+                lock.exists(),
+                "the guard declared the ingestion lock abandoned but left it in place — "
+                "the steps it then runs still see a held lock and raise",
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_guard_stale_window_matches_the_runner_lock_window(self):
+        # Two staleness rules, two files: the guard decides whether to run the
+        # tick, the runner decides whether to break the lock. If they drift, one
+        # of them is wrong at every tick in the gap between them.
+        minutes = re.search(r"(?m)^STALE_MINUTES=(\d+)", SCHEDULED_RUN.read_text(encoding="utf-8"))
+        self.assertIsNotNone(minutes, "deploy/scheduled_run.sh no longer defines STALE_MINUTES")
+        self.assertEqual(
+            LOCK_STALE_S, int(minutes.group(1)) * 60,
+            "deploy/scheduled_run.sh STALE_MINUTES and app/ingest/runner.py LOCK_STALE_S "
+            "must describe the same window",
+        )
 
     def test_scheduled_run_skips_a_second_tick_while_the_first_holds_the_pipeline_lock(self):
         # The R3.2 ingestion lock is taken and released PER STEP, so probing it
