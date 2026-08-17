@@ -44,6 +44,15 @@ router = APIRouter()
 # but are not surfaced here.
 STATUSES = ("active",)
 
+# R6.6: an unknown, stale, or soft-disabled entity_id must render this honest
+# not-found panel naming the id that was actually requested — never silently
+# substitute a different company at HTTP 200 (the wrong-company fallback bug).
+NOT_FOUND_MESSAGE = (
+    'No account matches id "{requested_id}". It may have been removed from '
+    "the watchlist. Pick an account from the selector above.")
+
+EMPTY_WATCHLIST_MESSAGE = "No watchlist entities loaded. Run the seed loader first."
+
 
 def _entities(conn):
     """(entity_id, name) for every ACTIVE watchlist entity, name-ordered — the
@@ -56,20 +65,39 @@ def _entities(conn):
 
 
 def _resolve(entities, entity_id):
-    """The requested entity if it is a known active one, else the first (the
-    selector's deterministic default), else '' when the watchlist is empty."""
+    """Resolve a requested entity_id against a NON-EMPTY active watchlist.
+
+    * a known active entity_id resolves to itself.
+    * an EMPTY entity_id (the bare /account route, no id requested) resolves
+      to the selector's own deterministic default: the first, name-ordered
+      entity. This is the SELECTOR's default, not a fallback for a bad id.
+    * a NON-EMPTY entity_id that names no active entity resolves to None: an
+      unknown, stale, or soft-disabled id must render as not-found, never as
+      a silent substitution of a different company.
+
+    Callers must guarantee ``entities`` is non-empty — an empty watchlist is a
+    distinct state handled before this is called (EMPTY_WATCHLIST_MESSAGE).
+    """
     valid = {e["entity_id"] for e in entities}
     if entity_id in valid:
         return entity_id
-    return entities[0]["entity_id"] if entities else ""
+    if entity_id:
+        return None
+    return entities[0]["entity_id"]
 
 
-def _account_context(conn, entity_id):
-    """Header view + timeline rows + signal cards for one account, or an empty
-    body context (account=None) when the entity cannot be loaded."""
+def _account_context(conn, entity_id, requested_id=""):
+    """Header view + timeline rows + signal cards for one account; an empty
+    body context (account=None) when the entity cannot be loaded, or the
+    not-found panel (naming ``requested_id``) when ``entity_id`` is None."""
+    if entity_id is None:
+        return {"selected": "", "not_found": True, "requested_id": requested_id,
+                "account": None, "timeline": [], "cards": [],
+                "empty_message": NOT_FOUND_MESSAGE.format(
+                    requested_id=requested_id)}
     header = data.account_header(conn, entity_id)
     if header is None:
-        return {"selected": entity_id, "account": None,
+        return {"selected": entity_id, "not_found": False, "account": None,
                 "timeline": [], "cards": [], "empty_message":
                 "That account could not be loaded."}
     signals = data.account_signals(conn, entity_id, statuses=STATUSES)
@@ -81,11 +109,13 @@ def _account_context(conn, entity_id):
             cards.append(render.card_view(detail, legend))
     return {
         "selected": entity_id,
+        "not_found": False,
         "account": render.account_header_view(header),
         "timeline": render.timeline_rows(signals),
         "cards": cards,
         "play_rows": render.account_play_rows(
-            data.account_license_plays(conn, entity_id, statuses=STATUSES)),
+            data.account_license_plays(conn, entity_id, statuses=STATUSES),
+            legend),
         "calendar": render.account_calendar_view(
             data.account_obligations(conn, entity_id)),
         "calendar_caption": render.CALENDAR_CAPTION,
@@ -94,14 +124,21 @@ def _account_context(conn, entity_id):
     }
 
 
+def _empty_watchlist_context():
+    return {"selected": "", "not_found": False, "requested_id": "",
+            "account": None, "timeline": [], "cards": [], "empty_message":
+            EMPTY_WATCHLIST_MESSAGE}
+
+
 def _page_context(conn, entity_id):
     """Full-page context: the selector pool plus the resolved account body."""
     entities = _entities(conn)
     if not entities:
-        return {"entities": entities, "selected": "", "account": None,
-                "timeline": [], "cards": [], "empty_message":
-                "No watchlist entities loaded. Run the seed loader first."}
-    ctx = _account_context(conn, _resolve(entities, entity_id))
+        ctx = _empty_watchlist_context()
+        ctx["entities"] = entities
+        return ctx
+    ctx = _account_context(
+        conn, _resolve(entities, entity_id), requested_id=entity_id)
     ctx["entities"] = entities
     return ctx
 
@@ -118,8 +155,16 @@ def account(request: Request, entity_id: str = "", conn=Depends(get_db)):
 def account_body(request: Request, entity_id: str = "", conn=Depends(get_db)):
     """Header + tabs only — the entity selector swaps this into #gs-account-body
     when a different account is picked (the selector itself stays in place, so
-    its native selection persists without a re-render)."""
+    its native selection persists without a re-render). Always HTTP 200 (even
+    an unknown/stale id) — base.html loads stock htmx.min.js with no error-swap
+    extension, so a 404 here would leave the previously selected account
+    rendered with no feedback."""
     entities = _entities(conn)
-    ctx = _account_context(conn, _resolve(entities, entity_id))
+    if not entities:
+        return templates.TemplateResponse(
+            request=request, name="_account_body.html",
+            context=_empty_watchlist_context())
+    ctx = _account_context(
+        conn, _resolve(entities, entity_id), requested_id=entity_id)
     return templates.TemplateResponse(
         request=request, name="_account_body.html", context=ctx)

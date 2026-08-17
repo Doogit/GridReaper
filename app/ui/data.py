@@ -275,6 +275,28 @@ def all_signal_ids(conn):
             for r in conn.execute("SELECT signal_id FROM signals").fetchall()]
 
 
+def _facts_for(conn, fact_ids_json):
+    """License facts for one play's stored ``fact_ids`` JSON array (R4.3/R7.11).
+
+    Parses the column (empty/unparseable -> no facts) and, when non-empty,
+    reads fact_id/product_id/segment/source_quality/source_url from
+    license_facts — never price_note, so a non-primary price can never reach
+    the DOM. Shared by ``signal_detail`` (card fact provenance) and
+    ``account_license_plays`` (Products tab badge) so the no-price_note
+    guarantee is enforced in exactly one place instead of two.
+    """
+    try:
+        fact_ids = json.loads(fact_ids_json or "[]")
+    except ValueError:
+        fact_ids = []
+    if not fact_ids:
+        return []
+    return conn.execute(
+        "SELECT fact_id, product_id, segment, source_quality, source_url "
+        f"FROM license_facts WHERE fact_id IN ({_placeholders(len(fact_ids))}) "
+        "ORDER BY fact_id", fact_ids).fetchall()
+
+
 def signal_detail(conn, signal_id):
     """Full detail for one signal: the card row, its evidence rows, and its
     license-play snapshots with per-play fact provenance. Returns None if the
@@ -300,18 +322,7 @@ def signal_detail(conn, signal_id):
         "WHERE sn.signal_id = ? ORDER BY sn.play_id", (signal_id,)).fetchall()
     snapshots = []
     for sn in snap_rows:
-        try:
-            fact_ids = json.loads(sn["fact_ids"] or "[]")
-        except ValueError:
-            fact_ids = []
-        facts = []
-        if fact_ids:
-            # No price_note in this projection - a non-primary price must never
-            # reach the card DOM (R4.3). Chips show source_quality + segment.
-            facts = conn.execute(
-                "SELECT fact_id, product_id, segment, source_quality, source_url "
-                f"FROM license_facts WHERE fact_id IN ({_placeholders(len(fact_ids))}) "
-                "ORDER BY fact_id", fact_ids).fetchall()
+        facts = _facts_for(conn, sn["fact_ids"])
         snapshots.append({
             "play_id": sn["play_id"],
             "product_id": sn["product_id"],
@@ -779,6 +790,33 @@ def audit_run_rows(conn):
     return [dict(r) for r in rows]
 
 
+def _reporting_month_rows(rows, now):
+    """Subset of ``rows`` (each a dict carrying a ``ts`` key) whose UTC
+    calendar month matches the month containing ``now`` (real current time
+    when ``now`` is None) — the SAME "month containing now" convention
+    ``app.audit.precision.spotcheck_coverage`` already uses (R9.3/R9.5), so a
+    report windowed with this helper reports the identical period its
+    ``spotcheck_window``/``as_of`` fields already name: for the live page
+    (``now=None``) that is the current, still-accumulating month; for the
+    scheduled job (``now=prior_month_end(...)``) it is the month that just
+    ended. A row whose ``ts`` does not parse is dropped — unevaluable is
+    excluded, never defaulted into the window.
+    """
+    if isinstance(now, datetime):
+        now_dt = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    else:
+        now_dt = _parse_dt(now)
+    if now_dt is None:
+        now_dt = datetime.now(timezone.utc)
+    month = (now_dt.year, now_dt.month)
+    out = []
+    for r in rows:
+        dt = _parse_dt(r.get("ts"))
+        if dt is not None and (dt.year, dt.month) == month:
+            out.append(r)
+    return out
+
+
 def precision_report(conn, now=None):
     """Every precision COMPUTATION the QA surface needs, in one read (R8.6,
     R9.2-R9.5, R9.11, R9.12, R10.9).
@@ -791,6 +829,17 @@ def precision_report(conn, now=None):
     the same composition ``source_policy_rows`` uses, which is what keeps the
     Precision page and the Admin source table from ever contradicting each other.
 
+    The headline useful=/auto= rates, the per-dimension tables, the reason-code
+    distribution, the judge-human disagreement view, and Gate G2 are windowed
+    to the reporting month via ``_reporting_month_rows`` (R9.3, R9.5) —
+    ``g2_status``'s own docstring already says the caller is expected to hand
+    it rows already windowed to the period. Gate G1 (R9.4) and the spot-check
+    tracker (R9.11) deliberately keep the FULL, unwindowed rows: G1 measures
+    cumulative evidence over a >=30-day span that can outlive one calendar
+    month, and ``spotcheck_coverage`` already does its own per-row month
+    filtering against ``now`` internally. ``halflife`` and ``runs`` are not
+    feedback/audit rates and are unaffected either way.
+
     Returns the raw computation shapes verbatim (rates as floats or None, each
     beside its n) — no percent strings, no "n/a": the n-carrying trust invariant
     is enforced when these are rendered, and this layer must stay renderable by
@@ -798,22 +847,25 @@ def precision_report(conn, now=None):
     """
     feedback = precision_feedback_rows(conn)
     audit = precision_audit_rows(conn)
+    feedback_window = _reporting_month_rows(feedback, now)
+    audit_window = _reporting_month_rows(audit, now)
     g2 = precision.g2_gated(
-        precision.g2_status(feedback, now=now),
-        precision.judge_human_disagreement_by_source(audit, feedback))
+        precision.g2_status(feedback_window, now=now),
+        precision.judge_human_disagreement_by_source(audit_window, feedback_window))
     return {
         "min_rated": precision.G1_MIN_RATED,
-        "useful_overall": precision.useful_rate_overall(feedback),
-        "auto_overall": precision.auto_accuracy(audit, "trigger")["overall"],
+        "useful_overall": precision.useful_rate_overall(feedback_window),
+        "auto_overall": precision.auto_accuracy(audit_window, "trigger")["overall"],
         "g1": precision.g1_status(feedback, audit, now=now),
         "g2": g2,
         "spotcheck": precision.spotcheck_coverage(audit, feedback, now=now),
-        "useful_by_dimension": {d: precision.useful_rate(feedback, d)
+        "useful_by_dimension": {d: precision.useful_rate(feedback_window, d)
                                 for d in precision.DIMENSIONS},
-        "auto_by_dimension": {d: precision.auto_accuracy(audit, d)
+        "auto_by_dimension": {d: precision.auto_accuracy(audit_window, d)
                               for d in precision.DIMENSIONS},
-        "reason_codes": precision.reason_code_distribution(feedback),
-        "disagreement": precision.judge_human_disagreement(audit, feedback),
+        "reason_codes": precision.reason_code_distribution(feedback_window),
+        "disagreement": precision.judge_human_disagreement(
+            audit_window, feedback_window),
         "halflife": precision.half_life_effectiveness(
             precision_halflife_rows(conn)),
         "runs": audit_run_rows(conn),
@@ -887,10 +939,16 @@ def account_license_plays(conn, entity_id, statuses=("active",)):
     Reads ``license_play_snapshots`` — the frozen text the card showed — never
     live ``license_facts``, and never a fact's ``price_note`` (R4.3/R7.11).
     Ordered newest signal first, then by play_id, so the tab is stable.
+
+    Each row also carries its play's fact provenance under ``facts``
+    (fact_id/product_id/segment/source_quality/source_url — the same
+    no-price_note projection ``_facts_for`` builds for ``signal_detail``):
+    ``fact_ids`` was never selected here before, so the Products tab could
+    not badge a non-primary-sourced play the way the feed card does (R4.3).
     """
     statuses = tuple(statuses)
-    return conn.execute(
-        "SELECT lps.signal_id, lps.play_id, lps.display_text, "
+    rows = conn.execute(
+        "SELECT lps.signal_id, lps.play_id, lps.fact_ids, lps.display_text, "
         "       lps.outreach_safe_text, lps.generated_at, "
         "       lps.generation_version, c.product_id, c.discovery_question, "
         "       p.name AS product_name, s.headline, s.event_date "
@@ -901,6 +959,12 @@ def account_license_plays(conn, entity_id, statuses=("active",)):
         f"WHERE s.entity_id = ? AND s.status IN ({_placeholders(len(statuses))}) "
         "ORDER BY s.event_date DESC, lps.signal_id DESC, lps.play_id",
         [entity_id] + list(statuses)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["facts"] = _facts_for(conn, d.pop("fact_ids"))
+        out.append(d)
+    return out
 
 
 # The predicate format app/obligations.py writes:
@@ -1326,9 +1390,17 @@ def config_write_conn(db_path=None, lock_path=None):
     """Fresh connection holding the single-writer ingestion lock (R3.2) for one
     Admin save. Raises RuntimeError if an ingestion/scoring run holds the lock
     (the page catches it -> "ingestion in progress"). Acquire this INSIDE the
-    save handler, never at page render (Streamlit reruns top-to-bottom)."""
-    from app.ingest.runner import ingest_lock, LOCK_PATH
-    with ingest_lock(lock_path or LOCK_PATH):
+    save handler, never at page render (Streamlit reruns top-to-bottom).
+
+    ``lock_path`` is passed straight through to ``ingest_lock``, whose own
+    resolution order (explicit arg -> GRIDSIGNALS_LOCK env var -> LOCK_PATH)
+    then applies. Routes call this with ``lock_path=None``, so must NOT
+    resolve a concrete path here first (e.g. ``lock_path or LOCK_PATH``) —
+    that would hand ``ingest_lock`` an already-decided path and the env var
+    would never get a turn, the one call site (of eleven in the repo) where
+    GRIDSIGNALS_LOCK would silently stop reaching the writer."""
+    from app.ingest.runner import ingest_lock
+    with ingest_lock(lock_path):
         conn = get_connection(db_path) if db_path else get_connection()
         try:
             yield conn
@@ -1664,13 +1736,16 @@ def source_policy_rows(conn, now=None):
     The G2 recommendation carries the R9.11 disagreement gate (KTD3): the SAME
     ``g2_gated`` overlay the Precision page applies is applied here, so the Admin
     source table and the Precision page can NEVER show contradictory demotion
-    recommendations for a source (the two-surface consistency invariant). The
-    gate needs the per-source judge-human disagreement, so this reader now also
-    fetches ``precision_audit_rows``."""
+    recommendations for a source (the two-surface consistency invariant). Both
+    surfaces window feedback/audit to the reporting month first via
+    ``_reporting_month_rows`` (R9.5) — this reader must stay in lockstep with
+    ``precision_report``'s G2 windowing or the two-surface invariant above
+    breaks silently. The gate needs the per-source judge-human disagreement, so
+    this reader now also fetches ``precision_audit_rows``."""
     from app.audit.precision import (
         g2_status, g2_gated, judge_human_disagreement_by_source)
-    feedback = precision_feedback_rows(conn)
-    audit = precision_audit_rows(conn)
+    feedback = _reporting_month_rows(precision_feedback_rows(conn), now)
+    audit = _reporting_month_rows(precision_audit_rows(conn), now)
     g2 = g2_status(feedback, now=now)
     dis = judge_human_disagreement_by_source(audit, feedback)
     g2 = g2_gated(g2, dis)

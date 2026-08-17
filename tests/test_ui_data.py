@@ -7,9 +7,12 @@ account_signals, review_pending (pending-only + payload snippet), source_health
 + source_state classification, stale_facts, account_header, badge_legend, and
 the two writers (feedback validation, atomic triage decision).
 """
+import os
 import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from app import aggregates
 from app.db.migrate import apply_migrations
@@ -658,6 +661,31 @@ class TestAccountLicensePlays(unittest.TestCase):
         self.conn.commit()
         rows = data.account_license_plays(self.conn, "E_ACME")
         self.assertEqual([r["signal_id"] for r in rows], ["S_ACC1"])
+
+    def test_facts_are_returned_for_badge_rendering(self):
+        """R4.3: fact_ids must be selected/joined so the Products tab can
+        badge a non-primary-sourced play — this column was never fetched
+        before, so the tab structurally could not render that badge."""
+        row = data.account_license_plays(self.conn, "E_ACME")[0]
+        facts = row["facts"]
+        self.assertEqual({f["fact_id"] for f in facts},
+                         {"f_primary", "f_nonprimary"})
+        quals = {f["fact_id"]: f["source_quality"] for f in facts}
+        self.assertEqual(quals["f_nonprimary"], "non-primary")
+        self.assertEqual(quals["f_primary"], "primary")
+        # still no price_note anywhere in the fact projection (R4.3/R7.11)
+        for f in facts:
+            self.assertNotIn("price_note", f.keys())
+
+    def test_no_facts_when_snapshot_cites_none(self):
+        self.conn.execute(
+            "INSERT INTO license_play_snapshots (signal_id, play_id, "
+            "generated_at, generation_version, display_text) VALUES "
+            "('S_ACC2','play1', ?, 'plays/1.0', 'No facts play')", (iso(NOW),))
+        self.conn.commit()
+        rows = {r["signal_id"]: r
+                for r in data.account_license_plays(self.conn, "E_ACME")}
+        self.assertEqual(rows["S_ACC2"]["facts"], [])
 
 
 class TestAccountObligations(unittest.TestCase):
@@ -1405,6 +1433,201 @@ class TestAnalyticsCountsReader(unittest.TestCase):
         self.assertEqual(default["served_from"], "aggregate")
         self.assertEqual(other["served_from"], "live")
         self.assertEqual(len(memo), 2)
+
+
+class TestConfigWriteConnLockResolution(unittest.TestCase):
+    """R3.2/R3.1: config_write_conn's bare ``ingest_lock(lock_path)`` call must
+    let GRIDSIGNALS_LOCK reach the writer — the one call site (of eleven) that
+    previously resolved ``lock_path or LOCK_PATH`` to a concrete path BEFORE
+    calling ingest_lock, so the env var never got a turn."""
+
+    def test_env_var_is_honored_when_lock_path_is_not_passed(self):
+        with tempfile.TemporaryDirectory(prefix="gs-cwc-lock-") as td:
+            env_path = os.path.join(td, "env.lock")
+            fd, db_path = tempfile.mkstemp(suffix=".db")
+            os.close(fd)
+            try:
+                conn = sqlite3.connect(db_path)
+                apply_migrations(conn)
+                conn.close()
+                with mock.patch.dict(os.environ, {"GRIDSIGNALS_LOCK": env_path}):
+                    with data.config_write_conn(db_path=db_path, lock_path=None) \
+                            as conn:
+                        self.assertTrue(
+                            os.path.exists(env_path),
+                            "GRIDSIGNALS_LOCK is documented as the lock path "
+                            "but config_write_conn did not take its lock there")
+                self.assertFalse(os.path.exists(env_path))
+            finally:
+                for suffix in ("", "-wal", "-shm"):
+                    if os.path.exists(db_path + suffix):
+                        os.remove(db_path + suffix)
+
+    def test_explicit_lock_path_still_beats_the_env_var(self):
+        # Must NOT invert precedence: an explicit lock_path argument still
+        # wins over GRIDSIGNALS_LOCK (ingest_lock's own resolution order).
+        with tempfile.TemporaryDirectory(prefix="gs-cwc-lock-") as td:
+            explicit = os.path.join(td, "explicit.lock")
+            env_path = os.path.join(td, "env.lock")
+            fd, db_path = tempfile.mkstemp(suffix=".db")
+            os.close(fd)
+            try:
+                conn = sqlite3.connect(db_path)
+                apply_migrations(conn)
+                conn.close()
+                with mock.patch.dict(os.environ, {"GRIDSIGNALS_LOCK": env_path}):
+                    with data.config_write_conn(
+                            db_path=db_path, lock_path=explicit) as conn:
+                        self.assertTrue(os.path.exists(explicit))
+                        self.assertFalse(os.path.exists(env_path))
+            finally:
+                for suffix in ("", "-wal", "-shm"):
+                    if os.path.exists(db_path + suffix):
+                        os.remove(db_path + suffix)
+
+
+class TestPrecisionReportWindowing(unittest.TestCase):
+    """R9.3/R9.5: precision_report windows its headline useful=/auto= rate,
+    Gate G2, and the per-dimension tables to the UTC calendar month containing
+    ``now`` — the same "month containing now" convention spotcheck_coverage
+    already uses. Gate G1 stays on the FULL, unwindowed history (it measures
+    cumulative evidence over a >=30-day span that can outlive one month)."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys=ON;")
+        apply_migrations(self.conn)
+        self.conn.execute(
+            "INSERT INTO source_policies (source_id, name, evidence_rank) "
+            "VALUES ('src_a', 'Source A', 1)")
+        self.conn.execute(
+            "INSERT INTO triggers (trigger_id, name, base_strength, "
+            " decay_half_life_days) "
+            "VALUES ('leadership_change', 'Leadership change', 3, 90)")
+        self.conn.execute(
+            "INSERT INTO watchlist_entities (entity_id, name) "
+            "VALUES ('E_ACME', 'Acme Energy')")
+        self.conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id) "
+            "VALUES ('re1', 'src_a')")
+        for sid in ("s_in", "s_out"):
+            self.conn.execute(
+                "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+                " signal_scope, trigger_id, status) VALUES "
+                "(?, 're1', 'E_ACME', 'account', 'leadership_change', "
+                " 'active')", (sid,))
+        # s_in: inside the August 2026 reporting window. s_out: July 2026,
+        # outside it.
+        self.conn.execute(
+            "INSERT INTO feedback (signal_id, verdict, ts) VALUES "
+            "('s_in', 'useful', '2026-08-10T00:00:00Z')")
+        self.conn.execute(
+            "INSERT INTO feedback (signal_id, verdict, reason_code, ts) "
+            "VALUES ('s_out', 'not_useful', 'other', '2026-07-05T00:00:00Z')")
+        self.conn.execute(
+            "INSERT INTO audit (signal_id, check_type, result, ts) VALUES "
+            "('s_in', 'entity_match', 'pass', '2026-08-11T00:00:00Z')")
+        self.conn.execute(
+            "INSERT INTO audit (signal_id, check_type, result, ts) VALUES "
+            "('s_out', 'entity_match', 'fail', '2026-07-06T00:00:00Z')")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_rows_outside_the_reporting_month_do_not_affect_the_rate(self):
+        report = data.precision_report(self.conn, now="2026-08-16T00:00:00Z")
+        # only s_in (August) counts: 1 useful over n=1 -> 100%, not 50%
+        self.assertEqual(report["useful_overall"], {"useful": 1, "total": 1,
+                                                     "rate": 1.0})
+        self.assertEqual(report["auto_overall"]["scored"], 1)
+        self.assertEqual(report["auto_overall"]["accuracy"], 1.0)
+
+    def test_rows_inside_the_reporting_month_do_affect_the_rate(self):
+        # widen the window to July: now s_out (July) is the only in-window row
+        report = data.precision_report(self.conn, now="2026-07-20T00:00:00Z")
+        self.assertEqual(report["useful_overall"],
+                         {"useful": 0, "total": 1, "rate": 0.0})
+
+    def test_zero_in_window_rows_reports_distinctly_from_never_audited(self):
+        # September has zero rows -> total=0 -> rate=None ("n/a"), never a
+        # fabricated 0% and never conflated with "no data at all" (both
+        # feedback rows exist, they're simply outside this window)
+        report = data.precision_report(self.conn, now="2026-09-05T00:00:00Z")
+        self.assertEqual(report["useful_overall"],
+                         {"useful": 0, "total": 0, "rate": None})
+        self.assertIsNone(report["auto_overall"]["accuracy"])
+        self.assertEqual(report["auto_overall"]["scored"], 0)
+
+    def test_g1_stays_on_the_full_unwindowed_history(self):
+        # G1's per-trigger useful_n counts BOTH signals regardless of month -
+        # it measures cumulative evidence, not a single reporting period.
+        report = data.precision_report(self.conn, now="2026-08-16T00:00:00Z")
+        self.assertEqual(
+            report["g1"]["triggers"]["leadership_change"]["useful_n"], 2)
+
+    def test_g2_is_windowed_the_same_as_the_headline(self):
+        report = data.precision_report(self.conn, now="2026-08-16T00:00:00Z")
+        self.assertEqual(report["g2"]["src_a"]["n"], 1)
+
+
+class TestSourcePolicyRowsG2Windowing(unittest.TestCase):
+    """source_policy_rows must window feedback/audit the SAME way
+    precision_report does — the two-surface consistency invariant
+    (Precision page vs. Admin source table, R9.5) breaks silently otherwise."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys=ON;")
+        apply_migrations(self.conn)
+        self.conn.execute(
+            "INSERT INTO source_policies (source_id, name, evidence_rank) "
+            "VALUES ('src_a', 'Source A', 1)")
+        self.conn.execute(
+            "INSERT INTO triggers (trigger_id, name, base_strength, "
+            " decay_half_life_days) "
+            "VALUES ('leadership_change', 'Leadership change', 3, 90)")
+        self.conn.execute(
+            "INSERT INTO watchlist_entities (entity_id, name) "
+            "VALUES ('E_ACME', 'Acme Energy')")
+        self.conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id) "
+            "VALUES ('re1', 'src_a')")
+        self.conn.execute(
+            "INSERT INTO signals (signal_id, raw_event_id, entity_id, "
+            " signal_scope, trigger_id, status) VALUES "
+            "('s_out', 're1', 'E_ACME', 'account', 'leadership_change', "
+            " 'active')")
+        # A July feedback row only -- an August report must see NO rated
+        # feedback for this source, matching precision_report's own window.
+        self.conn.execute(
+            "INSERT INTO feedback (signal_id, verdict, reason_code, ts) "
+            "VALUES ('s_out', 'not_useful', 'other', '2026-07-05T00:00:00Z')")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_out_of_window_feedback_does_not_populate_g2(self):
+        # No rated feedback falls inside the August window, so g2 is None --
+        # the SAME "no rated feedback for this source yet" shape a source with
+        # zero feedback ever gets, not a zero-precision cell (R9.5).
+        rows = {r["source_id"]: r for r in data.source_policy_rows(
+            self.conn, now="2026-08-16T00:00:00Z")}
+        self.assertIsNone(rows["src_a"]["g2"])
+
+    def test_agrees_with_precision_reports_g2_for_the_same_now(self):
+        # Widen to July so BOTH surfaces have a rated row for src_a in-window,
+        # and assert they report the IDENTICAL cell (the two-surface
+        # consistency invariant, R9.5).
+        precision_g2 = data.precision_report(
+            self.conn, now="2026-07-20T00:00:00Z")["g2"]["src_a"]
+        admin_g2 = {r["source_id"]: r for r in data.source_policy_rows(
+            self.conn, now="2026-07-20T00:00:00Z")}["src_a"]["g2"]
+        self.assertEqual(precision_g2["n"], admin_g2["n"])
+        self.assertEqual(precision_g2["precision"], admin_g2["precision"])
 
 
 if __name__ == "__main__":

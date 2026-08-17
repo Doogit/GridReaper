@@ -10,7 +10,10 @@
   <div class="gs-meta">{{ p.event_date }} · {{ p.headline }} · <a class="gs-permalink" href="/card/{{ p.card_key }}" title="Permalink to the card this play came from">permalink</a></div>
   <div class="gs-evidence">{{ p.display_text }}</div>
   {% if p.discovery_question %}<div class="gs-evidence"><span class="gs-locator">Discovery</span> &nbsp; {{ p.discovery_question }}</div>{% endif %}
-  <div class="gs-badges"><span class="gs-badge">{{ p.generation_version }}</span></div>
+  <div class="gs-badges">
+    <span class="gs-badge">{{ p.generation_version }}</span>
+    {% for b in p.badges %}<span class="{{ b.cls }}" title="{{ b.title }}">{{ b.text }}</span>{% endfor %}
+  </div>
 </div>
 {% endfor %}
 {% else %}

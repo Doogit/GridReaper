@@ -9,8 +9,11 @@
   <label class="gs-status">Account
     <select name="entity_id" hx-get="/account/body" hx-target="#gs-account-body" hx-swap="innerHTML"
             title="Switch accounts; the header and tabs reload for the selected entity.">
+      {% if not_found %}
+      <option value="" disabled selected>{{ requested_id }} — not found</option>
+      {% endif %}
       {% for e in entities %}
-      <option value="{{ e['entity_id'] }}"{% if e['entity_id'] == selected %} selected{% endif %}>{{ e['name'] }}  ·  {{ e['entity_id'] }}</option>
+      <option value="{{ e['entity_id'] }}"{% if not not_found and e['entity_id'] == selected %} selected{% endif %}>{{ e['name'] }}  ·  {{ e['entity_id'] }}</option>
       {% endfor %}
     </select>
   </label>

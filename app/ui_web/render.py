@@ -168,6 +168,23 @@ def _non_primary_segments(snapshots):
                    and (f["segment"] or "").strip()})
 
 
+def _non_primary_badge(snapshots, legend):
+    """The non-primary provenance badge (R4.3), or None when every snapshot's
+    facts are all primary (or there are none). Shared by ``_badges`` (feed
+    card / signal detail) and ``account_play_rows`` (Products tab) so a play
+    badged non-primary reads with IDENTICAL text/tooltip on both surfaces."""
+    segments = _non_primary_segments(snapshots)
+    if not segments:
+        return None
+    np_label = legend.get("source_quality", {}).get(
+        "non-primary", {}).get("label", "non-primary")
+    return {
+        "cls": "gs-badge nonprimary",
+        "title": ("Backed in part by non-primary licensing sources; "
+                  "prices never shown (R4.3)"),
+        "text": f"{np_label}: {', '.join(segments)}"}
+
+
 def _badges(signal, snapshots, legend):
     badges = []
     conf = signal["confidence"]
@@ -193,15 +210,9 @@ def _badges(signal, snapshots, legend):
             and signal["coverage_flag"] == "dark"):
         badges.append({"cls": "gs-badge coverage-dark", "title": None,
                        "text": "low coverage"})
-    segments = _non_primary_segments(snapshots)
-    if segments:
-        np_label = legend.get("source_quality", {}).get(
-            "non-primary", {}).get("label", "non-primary")
-        badges.append({
-            "cls": "gs-badge nonprimary",
-            "title": ("Backed in part by non-primary licensing sources; "
-                      "prices never shown (R4.3)"),
-            "text": f"{np_label}: {', '.join(segments)}"})
+    badge = _non_primary_badge(snapshots, legend)
+    if badge:
+        badges.append(badge)
     return badges
 
 
@@ -904,23 +915,40 @@ def timeline_rows(signals):
             for s in signals]
 
 
-def account_play_rows(plays):
+def account_play_rows(plays, legend):
     """Rows for the Account 360 Products tab (R8.3, R7.6, R4.3).
 
     Display shaping only, over data.account_license_plays. The stored snapshot
     text is passed through verbatim — it is what the card showed, frozen — and
-    no price ever appears because the data layer never returns one.
+    no price ever appears because the data layer never returns one. Each row
+    carries the SAME non-primary provenance badge ``_badges`` builds for the
+    feed card (identical text/tooltip), computed from that play's OWN facts
+    via ``_non_primary_badge`` — a play badged non-primary on the feed reads
+    identically here.
+
+    The discovery question is rendered once (R7.6): the frozen snapshot text
+    sometimes already contains it verbatim, and when it does the snapshot wins
+    — ``discovery_question`` comes back empty so the template's existing
+    ``{% if %}`` naturally drops the separate line rather than duplicating it.
     """
-    return [{"signal_id": p["signal_id"],
-             "card_key": card_key(p["signal_id"]),
-             "play_id": p["play_id"],
-             "product": p["product_name"] or p["product_id"] or p["play_id"],
-             "headline": p["headline"] or "",
-             "event_date": str(p["event_date"] or ""),
-             "display_text": p["display_text"] or "",
-             "discovery_question": p["discovery_question"] or "",
-             "generation_version": str(p["generation_version"] or "")}
-            for p in plays]
+    out = []
+    for p in plays:
+        display_text = p["display_text"] or ""
+        discovery_question = p["discovery_question"] or ""
+        if discovery_question and discovery_question in display_text:
+            discovery_question = ""
+        badge = _non_primary_badge([p], legend)
+        out.append({"signal_id": p["signal_id"],
+                    "card_key": card_key(p["signal_id"]),
+                    "play_id": p["play_id"],
+                    "product": p["product_name"] or p["product_id"] or p["play_id"],
+                    "headline": p["headline"] or "",
+                    "event_date": str(p["event_date"] or ""),
+                    "display_text": display_text,
+                    "discovery_question": discovery_question,
+                    "generation_version": str(p["generation_version"] or ""),
+                    "badges": [badge] if badge else []})
+    return out
 
 
 # Every derived obligation leaves compliance_date NULL — FERC states compliance
