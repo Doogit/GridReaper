@@ -25,8 +25,8 @@ import json
 import sqlite3
 import unittest
 
-from app.classify import (company_statement, incident, leadership, ransomware,
-                          regulatory, security_rss)
+from app.classify import (cisa_ics, company_statement, incident, leadership,
+                          ransomware, regulatory, security_rss)
 from app.classify.runner import run_classifier
 from app.db.load_seeds import TRIGGER_SCOPES
 from app.db.migrate import apply_migrations
@@ -38,15 +38,17 @@ FR = "federal_register"
 NERC = "nerc_pages"
 RECORD = "the_record"
 BLEEP = "bleepingcomputer"
+CISA_ICS = cisa_ics.SOURCE_ID
 
 SOURCE_RANKS = {EDGAR: 1, PRN: 2, RANSOM: 3, FR: 1, NERC: 1,
-                RECORD: 2, BLEEP: 2}
+                RECORD: 2, BLEEP: 2, CISA_ICS: 1}
 
 # evidence_quality per seeds/triggers.csv (IR = independent regulator,
 # PC = primary/company source).
 TRIGGER_QUALITY = {"leadership_change": "PC", "nerc_enforcement": "IR",
                    "nerc_cip_revision": "IR", "tsa_security_directive": "IR",
-                   "own_incident": "PC", "peer_incident": "PC"}
+                   "own_incident": "PC", "peer_incident": "PC",
+                   "ics_cve_kev": "IR"}
 
 # The R4.1 carry contract, as stored on `signals`.
 R41_FIELDS = ("source_url", "headline", "evidence_snippet", "signal_scope",
@@ -309,6 +311,25 @@ class TestSecurityRssInvariants(SignalInvariantTestCase):
                            security_rss.PARSER_VERSION)
         # one own card (The Record) + one leak-adjacent peer (BleepingComputer)
         self.check("incident_security_rss", 2)
+
+
+class TestCisaIcsInvariants(SignalInvariantTestCase):
+    def test_energy_sector_advisory(self):
+        payload = {
+            "title": "ACME Widget Controller",
+            "link": "https://www.cisa.gov/news-events/ics-advisories/icsa-26-225-05",
+            "guid": "/node/1",
+            "description": (
+                "<p><strong>Vendor:</strong> ACME</p>"
+                "<li><strong>Critical Infrastructure Sectors: </strong>"
+                "Energy</li>"),
+            "pubDate": "Thu, 13 Aug 26 12:00:00 +0000",
+        }
+        add_event(self.conn, f"{CISA_ICS}:icsa-26-225-05", CISA_ICS, payload,
+                  payload["link"], event_date="2026-08-13")
+        run_classifier(self.conn, cisa_ics.CLASSIFIER_ID, CISA_ICS,
+                       cisa_ics.classify_cisa_ics, cisa_ics.PARSER_VERSION)
+        self.check("cisa_ics/cisa_ics", 1)
 
 
 class TestSourceUrlIsNotEnforced(SignalInvariantTestCase):

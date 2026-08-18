@@ -308,11 +308,13 @@ class TestTopLevelEntity(unittest.TestCase):
 class TestTriggerScopes(unittest.TestCase):
     def test_loader_sets_mvp_scopes(self):
         """apply_trigger_scopes covers the Stage-1 MVP triggers plus the
-        Stage-2 incident triggers (R7.2, R9.6)."""
+        Stage-2 incident triggers (R7.2, R9.6) and U7b's sector-only ICS
+        advisories trigger."""
         self.assertEqual(
             set(TRIGGER_SCOPES),
             {"leadership_change", "nerc_enforcement", "nerc_cip_revision",
-             "tsa_security_directive", "own_incident", "peer_incident"})
+             "tsa_security_directive", "own_incident", "peer_incident",
+             "ics_cve_kev"})
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         apply_migrations(conn)
