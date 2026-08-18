@@ -544,6 +544,9 @@ class TestNotFound(AccountTestBase):
         resp = self.client.get(
             "/account", params={"entity_id": "E_SUB&BR"})
         self.assertEqual(resp.status_code, 404)
+        dom = resp.text
+        self.assertIn("was deactivated, not removed", dom)
+        self.assertIn('data-state="disabled"', dom)
 
     def test_bare_route_with_no_id_still_renders_the_deterministic_default(self):
         dom = self.page()
