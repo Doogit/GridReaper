@@ -12,7 +12,14 @@ case-insensitively over title + abstract):
   trigger                 type            required terms
   ----------------------  --------------  ---------------------------------
   tsa_security_directive  Rule /          TSA agency + a security-directive
-                          Proposed Rule   term (TSA_TERMS)
+                          Proposed Rule   term (TSA_TERMS) + a pipeline/LNG
+                                          term (app/classify/tsa_sd.py,
+                                          R4.1 - TSA_TERMS alone also matches
+                                          rail/aviation/general surface-
+                                          transportation security, which
+                                          app/obligations.py's APPLICABILITY
+                                          would otherwise mismap to the
+                                          lng/midstream subsectors)
   nerc_cip_revision       Rule /          FERC agency + "reliability
                           Proposed Rule   standard" + CIP context ("critical
                                           infrastructure protection", a
@@ -56,6 +63,10 @@ the first changed standard wins.
 Dropped for precision (deliberate, not gaps):
   - TSA Notices (real security directives occasionally surface as notices
     of availability, but TSA Notices are dominated by fee/PRA chatter).
+  - TSA rulemakings that match TSA_TERMS but name no pipeline/LNG facility
+    (rail security, aviation, general surface-transportation security) -
+    app/classify/tsa_sd.py's pipeline/LNG gate (R8, U7 of the combo-engine
+    plan).
   - FERC "Notice of Filing" of NERC standard petitions (the Notice type is
     reserved for enforcement's strict keyword conjunction).
   - Any reliability/security doc with no date anchor or compliance wording.
@@ -68,9 +79,16 @@ import re
 import sys
 
 from app.classify import runner as classify_runner
+from app.classify.tsa_sd import is_pipeline_lng_relevant
 
 CLASSIFIER_ID = "regulatory"
-PARSER_VERSION = "regulatory/1.0"
+# 1.0 -> 1.1 (R8, U7): tsa_security_directive now also requires a pipeline/
+# LNG term (app/classify/tsa_sd.py) - the version bump lets a --force run
+# self-correct any stored signal the old, looser rule would have minted
+# (there are none against the real corpus as of this change, but the bump
+# keeps signal_evidence.extraction_version honest per the REFRESH mechanism
+# in app/classify/runner.py, same as ransomware's 1.0 -> 1.1 precedent).
+PARSER_VERSION = "regulatory/1.1"
 
 FERC_SLUG = "federal-energy-regulatory-commission"
 TSA_SLUG = "transportation-security-administration"
@@ -213,7 +231,8 @@ def classify_federal_register(conn, raw):
     candidates = []
 
     if (TSA_SLUG in slugs and doc_type in RULEMAKING_TYPES
-            and any(t in lower for t in TSA_TERMS)):
+            and any(t in lower for t in TSA_TERMS)
+            and is_pipeline_lng_relevant(lower)):
         candidates.append({
             "trigger_id": "tsa_security_directive", "signal_scope": scope,
             "entity_id": None, "entity_name_hint": None,

@@ -11,6 +11,9 @@ import sqlite3
 import unittest
 from pathlib import Path
 
+from app.classify import runner as classify_runner
+from app.classify.regulatory import PARSER_VERSION as REGULATORY_PARSER_VERSION
+from app.classify.regulatory import classify_federal_register
 from app.db.migrate import apply_migrations
 from app.obligations import (APPLICABILITY, applicability_rule,
                              derive_obligations, rederive_applicability)
@@ -567,6 +570,116 @@ class RederiveApplicabilityTest(unittest.TestCase):
         second = derive_obligations(self.conn)
         self.assertEqual(second["obligations_new"], 0)
         self.assertEqual(second["obligations_existing"], 1)
+
+
+class ClassifyToObligationEndToEndTest(unittest.TestCase):
+    """R8/U7: the concrete proof that a real Federal Register document runs
+    all the way through classify_federal_register -> run_classifier ->
+    derive_obligations to a regulatory_obligations row - not just that a
+    hand-inserted signal derives correctly (ApplicabilityTest above), but
+    that the classifier itself now produces that signal from a raw event.
+    """
+
+    TSA_AGENCY = {"raw_name": "TRANSPORTATION SECURITY ADMINISTRATION",
+                  "name": "Transportation Security Administration",
+                  "slug": "transportation-security-administration"}
+
+    def setUp(self):
+        self.conn = fixture_conn()
+        self.addCleanup(self.conn.close)
+
+    def _fr_event(self, i, **overrides):
+        doc = {
+            "document_number": f"2026-0000{i}",
+            "title": "", "type": "Rule", "abstract": None,
+            "publication_date": "2026-08-11",
+            "agencies": [self.TSA_AGENCY], "agency_names": [],
+            "docket_ids": [], "cfr_references": [],
+            "effective_on": None, "comments_close_on": None,
+        }
+        doc.update(overrides)
+        raw_event_id = f"federal_register:{i}"
+        self.conn.execute(
+            "INSERT INTO raw_events (raw_event_id, source_id, event_date, "
+            " payload, url, first_seen_at) "
+            "VALUES (?, 'federal_register', ?, ?, ?, ?)",
+            (raw_event_id, doc["publication_date"], json.dumps(doc),
+             f"https://www.federalregister.gov/documents/{doc['document_number']}",
+             f"2026-08-01T00:00:0{i}Z"))
+        self.conn.commit()
+        return raw_event_id
+
+    def _classify(self):
+        return classify_runner.run_classifier(
+            self.conn, "regulatory", "federal_register",
+            classify_federal_register, REGULATORY_PARSER_VERSION)
+
+    def test_pipeline_security_directive_derives_an_lng_midstream_obligation(
+            self):
+        self._fr_event(
+            1, title="Enhancing Pipeline Cyber Risk Management",
+            abstract=("TSA is codifying security directive requirements "
+                      "for pipeline owner/operators. Owner/operators must "
+                      "establish cybersecurity requirements and report "
+                      "incidents."),
+            effective_on="2026-10-01")
+        classify_counts = self._classify()
+        self.assertEqual(classify_counts["signals_new"], 1)
+
+        before = obligations(self.conn)
+        self.assertEqual(before, [])
+        derive_counts = derive_obligations(self.conn)
+        self.assertEqual(derive_counts["obligations_new"], 1)
+
+        after = obligations(self.conn)
+        self.assertEqual(len(after), 1)
+        self.assertEqual(after[0]["applicability_rule"],
+                         "subsector_in:lng;midstream")
+        self.assertEqual(after[0]["regulator"],
+                         "Transportation Security Administration")
+
+    def test_rail_only_security_directive_derives_no_obligation(self):
+        # R4.1: TSA_TERMS alone would have matched this (it names "rail
+        # security"), but it names no pipeline/LNG facility - the
+        # classifier's pipeline/LNG gate (app/classify/tsa_sd.py) must drop
+        # it before it ever reaches derive_obligations, not rely on
+        # derive_obligations to filter it after the fact.
+        self._fr_event(
+            1, title="Enhancing Rail Cyber Risk Management",
+            abstract=("TSA is codifying security directive requirements "
+                      "for rail owner/operators. Owner/operators must "
+                      "establish cybersecurity requirements and report "
+                      "incidents."),
+            effective_on="2026-10-01")
+        classify_counts = self._classify()
+        self.assertEqual(classify_counts["signals_new"], 0)
+
+        derive_counts = derive_obligations(self.conn)
+        self.assertEqual(derive_counts["signals_seen"], 0)
+        self.assertEqual(obligations(self.conn), [])
+
+    def test_rerun_of_classify_and_derive_is_idempotent(self):
+        self._fr_event(
+            1, title="Enhancing Pipeline Cyber Risk Management",
+            abstract=("TSA is codifying security directive requirements "
+                      "for pipeline owner/operators. Owner/operators must "
+                      "establish cybersecurity requirements and report "
+                      "incidents."),
+            effective_on="2026-10-01")
+        self._classify()
+        derive_obligations(self.conn)
+        before = [tuple(r) for r in obligations(self.conn)]
+
+        # A bare rerun (no --force) skips events already bookkept at this
+        # parser_version (app/classify/runner.py) - it reprocesses nothing,
+        # rather than reprocessing and finding the signal "existing".
+        second_classify = self._classify()
+        self.assertEqual(second_classify["events_processed"], 0)
+        self.assertEqual(second_classify["signals_new"], 0)
+        second_derive = derive_obligations(self.conn)
+        self.assertEqual(second_derive["obligations_new"], 0)
+        self.assertEqual(second_derive["obligations_existing"], 1)
+        self.assertEqual([tuple(r) for r in obligations(self.conn)], before)
 
 
 class PipelineWiringTest(unittest.TestCase):
