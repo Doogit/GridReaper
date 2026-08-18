@@ -5,10 +5,12 @@
 R10.7 has two halves. The Admin banner half already exists: the page reads
 ``app.ui.data.stale_facts`` on every load and lists every license fact whose
 ``verified_date`` is older than the window (or is empty/unparseable — unknown
-verification cannot be proven fresh). The SEMI-ANNUAL JOB half is this module.
-Without it the banner only tells an operator who happens to open Admin; the
-scheduled sweep names the due facts in the container log on its own cadence, so
-the re-verification work announces itself.
+verification cannot be proven fresh). The QUARTERLY JOB half is this module —
+run more often than R10.7's literal "semi-annual" minimum so the sweep stays
+comfortably inside the 180-day window (see ``deploy/crontab``). Without it the
+banner only tells an operator who happens to open Admin; the scheduled sweep
+names the due facts in the container log on its own cadence, so the
+re-verification work announces itself.
 
 Staleness is NOT redefined here. The sweep calls ``data.stale_facts`` and takes
 its window default, so the job and the banner can never drift to two different
