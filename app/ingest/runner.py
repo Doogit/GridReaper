@@ -23,7 +23,9 @@ import contextlib
 import hashlib
 import json
 import os
+import signal
 import sys
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -40,6 +42,57 @@ def _utcnow():
 
 # -- single-writer ingestion lock (R3.2) -------------------------------------
 
+def _restore_target(previous_handler):
+    """The value to hand `signal.signal()` when un-installing our SIGTERM
+    handler. `signal.getsignal()` returns None for a disposition Python
+    can't represent as SIG_DFL/SIG_IGN/callable (rare, but signal.signal()
+    itself rejects None outright) -- SIG_DFL is the correct substitute,
+    since that's what "no Python-level handler" already means in practice.
+    Shared by _sigterm_cleanup_handler and ingest_lock's own restore so the
+    fallback rule lives in exactly one place."""
+    return previous_handler if previous_handler is not None else signal.SIG_DFL
+
+
+def _sigterm_cleanup_handler(path, previous_handler):
+    """SIGTERM handler installed for ingest_lock's critical section (U35).
+
+    Python's default SIGTERM disposition kills the interpreter immediately
+    without unwinding `finally` blocks (unlike SIGINT, which Python converts
+    into a catchable KeyboardInterrupt) -- so the lock's normal
+    `finally: os.remove(path)` never gets a turn when a cron tick is killed
+    mid-step, even now that the container's shutdown trap relays SIGTERM to
+    the Python process. Installing ANY Python-level handler suppresses that
+    default fatal action, so this only cleans up here for the SIG_DFL/None
+    case (restore SIG_DFL, then self-deliver so the process still actually
+    terminates the way it would have without us in the way) -- that's the
+    one branch we know results in synchronous termination, i.e. the exact
+    case that needs the lock rescued before it goes down. SIG_IGN and a
+    callable previous handler are chained WITHOUT touching the lock first:
+    a pre-existing handler is invoked (not silently discarded) but the
+    critical section may still be running afterward (SIG_IGN never dies;
+    a "soft" callable handler may just flag-and-return), and pulling the
+    lock out from under still-executing code would defeat the single-writer
+    guarantee (R3.2) for no reason -- ingest_lock's own `finally` already
+    cleans up once/if the critical section actually unwinds, exactly as it
+    did before U35. (Every real caller today either runs as a fresh
+    subprocess with previous_handler == SIG_DFL, or is the one
+    off-main-thread caller this function is never installed for -- so
+    SIG_IGN/callable chaining is dormant in practice, not just theoretical
+    protection.)"""
+    def _handler(signum, frame):
+        restore = _restore_target(previous_handler)
+        signal.signal(signal.SIGTERM, restore)
+        if restore is signal.SIG_DFL:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+            os.kill(os.getpid(), signum)
+        elif restore is signal.SIG_IGN:
+            pass
+        else:
+            restore(signum, frame)
+    return _handler
+
+
 @contextlib.contextmanager
 def ingest_lock(path=None):
     """Exclusive-create lockfile holding {pid, ts}. A lock older than
@@ -48,7 +101,23 @@ def ingest_lock(path=None):
 
     The path is resolved at call time: an explicit argument, else the
     GRIDSIGNALS_LOCK override deploy/scheduled_run.sh documents, else
-    LOCK_PATH."""
+    LOCK_PATH.
+
+    A SIGTERM handler is installed around the critical section (U35) so a
+    cron tick killed mid-step still cleans up the lock -- but only when this
+    call is running on the main thread. `signal.signal()` raises ValueError
+    off the main thread, and this context manager has a real off-main-thread
+    caller: the UI's Admin write path runs sync route handlers in a
+    FastAPI/Starlette worker thread (see app/ui_web/deps.py), which reach
+    here via app.ui.data.config_write_conn. That path already relies on the
+    existing `finally: os.remove(path)` for cleanup (it has no OS signal to
+    receive anyway), so skipping the handler there is a no-op, not a gap.
+
+    A SIGTERM landing before the handler is installed (between the O_EXCL
+    create/re-create above and the `signal.signal()` call below) still hits
+    whatever disposition preceded this call -- unchanged from before U35,
+    and bounded by the existing zero-byte/mtime staleness fallback rather
+    than wedging ingestion forever."""
     path = path or os.environ.get("GRIDSIGNALS_LOCK") or LOCK_PATH
     parent = os.path.dirname(path)
     if parent:
@@ -67,13 +136,27 @@ def ingest_lock(path=None):
             )
         os.remove(path)   # stale (>2h): break and take it
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+
+    on_main_thread = threading.current_thread() is threading.main_thread()
+    previous_handler = None
+    if on_main_thread:
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM,
+                      _sigterm_cleanup_handler(path, previous_handler))
     try:
         os.write(fd, payload.encode("utf-8"))
         os.close(fd)
         yield
     finally:
+        # Remove the lock BEFORE restoring the handler (mirrors the order
+        # inside _sigterm_cleanup_handler itself, U35 code review): a SIGTERM
+        # landing in this window still uses OUR handler until the file is
+        # gone, so it cleans up too, instead of a default-disposition kill
+        # racing ahead of an as-yet-unremoved lock.
         with contextlib.suppress(OSError):
             os.remove(path)
+        if on_main_thread:
+            signal.signal(signal.SIGTERM, _restore_target(previous_handler))
 
 
 def _read_lock(path):
