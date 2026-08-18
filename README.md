@@ -35,7 +35,7 @@ This is the tier the weekly output comes from. On the project's own 12-month cor
 
 Account-scoped cards are built and armed: entity resolution with collision guards and a review queue, `own_incident` / `leadership_change` classifiers, account-fit scoring, license-play snapshots, and the Account 360 page. **They have never fired.** Zero signals in the store have ever carried an `entity_id`.
 
-That is a property of the free public record, not of the classifiers. Measured over the stored 12-month backfill across 171 watchlist entities:
+That is a property of the free public record, not of the classifiers. Measured over the stored 12-month backfill across 172 watchlist entities:
 
 | Account trigger | Input it needs | What the corpus holds |
 |---|---|---|
@@ -235,7 +235,7 @@ Ingestion runs as a separate process from the app — invoked as a CLI, or start
 
 ## Roadmap
 
-The MVP classifies regulatory actions, leadership changes, and precision-first cyber-incident slices into cards over a watchlist of 171 US energy companies, while ingesting a broader signal set to build backfill for later stages. "Implemented" means the code path is built and tested; where the free public record does not feed it, the row says so.
+The MVP classifies regulatory actions, leadership changes, and precision-first cyber-incident slices into cards over a watchlist of 172 US energy companies, while ingesting a broader signal set to build backfill for later stages. "Implemented" means the code path is built and tested; where the free public record does not feed it, the row says so.
 
 | Area | Status |
 |---|---|
