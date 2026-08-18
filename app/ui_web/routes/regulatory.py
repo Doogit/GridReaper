@@ -29,8 +29,8 @@ router = APIRouter()
 
 LIMIT = 100
 
-# Verbatim from the Streamlit page's empty state so the honest low-signal framing
-# reads identically across both surfaces.
+# Verbatim from the retired Streamlit page's empty state, preserving the honest
+# low-signal framing operators were already used to.
 EMPTY_MESSAGE = (
     "No non-graduated regulatory chatter — either nothing has been ingested "
     "from the Federal Register / NERC yet, or every record graduated to the "

@@ -19,14 +19,14 @@ Zero account-scoped signals is the norm today (dark accounts, R6.6): the page
 stays useful from identifiers, relationships, and gov-cloud posture, and both
 tabs carry an honest low-volume-by-design empty state rather than a broken look.
 Cards read snapshots, never live facts (R7.6). The account page paginates
-nothing (Streamlit's page shows the full account history), so — unlike the feed
-— there is no keyset load-more here.
+nothing (the retired Streamlit page it replaced showed the full account history
+too), so — unlike the feed — there is no keyset load-more here.
 
-Reads bind the same data.py functions the Streamlit page uses. The only write
-path is feedback (routes/feed.py owns /feedback + /feedback/reason, shared by
-the reused card), so this router adds no write of its own. The entity-selector
-list is a direct active-entity query, mirroring the Streamlit page which does
-the same — data.py exposes no active-only entity read, and per the plan the
+Reads bind the same data.py functions the retired Streamlit page used. The only
+write path is feedback (routes/feed.py owns /feedback + /feedback/reason, shared
+by the reused card), so this router adds no write of its own. The entity-selector
+list is a direct active-entity query, matching what the retired Streamlit page
+did — data.py exposes no active-only entity read, and per the plan the
 UI does not mutate data.py to add one (flagged in the PR).
 """
 from fastapi import APIRouter, Depends, Request
@@ -39,9 +39,9 @@ from app.ui_web.templating import templates
 
 router = APIRouter()
 
-# Account tabs show the active history only, matching the Streamlit page's
-# data.account_signals default; decayed/superseded rows keep their frozen scores
-# but are not surfaced here.
+# Account tabs show the active history only, matching the retired Streamlit
+# page's data.account_signals default; decayed/superseded rows keep their
+# frozen scores but are not surfaced here.
 STATUSES = ("active",)
 
 # R6.6: an unknown, stale, or soft-disabled entity_id must render this honest
@@ -65,7 +65,8 @@ LOAD_ERROR_STATE = "load-error"
 
 def _entities(conn):
     """(entity_id, name) for every ACTIVE watchlist entity, name-ordered — the
-    pool the selector searches over. Mirrors the Streamlit page's _entities:
+    pool the selector searches over. Ported from the retired Streamlit page's
+    _entities:
     soft-disabled entities (R8.7) drop out of the selector; their existing cards
     still render via the card queries' name lookup."""
     return conn.execute(

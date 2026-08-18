@@ -1,12 +1,12 @@
 """Chunk 0 scaffold tests for the FastAPI web UI (R8.9 UI port).
 
 Hermetic and network-free: FastAPI TestClient drives the app in-process; the
-deps.get_db test builds a temp-file SQLite DB via apply_migrations (FK on) and
-points the connection at it through the GRIDSIGNALS_DB override — the same env
-seam the CLIs and the Streamlit UI use. These replace nothing yet; the real
-page/AppTest ports arrive in later chunks. This file only proves the scaffold
-boots, serves its static design assets, renders through the base layout, and
-that the read/write DB seam is wired.
+deps.get_db test builds a temp-file SQLite DB via apply_migrations (FK on)
+and points the connection at it through the GRIDSIGNALS_DB override — the
+same env seam the CLIs and the retired Streamlit UI used. These replace
+nothing yet; the real page/AppTest ports arrive in later chunks. This file
+only proves the scaffold boots, serves its static design assets, renders
+through the base layout, and that the read/write DB seam is wired.
 """
 import os
 import sqlite3

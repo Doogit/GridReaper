@@ -1,8 +1,8 @@
 """Pure view helpers for the GridSignals web UI (R8.1 card anatomy).
 
 Ported from app/ui/components.py so the FastAPI templates render the exact same
-signal-card shape the Streamlit UI does — one card definition, one set of trust
-rules. These functions are pure (no I/O, no Streamlit): they take a
+signal-card shape the retired Streamlit UI did — one card definition, one set of
+trust rules. These functions are pure (no I/O): they take a
 data.signal_detail() dict + data.badge_legend() and return plain data the Jinja
 templates escape and lay out. Invariants preserved from components.py:
 
@@ -228,7 +228,8 @@ def _chips(snapshots):
 
 def _row_get(row, key):
     """sqlite3.Row has no .get(); return the value or None if the column is
-    absent (entity rows are sparse). Mirrors the Streamlit page's _row_get."""
+    absent (entity rows are sparse). Ported from the retired Streamlit page's
+    _row_get."""
     try:
         return row[key]
     except (IndexError, KeyError):
@@ -723,8 +724,8 @@ def precision_run_history(run_rows):
 # templates render the exact same result messages and provenance labels the
 # Streamlit page did. Every string returned here is autoescaped by the template.
 
-# Friendly headers for the scoring_weights.weight_kind groups (R7.5); mirrors
-# WEIGHT_KIND_LABELS in the Streamlit Admin page.
+# Friendly headers for the scoring_weights.weight_kind groups (R7.5); ported
+# from WEIGHT_KIND_LABELS in the retired Streamlit Admin page.
 WEIGHT_KIND_LABELS = {
     "subsector": "Subsector fit",
     "richness": "Account richness",
@@ -734,8 +735,8 @@ WEIGHT_KIND_LABELS = {
 }
 
 # config_audit "field" sentinels for row-level lifecycle edits -> operator-facing
-# labels (render only; config_audit still stores the sentinel). Mirrors
-# _FIELD_LABELS in the Streamlit page.
+# labels (render only; config_audit still stores the sentinel). Ported from
+# _FIELD_LABELS in the retired Streamlit page.
 _AUDIT_FIELD_LABELS = {
     "__add__": "added",
     "__remove__": "removed",
@@ -819,7 +820,8 @@ def result_message(fn_name, result):
 
 def result_level(fn_name, result):
     """The flash level for a successful config write: 'info' for a no-op save
-    (nothing written), 'success' otherwise — mirrors the Streamlit page."""
+    (nothing written), 'success' otherwise — ported from the retired Streamlit
+    page."""
     return "success" if result.get("changed", True) else "info"
 
 
@@ -829,8 +831,8 @@ def humanize_audit_field(field):
 
 def humanize_audit_pk(table_name, pk):
     """scoring_weights stores a JSON composite pk; render it 'kind · key' so the
-    provenance table reads cleanly. Other tables use a bare pk already. Mirrors
-    _humanize_pk in the Streamlit page."""
+    provenance table reads cleanly. Other tables use a bare pk already. Ported
+    from _humanize_pk in the retired Streamlit page."""
     if table_name == "scoring_weights":
         from json import loads
         try:
