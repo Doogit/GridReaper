@@ -344,8 +344,8 @@ class CipApplicabilitySetTest(unittest.TestCase):
     }
     # The renewables entities that stay in: project owners/operators.
     RENEWABLE_OPERATORS = ("E0152", "E0153", "E0154", "E0162", "E0163")
-    ADMITTED_ENTITY_COUNT = 88
-    WATCHLIST_ENTITY_COUNT = 171
+    ADMITTED_ENTITY_COUNT = 89
+    WATCHLIST_ENTITY_COUNT = 172
 
     def setUp(self):
         self.conn = fixture_conn()
@@ -447,8 +447,8 @@ class CipApplicabilitySetTest(unittest.TestCase):
         self.assertEqual([o["obligation_id"] for o in cal["obligations"]],
                          ["obligation:cip003"])
 
-    def test_narrowed_rule_admits_88_of_the_171_watchlist_entities(self):
-        """Pins the count against the real seed CSV, so 96 -> 88 is measured
+    def test_narrowed_rule_admits_89_of_the_172_watchlist_entities(self):
+        """Pins the count against the real seed CSV, so 96 -> 89 is measured
         rather than asserted. The seed file is read-only; this test reads it."""
         with (SEEDS / "watchlist_entities.csv").open(
                 newline="", encoding="utf-8") as fh:
