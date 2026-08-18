@@ -329,6 +329,20 @@ class TestGetJson(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called()   # backoff exercised on the transient failure
 
+    def test_malformed_body_then_success(self):
+        # R9.6 live re-trial: an overloaded DOC API backend sometimes answers
+        # 200 with an empty body instead of the documented 429. That must be
+        # retried like a transient URLError, not fail the chunk outright.
+        payload = {"articles": [{"url": "https://news.example.com/a"}]}
+        with mock.patch.object(gdelt.urllib.request, "urlopen",
+                               side_effect=[io.BytesIO(b""),
+                                            self._resp(payload)]) as urlopen, \
+                mock.patch.object(gdelt.time, "sleep") as sleep:
+            result = gdelt._get_json("https://api.example/x")
+        self.assertEqual(result, payload)
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called()
+
     def test_exhausted_retries_reraise(self):
         with mock.patch.object(gdelt.urllib.request, "urlopen",
                                side_effect=urllib.error.URLError("down")) \

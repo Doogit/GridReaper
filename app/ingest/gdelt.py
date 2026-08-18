@@ -73,13 +73,20 @@ _QUERY_META = re.compile(r'["()]')
 
 
 def _get_json(url, retries=2):
+    """GET url as JSON, retrying transient failures with backoff.
+
+    Verified against the live DOC API under throttling (R9.6 re-trial):
+    an overloaded backend sometimes answers 200 with an empty/non-JSON body
+    instead of the documented 429, so json.JSONDecodeError is retried the
+    same as a URLError/TimeoutError rather than failing the whole chunk on
+    the first malformed response."""
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT, "Accept": "application/json"})
     for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 return json.load(resp)
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
             if attempt == retries:
                 raise
             time.sleep(2 * (attempt + 1))

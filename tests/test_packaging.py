@@ -109,6 +109,7 @@ class PackagingContractTest(unittest.TestCase):
             "app/ingest/security_rss.py",
             "app/ingest/nerc_calendar.py",
             "app/ingest/nerc_enforcement.py",
+            "app/ingest/gdelt.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
 
@@ -127,6 +128,18 @@ class PackagingContractTest(unittest.TestCase):
             p.index("app.ingest.edgar_fulltext"),
             p.index("app.classify.incident"),
             "all EDGAR ingestion should complete before incident classification",
+        )
+
+    def test_pipeline_runs_gdelt_ingest_store_only(self):
+        # U9a (R9.6): GDELT is store-only pending the >=20 distinct
+        # corporate-action re-entry check. The fetcher must run so the corpus
+        # keeps growing under cron, but the classifier stays unwired -- its
+        # own docstring documents why it must not be added here.
+        p = self._pipeline()
+        self.assertIn("app.ingest.gdelt", p, "pipeline dropped the GDELT store-only fetcher (R9.6)")
+        self.assertNotIn(
+            "app.classify.gdelt", p,
+            "the GDELT classifier stays unwired pending the R9.6 silent-trial re-entry check",
         )
 
     def test_pipeline_runs_company_statement_classifier_before_scoring(self):

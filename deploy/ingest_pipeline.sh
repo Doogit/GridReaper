@@ -30,6 +30,11 @@ python -m app.ingest.security_rss --source therecord        || echo "WARN: the_r
 python -m app.ingest.security_rss --source bleepingcomputer || echo "WARN: bleepingcomputer ingest failed, continuing"
 python -m app.ingest.nerc_calendar     || echo "WARN: nerc_calendar ingest failed, continuing"
 python -m app.ingest.nerc_enforcement  || echo "WARN: nerc_enforcement ingest failed, continuing"
+# GDELT is store-only (R9.6): grows the corpus for the classify/gdelt.py
+# silent-trial --report re-entry check, but is not itself classified here.
+# Do not wire the GDELT classifier into this pipeline — see that module's
+# docstring for why the absence is deliberate.
+python -m app.ingest.gdelt             || echo "WARN: gdelt ingest failed, continuing"
 
 # Classify -> score -> plays -> digest. Classifiers run before scoring; digest
 # is last (reads the freshest scored cards + play snapshots, R8.8).
