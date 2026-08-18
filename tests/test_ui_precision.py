@@ -360,10 +360,13 @@ class TestG1Waiver(PrecisionRouteCase):
     """
     def test_waiver_banner_renders_with_its_reason(self):
         text = html.unescape(self._get(seed_empty))
-        # The exact operator-ruling sentence, verbatim, in the DOM.
-        self.assertIn(precision.G1_WAIVER_REASON, text)
+        # The frozen waiver-FACT sentence, verbatim, in the DOM.
+        self.assertIn(precision.G1_WAIVER_FACT, text)
         self.assertIn("WAIVED by operator ruling 2026-08-16", text)
         self.assertIn("not passed", text)
+        # The live-computed conditions clause: seed_empty has 0 rated cards,
+        # so the gate's own conditions are genuinely still unmet.
+        self.assertIn("gate's own conditions above are unmet", text)
         # The recorded lift condition travels with it.
         self.assertIn(precision.G1_WAIVER_LIFT_CONDITION, text)
 
@@ -452,6 +455,7 @@ class TestG1WaiverViewBranches(unittest.TestCase):
             "eligible": eligible,
             "state": state,
             "waiver": waiver,
+            "conditions_still_unmet": not eligible,
         }
 
     def test_blocked_state_renders_no_waiver(self):
@@ -470,16 +474,37 @@ class TestG1WaiverViewBranches(unittest.TestCase):
         self.assertTrue(out["eligible"])
 
     def test_waived_state_forwards_reason_and_lift(self):
+        # eligible=False here -> the live "conditions still unmet" clause
+        # (U16) is appended to the frozen waiver-fact half.
         waiver = {"date": precision.G1_WAIVER_DATE,
-                  "reason": precision.G1_WAIVER_REASON,
+                  "reason": precision.G1_WAIVER_FACT,
                   "lift_condition": precision.G1_WAIVER_LIFT_CONDITION}
         out = render.precision_g1_view(self._g1("waived", waiver, False))
         self.assertTrue(out["waived"])
-        self.assertEqual(out["waiver_reason"], precision.G1_WAIVER_REASON)
+        self.assertIn(precision.G1_WAIVER_FACT, out["waiver_reason"])
+        self.assertIn("gate's own conditions above are unmet",
+                      out["waiver_reason"])
         self.assertEqual(out["waiver_lift"], precision.G1_WAIVER_LIFT_CONDITION)
         # A waiver is a disclosure, never a pass: the computed value passes
         # through untouched (KTD1).
         self.assertFalse(out["eligible"])
+
+    def test_waived_state_with_conditions_now_met_changes_the_wording(self):
+        # U16, PR #78 finding #2: the banner's "unmet" claim must be LIVE, not
+        # frozen — if a primary trigger ever crosses the gate while the
+        # waiver stays active (recorded, not enforced), the wording flips.
+        waiver = {"date": precision.G1_WAIVER_DATE,
+                  "reason": precision.G1_WAIVER_FACT,
+                  "lift_condition": precision.G1_WAIVER_LIFT_CONDITION}
+        out = render.precision_g1_view(self._g1("waived", waiver, True))
+        self.assertTrue(out["waived"])
+        self.assertIn(precision.G1_WAIVER_FACT, out["waiver_reason"])
+        self.assertIn("gate's own conditions above are now met",
+                      out["waiver_reason"])
+        self.assertNotIn("are unmet", out["waiver_reason"])
+        # The waiver is still recorded as active — a met gate does not lift
+        # it on its own (Open Question 7 / KTD1: recorded, not enforced).
+        self.assertTrue(out["waived"])
 
     def test_blocked_reasons_survive_every_state(self):
         # The per-trigger BLOCKED badge and its reason line must be identical

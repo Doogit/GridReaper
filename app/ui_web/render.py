@@ -548,6 +548,15 @@ def precision_headline_view(report):
     return {"useful": useful, "auto": auto}
 
 
+# precision.html renders the per-trigger condition blocks (the "MEETS"/
+# "BLOCKED" loop) ABOVE the three-way overall banner line that shows the
+# waiver text (see the {% for t in g1.triggers %} block ahead of the
+# {% if g1.waived %} block in that template). This word is hardcoded to that
+# specific layout, not computed structurally — revisit it if precision.html
+# ever moves the detail relative to the banner (U16).
+G1_WAIVER_CONDITIONS_POSITION = "above"
+
+
 def precision_g1_view(g1):
     """Gate G1 per primary account trigger + the reported-separately block
     (R9.4). Rates are pre-formatted with their n; sector / regulatory /
@@ -558,7 +567,18 @@ def precision_g1_view(g1):
     ruling — a disclosure, never a pass), ``eligible``, or blocked. Under a
     waiver the per-trigger BLOCKED badges and blocked reasons render UNCHANGED:
     the waiver discloses that the gate was not passed, it never hides the
-    conditions it failed."""
+    conditions it failed.
+
+    ``waiver_reason`` is assembled here, live, from two halves (U16, PR #78
+    finding #2): the frozen waiver-FACT (``waiver["reason"]`` — WHETHER/WHEN
+    the operator waived it, which never changes on its own) plus a live
+    clause built from ``g1["conditions_still_unmet"]`` — the SAME per-trigger
+    data (``G1_MIN_DAYS``/``G1_MIN_RATED``/rate thresholds) the per-trigger
+    loop above already renders, read off the dict this module already gets
+    through ``app.ui.data`` rather than importing ``app.audit.precision``
+    directly (R10.9 UI/backend boundary). If a primary trigger ever crosses
+    the gate, this clause flips from "unmet" to "now met" instead of staying a
+    frozen claim."""
     triggers = []
     for tid, m in g1["triggers"].items():
         triggers.append({
@@ -574,11 +594,24 @@ def precision_g1_view(g1):
     rep = g1["reported_separately"]
     fb, au = rep["feedback"], rep["auto"]
     waiver = g1["waiver"]
+    if waiver:
+        if g1["conditions_still_unmet"]:
+            detail = (
+                f"The gate's own conditions {G1_WAIVER_CONDITIONS_POSITION} "
+                "are unmet and are shown unchanged.")
+        else:
+            detail = (
+                f"The gate's own conditions {G1_WAIVER_CONDITIONS_POSITION} "
+                "are now met, though the waiver stays in force until the "
+                "operator lifts it.")
+        waiver_reason = f"{waiver['reason']} {detail}"
+    else:
+        waiver_reason = None
     return {
         "triggers": triggers,
         "eligible": g1["eligible"],
         "waived": g1["state"] == "waived",
-        "waiver_reason": waiver["reason"] if waiver else None,
+        "waiver_reason": waiver_reason,
         "waiver_lift": waiver["lift_condition"] if waiver else None,
         "reported_useful": rate_with_n(fb["rate"], fb["total"]),
         "reported_auto": rate_with_n(au["accuracy"], au["scored"], "scored"),
