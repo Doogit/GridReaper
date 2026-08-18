@@ -46,15 +46,26 @@ has read the review-queued and token-overlap lists.
 THRESHOLDS, agreed before the number was known:
 
   0 hits   stop, and record the negative beside 1.05 and 5.02 *precisely*:
-           "CA+WA registries do not name watchlist entities at a usable rate;
-           the other 13 publishing states were not machine-accessible and are
-           untested." NOT "own_incident is closed on the free public record" —
-           a state registry only names organizations that notified *that
-           state's* residents, so an in-state utility (the ERCOT/TVA/SRP shape)
-           is structurally invisible to CA and WA whether or not it was
-           breached.
+           see NEGATIVE_FINDING below. NOT "own_incident is closed on the free
+           public record" — a state registry only names organizations that
+           notified *that state's* residents, so an in-state utility (the
+           ERCOT/TVA/SRP shape) is structurally invisible to CA and WA whether
+           or not it was breached.
   1-4      operator ruling: is a card every ~6 months worth a fetcher?
   5+       build U6.
+
+U36 WIDENING. U5 measured CA+WA only and left the other 13 publishing states
+"not tested," not "confirmed inaccessible" — a ruling on 2 of 15 states is a
+ruling on a silently narrowed sample. U36 live-GET-checked all 13 (identified
+as GridSignals/0.1, one sequential request per state — see
+OTHER_PUBLISHING_STATES below for the URL and reason recorded against each):
+none exposes a CSV/JSON/API export. CA's CSV export and WA's Socrata JSON API
+are the exception among publishing states, not the norm — the rest publish an
+HTML list/search page, PDF-only filings, or (ME) a database the state has
+itself taken offline. None of the 13 contributes a BreachRow, so the hit count
+and definition are unchanged from U5; this widening's contribution is that the
+"13 states untested" gap in the recommendation text is now a measured, cited
+finding instead of an assumption.
 
 R10.6. The probe reads and reports **organization names and reported dates
 only**. The parsers are field allowlists, so no resident/individual column ever
@@ -130,7 +141,61 @@ MIN_TOKEN_CHARS = 4
 
 NEGATIVE_FINDING = (
     "CA+WA registries do not name watchlist entities at a usable rate; the "
-    "other 13 publishing states were not machine-accessible and are untested.")
+    "other 13 publishing states were checked live (U36) and none exposes a "
+    "CSV/JSON/API export -- CA's CSV export and WA's Socrata API are the "
+    "exception among publishing states, not the norm.")
+
+# The 13 US states besides CA/WA commonly cited as operating a
+# breach-notification registry (U36). Checked 2026-08-17 via one identified
+# (GridSignals/0.1), sequential,
+# read-only GET per state landing page -- the same machine-readable-export bar
+# U5 applied to CA (CSV) and WA (Socrata JSON). None cleared it, so none
+# contributes a BreachRow parser; this table is the record of *why*, kept in
+# code rather than only a PR body, so a future re-check has a concrete claim
+# per state to falsify instead of re-doing the whole survey. state -> (url,
+# reason). NY publishes no public breach-notice list at all (a different
+# finding than "publishes one that isn't machine-readable") but is kept here
+# because privacy-law surveys count NY among the 15 publishing states; if a
+# future check finds otherwise, drop it and adjust the "15 publishing states"
+# framing, not just this table.
+OTHER_PUBLISHING_STATES = {
+    "OR": ("https://justice.oregon.gov/consumer/databreach/",
+           "HTML search UI only, no CSV/JSON/API export"),
+    "IN": ("https://www.in.gov/attorneygeneral/consumer-protection-division/"
+           "id-theft-prevention/security-breaches/",
+           "no centralized breach-notice list page found (reporting FAQ/form "
+           "only), no export"),
+    "ME": ("https://www.maine.gov/agviewer/content/ag/"
+           "985235c7-cb95-4be2-8792-a1252b4f8318/list.html",
+           "public database TEMPORARILY OFFLINE (state disabled it after "
+           "reporting-system abuse) -- re-check later, not a permanent no"),
+    "MT": ("https://dojmt.gov/office-of-consumer-protection/"
+           "reported-data-breaches/",
+           "HTML chart only, no CSV/JSON/API export"),
+    "NH": ("https://www.doj.nh.gov/consumer-protection/security-breach",
+           "blocks the identified GridSignals User-Agent (HTTP 403)"),
+    "NY": ("https://ag.ny.gov/",
+           "no public breach-notice list or database found"),
+    "ND": ("https://attorneygeneral.nd.gov/",
+           "no centralized list -- individual PDF filings only"),
+    "VT": ("https://ago.vermont.gov/categories/security-breach-notices",
+           "blocks the identified GridSignals User-Agent (HTTP 403); HTML "
+           "only when fetched with a browser UA and no export was found "
+           "there either -- not retried under a spoofed UA (R3.4 identifies "
+           "honestly)"),
+    "WI": ("https://datcp.wi.gov/Pages/Programs_Services/DataBreaches.aspx",
+           "HTML list only, no CSV/JSON/API export"),
+    "HI": ("https://cca.hawaii.gov/ocp/notices/security-breach/",
+           "HTML list only, no CSV/JSON/API export"),
+    "IA": ("https://www.iowaattorneygeneral.gov/for-consumers/"
+           "security-breach-notifications",
+           "HTML page only, no CSV/JSON/API export"),
+    "DE": ("https://attorneygeneral.delaware.gov/fraud/cpu/"
+           "securitybreachnotification/database/",
+           "HTML search UI only ('database' page), no CSV/JSON/API export"),
+    "MA": ("https://www.mass.gov/lists/data-breach-notification-reports",
+           "yearly reports are PDF downloads, not CSV/JSON/API"),
+}
 
 # state, organization name, reported date (ISO or "") — nothing else, ever.
 BreachRow = namedtuple("BreachRow", ["state", "organization", "reported_date"])
@@ -402,6 +467,11 @@ def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
         "unmatched_sample": [o for o in sorted(unmatched)
                              if o not in listed][:max(0, unmatched_sample)],
         "recommendation": recommendation(len(hit_list), states),
+        # U36: the 13 other publishing states, checked and found not
+        # machine-accessible -- reported unconditionally (not just when the
+        # hit count is 0) so a future ruling sees real coverage, not a
+        # silently narrowed sample. See OTHER_PUBLISHING_STATES.
+        "other_publishing_states": dict(OTHER_PUBLISHING_STATES),
     }
 
 
@@ -492,6 +562,17 @@ def format_report(result):
                    f"shares={','.join(e['tokens'])}  ~ {ents}")
     for org in result["unmatched_sample"]:
         out.append(f"  . \"{org}\"")
+
+    others = result["other_publishing_states"]
+    out += ["", f"state coverage: 2 testable (CA, WA) + {len(others)} "
+            "checked, not machine-accessible (U36)",
+            "  (of the 15 US states commonly cited as operating a "
+            "breach-notification registry -- NY's own line below found no "
+            "public registry at all, so that count is 14 confirmed + NY "
+            "unconfirmed; see OTHER_PUBLISHING_STATES for URLs)"]
+    for state in sorted(others):
+        _, reason = others[state]
+        out.append(f"  {state}  {reason}")
 
     out += ["", "RECOMMENDATION (provisional -- re-band after the adjudication "
             "pass)", "  " + result["recommendation"], ""]

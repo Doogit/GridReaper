@@ -110,6 +110,7 @@ class PackagingContractTest(unittest.TestCase):
             "app/ingest/nerc_calendar.py",
             "app/ingest/nerc_enforcement.py",
             "app/ingest/gdelt.py",
+            "app/ingest/cisa_ics.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
 
