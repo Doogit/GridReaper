@@ -65,7 +65,9 @@ API_BASE = "https://api.gdeltproject.org/api/v2/doc/doc"
 MAX_RECORDS = 250                 # DOC API documented ceiling
 MAX_TIMESPAN_DAYS = 90            # rolling ~3-month coverage window
 MAX_TERMS_PER_QUERY = 25          # OR-block width; keeps each request's 250 shared by few names
-SLEEP_S = 1.0                     # between chunk requests (R3.4)
+SLEEP_S = 6.0                     # between chunk requests (R3.4); GDELT's
+                                   # DOC API 429 body states "one every 5
+                                   # seconds" -- verified live 2026-08-18
 SECTOR_CONTEXT = "sourcecountry:US"   # narrows to US coverage of US entities
 
 _PARENTHETICAL = re.compile(r"\s*\([^)]*\)")
@@ -79,7 +81,9 @@ def _get_json(url, retries=2):
     an overloaded backend sometimes answers 200 with an empty/non-JSON body
     instead of the documented 429, so json.JSONDecodeError is retried the
     same as a URLError/TimeoutError rather than failing the whole chunk on
-    the first malformed response."""
+    the first malformed response. Backoff starts at SLEEP_S rather than a
+    smaller constant: a 429 surfaces as HTTPError, a URLError subclass, so an
+    under-5s retry would hit the same documented rate limit again."""
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT, "Accept": "application/json"})
     for attempt in range(retries + 1):
@@ -89,7 +93,7 @@ def _get_json(url, retries=2):
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
             if attempt == retries:
                 raise
-            time.sleep(2 * (attempt + 1))
+            time.sleep(SLEEP_S * (attempt + 1))
 
 
 def _seendate_to_iso(seendate):
