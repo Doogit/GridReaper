@@ -292,6 +292,161 @@ class TestLiveProbes(unittest.TestCase):
         self.assertIn("BLOCKED", status["elibrary_general_search"])
 
 
+class FakeJsonResponse:
+    """Minimal context-manager response used by TestCatalogEnumeration --
+    mirrors TestLiveProbes' FakeResponse but for JSON dataset bodies."""
+
+    def __init__(self, body):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._body.encode("utf-8")
+
+
+def _dataset_body(dataset_id, title, description, row_count=1):
+    return json.dumps({"metadata": [{
+        "id": dataset_id, "security-level": "Public", "title": title,
+        "description": description, "industry": "Natural Gas",
+        "url": f"https://data.ferc.gov/{dataset_id}"}],
+        "row_count": row_count})
+
+
+class TestCatalogEnumeration(unittest.TestCase):
+    """U8c: probe_data_ferc_gov_catalog() / _fetch_dataset_details() are the
+    only places the authenticated catalog request happens. Hermetic:
+    urllib.request.urlopen is replaced with fakes keyed on the request URL's
+    dataset id, no real socket is opened, and time.sleep is a no-op."""
+
+    FAKE_KEY = "test-key-not-a-real-secret"
+
+    def setUp(self):
+        original_sleep = probe.time.sleep
+        probe.time.sleep = lambda s: None
+        self.addCleanup(setattr, probe.time, "sleep", original_sleep)
+
+    def _patch_urlopen(self, responder):
+        """``responder(dataset_id, req)`` -> a FakeJsonResponse, or raises
+        urllib.error.HTTPError to simulate a 404/other failure."""
+        def fake_urlopen(req, timeout=None):
+            dataset_id = int(req.full_url.split("/dataset/")[1].split("/")[0])
+            return responder(dataset_id, req)
+        original = probe.urllib.request.urlopen
+        probe.urllib.request.urlopen = fake_urlopen
+        self.addCleanup(setattr, probe.urllib.request, "urlopen", original)
+
+    @staticmethod
+    def _http_404(req):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {},
+                                     io.BytesIO(b"{}"))
+
+    def test_200_response_is_parsed_into_id_title_description(self):
+        def responder(dataset_id, req):
+            self.assertEqual(dataset_id, 0)
+            return FakeJsonResponse(_dataset_body(
+                0, "Form 552 Master Table",
+                "Database of natural gas transactions."))
+        self._patch_urlopen(lambda dataset_id, req: responder(dataset_id, req)
+                            if dataset_id == 0 else self._http_404(req))
+        datasets, summary = probe.probe_data_ferc_gov_catalog(
+            self.FAKE_KEY, max_id=0, max_consecutive_404s=1)
+        self.assertEqual(len(datasets), 1)
+        self.assertEqual(datasets[0]["id"], 0)
+        self.assertEqual(datasets[0]["title"], "Form 552 Master Table")
+        self.assertEqual(datasets[0]["description"],
+                         "Database of natural gas transactions.")
+        self.assertEqual(summary["ids_probed"], 1)
+        self.assertEqual(summary["hit_count"], 1)
+
+    def test_consecutive_404s_stop_enumeration_at_the_threshold(self):
+        calls = []
+
+        def responder(dataset_id, req):
+            calls.append(dataset_id)
+            self._http_404(req)  # every id 404s
+        self._patch_urlopen(responder)
+        datasets, summary = probe.probe_data_ferc_gov_catalog(
+            self.FAKE_KEY, max_id=25, max_consecutive_404s=3)
+        self.assertEqual(datasets, [])
+        self.assertEqual(calls, [0, 1, 2])  # stops after the 3rd 404
+        self.assertEqual(summary["ids_probed"], 3)
+        self.assertTrue(summary["stopped_early"])
+
+    def test_non_404_response_resets_the_consecutive_404_counter(self):
+        # 404, 404, ok, 404, 404, 404 -- the "ok" at id 2 must reset the
+        # counter, so the run does not stop until ids 3-5 give 3 in a row.
+        def responder(dataset_id, req):
+            if dataset_id == 2:
+                return FakeJsonResponse(_dataset_body(
+                    2, "Oil Assessment Table", "Oil Annual Charges Assessment"))
+            self._http_404(req)
+        self._patch_urlopen(responder)
+        datasets, summary = probe.probe_data_ferc_gov_catalog(
+            self.FAKE_KEY, max_id=25, max_consecutive_404s=3)
+        self.assertEqual(len(datasets), 1)
+        self.assertEqual(datasets[0]["id"], 2)
+        self.assertEqual(summary["ids_probed"], 6)  # 0,1,2,3,4,5
+        self.assertTrue(summary["stopped_early"])
+
+    def test_key_never_appears_in_the_returned_dataset_url(self):
+        captured = {}
+
+        def responder(dataset_id, req):
+            captured["url"] = req.full_url
+            return FakeJsonResponse(_dataset_body(
+                0, "Form 552 Master Table", "Natural gas transactions."))
+        self._patch_urlopen(responder)
+        datasets, _ = probe.probe_data_ferc_gov_catalog(
+            self.FAKE_KEY, max_id=0, max_consecutive_404s=1)
+        # The real request DID carry the key (proving auth happened)...
+        self.assertIn(self.FAKE_KEY, captured["url"])
+        # ...but the reported dataset url never does.
+        self.assertNotIn(self.FAKE_KEY, datasets[0]["url"])
+        self.assertNotIn("api_key", datasets[0]["url"])
+        self.assertEqual(datasets[0]["url"],
+                         "https://api.data.ferc.gov/v1/dataset/0/details/")
+
+    def test_docket_filing_shaped_title_is_flagged_elibrary_adjacent(self):
+        self.assertTrue(probe.is_elibrary_adjacent(
+            "eLibrary Docket Filings Index",
+            "Index of dockets, filings, orders, and correspondence."))
+
+    def test_hydropower_statistical_title_is_not_flagged(self):
+        self.assertFalse(probe.is_elibrary_adjacent(
+            "Form 552 Master Table",
+            "Database of Page 1 (Identification of Respondent) Database and "
+            "Page 4 (Purchase and Sales Information) of Annual Report of "
+            "Natural Gas Transactions Form (FERC No. 552)"))
+        self.assertFalse(probe.is_elibrary_adjacent(
+            "Active Hydropower Projects",
+            "Database of active hydropower project licenses."))
+
+    def test_bare_docket_number_or_order_citation_is_not_flagged(self):
+        """Real datasets found live (PR body): both cite a docket/order in
+        passing -- as an identifier field or a legal-basis citation -- while
+        remaining structured administrative rosters, not filing indexes.
+        Regression pin for the false positives this classifier produced
+        before "docket"/"order" were dropped from the keyword list."""
+        self.assertFalse(probe.is_elibrary_adjacent(
+            "MBR Authorizations",
+            "Basic information about a seller's market-based rate "
+            "authorization, including the docket number in which it was "
+            "first granted market-based rate authority and the associated "
+            "tariff effective date."))
+        self.assertFalse(probe.is_elibrary_adjacent(
+            "MBR Operating Reserves",
+            "Basic information about sellers authorized to make "
+            "third-party sales of operating reserves to a public utility "
+            "that is purchasing ancillary services to satisfy its own open "
+            "access transmission tariff requirements to offer ancillary "
+            "services to its own customers. See Order No. 784."))
+
+
 class TestContainment(unittest.TestCase):
     """Same #74 precedent as breach_registry_probe: a measurement harness
     that could write is not a measurement, and one wired into the pipeline
