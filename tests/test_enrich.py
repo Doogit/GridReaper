@@ -105,7 +105,7 @@ class TestCikCoverage(unittest.TestCase):
     def test_measured_baseline_coverage(self):
         rows = self._watchlist()
         with_cik = [r for r in rows if (r["cik"] or "").strip()]
-        self.assertEqual((len(with_cik), len(rows)), (130, 171))
+        self.assertEqual((len(with_cik), len(rows)), (130, 172))
 
     def test_canned_edgar_index_raises_coverage(self):
         rows = self._watchlist()
