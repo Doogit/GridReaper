@@ -104,6 +104,7 @@ class PackagingContractTest(unittest.TestCase):
             "app/classify/incident.py",
             "app/classify/ransomware.py",
             "app/classify/security_rss.py",
+            "app/classify/cisa_ics.py",
             "app/ingest/edgar_fulltext.py",
             "app/ingest/ransomware.py",
             "app/ingest/security_rss.py",
@@ -156,6 +157,22 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             p.index("app.classify.security_rss"), p.index("app.scoring"),
             "security RSS classification must run before scoring",
+        )
+
+    def test_pipeline_runs_cisa_ics_ingest_and_classifier_before_scoring(self):
+        # U7: the CISA ICS advisories fetcher + classifier mint sector-scoped
+        # energy-OT vuln cards. Pin the ingest -> classify -> score ordering
+        # so a real advisory actually surfaces.
+        p = self._pipeline()
+        self.assertIn("app.ingest.cisa_ics", p, "pipeline dropped the CISA ICS advisories fetcher")
+        self.assertIn("app.classify.cisa_ics", p, "pipeline dropped the CISA ICS advisories classifier")
+        self.assertLess(
+            p.index("app.ingest.cisa_ics"), p.index("app.classify.cisa_ics"),
+            "CISA ICS ingest must run before its classifier",
+        )
+        self.assertLess(
+            p.index("app.classify.cisa_ics"), p.index("app.scoring"),
+            "CISA ICS classification must run before scoring",
         )
 
     def test_pipeline_runs_incident_classifier_before_scoring(self):

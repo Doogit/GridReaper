@@ -44,6 +44,7 @@ python -m app.classify.company_statement
 python -m app.classify.incident
 python -m app.classify.ransomware
 python -m app.classify.security_rss
+python -m app.classify.cisa_ics
 # Obligations (R8.3) derive from classified regulatory signals, not from
 # scores — so they run after the classifiers and before scoring.
 python -m app.obligations

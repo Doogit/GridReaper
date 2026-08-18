@@ -34,6 +34,10 @@ TRIGGER_SCOPES = {
     # class signal (sector, class-phrased, name-free).
     "own_incident": ["account"],
     "peer_incident": ["sector"],
+    # U7b (R9.6): an exploited-ICS-vuln advisory has no per-account
+    # tech-stack data to back an 'account' claim - sector only ("timing, not
+    # targeting"). See app/classify/cisa_ics.py.
+    "ics_cve_kev": ["sector"],
 }
 
 # Loaded in FK order: products + triggers precede indicator_map.
