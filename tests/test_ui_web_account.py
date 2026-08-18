@@ -529,10 +529,24 @@ class TestNotFound(AccountTestBase):
         self.assertIn("E_SUB&amp;BR", dom)
         self.assertNotIn("Acme Energy", dom)
 
+    def test_soft_disabled_entity_gets_deactivation_copy_not_removal_copy(self):
+        # U34: a soft-disabled entity is a real, known row (reachable via an
+        # ordinary parent/child relationship link, not a crafted URL) -- the
+        # generic "may have been removed" copy is inaccurate for it. It gets
+        # its own message naming what it is, plus a distinct data-state.
+        dom = self.body(entity_id="E_SUB&BR")
+        self.assertIn("Ampersand Grid Sub", dom)
+        self.assertIn("was deactivated, not removed", dom)
+        self.assertNotIn("may have been removed", dom)
+        self.assertIn('data-state="disabled"', dom)
+
     def test_full_page_soft_disabled_entity_is_404(self):
         resp = self.client.get(
             "/account", params={"entity_id": "E_SUB&BR"})
         self.assertEqual(resp.status_code, 404)
+        dom = resp.text
+        self.assertIn("was deactivated, not removed", dom)
+        self.assertIn('data-state="disabled"', dom)
 
     def test_bare_route_with_no_id_still_renders_the_deterministic_default(self):
         dom = self.page()
