@@ -16,6 +16,7 @@ feed currently serves. No classification here.
   python -m app.ingest.cisa_ics [--window-days N] [--limit N] [--force]
 """
 import json
+import ssl
 import sys
 import time
 import urllib.error
@@ -33,6 +34,16 @@ USER_AGENT = "GridSignals/0.1 (+https://github.com/Doogit/GridSignals)"
 ICS_ADVISORIES_URL = ("https://www.cisa.gov/cybersecurity-advisories/"
                        "ics-advisories.xml")
 
+# This path (unlike cisa_kev's JSON feed on the same host) sits behind an
+# Akamai WAF rule that 403s Python's default TLS 1.3 handshake while passing
+# curl and browsers; pinning TLS 1.2 clears it (confirmed live against the
+# real endpoint). Still a plain encrypted GET with our own User-Agent - a
+# compatibility fix for a stricter bot rule on one path, not fingerprint
+# spoofing.
+_TLS_CONTEXT = ssl.create_default_context()
+_TLS_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
+_TLS_CONTEXT.maximum_version = ssl.TLSVersion.TLSv1_2
+
 
 def _get_text(url, retries=2):
     req = urllib.request.Request(url, headers={
@@ -40,7 +51,8 @@ def _get_text(url, retries=2):
         "Accept": "application/rss+xml, application/xml, text/xml"})
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(
+                    req, timeout=60, context=_TLS_CONTEXT) as resp:
                 return resp.read().decode("utf-8", errors="replace")
         except (urllib.error.URLError, TimeoutError):
             if attempt == retries:
