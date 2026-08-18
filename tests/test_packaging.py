@@ -337,13 +337,15 @@ class PackagingContractTest(unittest.TestCase):
 
         reverify = [e for e in entries if "app.reverify" in e[1]]
         self.assertEqual(len(reverify), 1, "R10.7's re-verification sweep is not scheduled exactly once")
-        # Two months named, six apart -> semi-annual (R10.7). cron has no
-        # "every 6 months", so the month list is the only honest spelling.
+        # Four months named, three apart -> quarterly (U24). Runs more often than
+        # R10.7's literal "semi-annual" minimum so the sweep stays comfortably
+        # inside stale_facts's 180-day window.
         _m, _h, dom, mon, _dow = reverify[0][0].split()
-        self.assertRegex(dom, r"^\d+$", f"R10.7 asks for a SEMI-ANNUAL job; day-of-month is {dom!r}")
+        self.assertRegex(dom, r"^\d+$", f"R10.7's sweep asks for a QUARTERLY job; day-of-month is {dom!r}")
         months = sorted(int(part) for part in mon.split(","))
-        self.assertEqual(len(months), 2, f"R10.7 asks for a SEMI-ANNUAL job; month field is {mon!r}")
-        self.assertEqual(months[1] - months[0], 6, f"the two runs are not six months apart: {mon!r}")
+        self.assertEqual(len(months), 4, f"R10.7's sweep asks for a QUARTERLY job; month field is {mon!r}")
+        gaps = [b - a for a, b in zip(months, months[1:])]
+        self.assertEqual(gaps, [3, 3, 3], f"the four runs are not three months apart each: {mon!r}")
 
     def test_crontab_targets_exist(self):
         # Mirror of test_pipeline_modules_present for the scheduler: a crontab

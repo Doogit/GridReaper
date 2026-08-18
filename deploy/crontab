@@ -28,8 +28,8 @@
 #    lock and write nothing, so they serialize against nothing — and the guard
 #    exits 0 on contention, which would DISCARD the record instead of delaying
 #    it. deploy/entrypoint.sh backgrounds a first-load ingest, so a container
-#    restart near a report's slot would silently lose one month of R9.3 and SIX
-#    months of R10.7 while cron logged success.
+#    restart near a report's slot would silently lose one month of R9.3 and
+#    THREE months of R10.7 while cron logged success.
 # 4. Each job is a brace group with the redirect OUTSIDE it, so a failure of the
 #    env source or the `cd` — the two likeliest tick-killers — reaches the log
 #    instead of cron's mail channel, which has no MTA in this image. Same reason
@@ -64,13 +64,17 @@ MAILTO=""
 # ~12h from the 03:17 refresh, so it reads a settled store.
 47 15 1 * * root { . /etc/gridsignals.env && cd /app && python -m app.audit.precision --report ; } >> /var/log/gridsignals-cron.log 2>&1
 
-# Semi-annual license re-verification sweep (R10.7: "semi-annual task plus Admin
-# banner"). Jan 1 and Jul 1 — cron has no "every 6 months", so the month field
-# names both; same mid-afternoon reasoning as above, 36 minutes clear of it.
-# This is the JOB half only: it names the facts whose verified_date has aged past
-# the window so the work announces itself instead of waiting for someone to open
-# Admin. Re-verifying a fact against primary Microsoft sources stays a human act;
-# the sweep writes nothing and never invents a verified_date. Unguarded for the
-# same reason as the report above, and more sharply: a discarded tick here costs
-# six months, not one.
-23 16 1 1,7 * root { . /etc/gridsignals.env && cd /app && python -m app.reverify ; } >> /var/log/gridsignals-cron.log 2>&1
+# Quarterly license re-verification sweep. R10.7 itself names a "semi-annual
+# task"; this job runs more often than that literal minimum so the sweep stays
+# comfortably inside stale_facts's 180-day window with margin — a 181-day gap
+# (Jan 1 / Jul 1) let a fact re-verified 2027-01-20 read due=0 on 2027-07-01 at
+# only 162 days old, and go unnamed until 2028-01-01 at age_days=346. Jan/Apr/Jul/
+# Oct 1st gives ~90-91 day gaps regardless of month-length variance; same
+# mid-afternoon reasoning as above, 36 minutes clear of it. This is the JOB half
+# only: it names the facts whose verified_date has aged past the window so the
+# work announces itself instead of waiting for someone to open Admin.
+# Re-verifying a fact against primary Microsoft sources stays a human act; the
+# sweep writes nothing and never invents a verified_date. Unguarded for the same
+# reason as the report above, and more sharply: a discarded tick here costs three
+# months, not one.
+23 16 1 1,4,7,10 * root { . /etc/gridsignals.env && cd /app && python -m app.reverify ; } >> /var/log/gridsignals-cron.log 2>&1
