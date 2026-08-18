@@ -413,6 +413,87 @@ class TestTokenOverlap(unittest.TestCase):
             conn.close()
 
 
+class TestUtilityShapedUnmatched(unittest.TestCase):
+    """U19a: a different, complementary bucket to TestTokenOverlap above.
+    token_overlap can only find a near-miss of an entity already on the
+    watchlist; this heuristic finds a genuinely off-list utility with no
+    on-list analog at all -- the Grant County PUD shape, which shares no
+    token with anything the fixture watchlist knows about."""
+
+    def test_public_utility_district_name_is_flagged(self):
+        entries = probe.utility_shaped_unmatched(
+            ["Grant County Public Utility District No. 2"])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["organization"],
+                         "Grant County Public Utility District No. 2")
+        self.assertIn("public utility district", entries[0]["terms"])
+
+    def test_rural_electric_cooperative_name_is_flagged(self):
+        entries = probe.utility_shaped_unmatched(
+            ["Ozark Rural Electric Cooperative Corporation"])
+        self.assertIn("rural electric cooperative", entries[0]["terms"])
+        self.assertIn("electric cooperative", entries[0]["terms"])
+
+    def test_short_acronym_matches_as_a_whole_word_only(self):
+        # "PUD" must not fire inside an unrelated word.
+        self.assertEqual(probe.utility_shaped_unmatched(["Pudding Lane Bakery"]),
+                         [])
+        entries = probe.utility_shaped_unmatched(["Springfield PUD"])
+        self.assertEqual(entries[0]["terms"], ["PUD"])
+
+    def test_generic_off_list_name_is_not_flagged(self):
+        """The fixture's genuine off-list org has no utility-structure term
+        in its name and must not be flagged -- this heuristic is scoped to
+        legal-name structure, not "any company that could plausibly sell
+        power"."""
+        self.assertEqual(
+            probe.utility_shaped_unmatched(["Zephyr Bakery Collective"]), [])
+
+    def test_ordinary_investor_owned_name_is_not_flagged(self):
+        """A generically-named IOU (no PUD/cooperative/district/authority
+        structure term) is out of scope for this heuristic by design --
+        that shape is what token_overlap and review already cover."""
+        self.assertEqual(
+            probe.utility_shaped_unmatched(["Consumers Energy Company"]), [])
+
+    def test_a_name_can_land_in_both_buckets_independently(self):
+        """token_overlap and utility_shaped_unmatched answer different
+        questions and are not mutually exclusive or deduplicated against
+        each other."""
+        conn = fixture_conn()
+        try:
+            result = probe.analyze(
+                conn,
+                [probe.BreachRow("CA", "Edison Rural Electric Cooperative",
+                                 "2026-01-05")],
+                state_status={"CA": "ok"}, now=NOW)
+        finally:
+            conn.close()
+        overlap_names = {e["organization"]
+                         for e in result["unmatched_token_overlap"]}
+        shaped_names = {e["organization"]
+                        for e in result["utility_shaped_unmatched"]}
+        self.assertIn("Edison Rural Electric Cooperative", overlap_names)
+        self.assertIn("Edison Rural Electric Cooperative", shaped_names)
+
+    def test_analyze_includes_the_bucket_and_report_renders_it(self):
+        conn = fixture_conn()
+        try:
+            rows = fixture_rows() + [probe.BreachRow(
+                "CA", "Grant County Public Utility District No. 2",
+                "2026-01-05")]
+            result = probe.analyze(conn, rows, state_status={"CA": "ok",
+                                                             "WA": "ok"},
+                                   now=NOW)
+        finally:
+            conn.close()
+        self.assertEqual(len(result["utility_shaped_unmatched"]), 1)
+        text = probe.format_report(result)
+        text.encode("ascii")
+        self.assertIn("Grant County Public Utility District No. 2", text)
+        self.assertIn("utility-shaped unmatched organizations: 1", text)
+
+
 class TestCollect(unittest.TestCase):
     """collect() is the only place a live failure can be absorbed, so its
     per-state status is what keeps one dead source from costing the other its
