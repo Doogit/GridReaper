@@ -22,16 +22,34 @@ the real host, both halves of that assumption are wrong:
      ``https://api.data.ferc.gov/v1/dataset/0/details/`` returns
      ``HTTP 403 {"error":{"code":"API_KEY_MISSING", ...}}`` (see
      ``probe_data_ferc_gov``, reproduced live in the PR body). This module
-     never signs up for a key and never hardcodes one -- an unauthenticated
-     GET is the only read this spike is willing to perform.
-  2. Even disregarding the key, data.ferc.gov's own dataset catalog does not
-     include FERC eLibrary documents/filings at all. Per its home page
-     (``__NEXT_DATA__.props.pageProps.datasets``, fetched live 2026-08-17),
-     the datasets on offer are Active Hydropower Projects, FERC Form 556,
-     the NEPA Schedule for Pending Infrastructure Projects, and Company
-     Registration -- structured administrative data, not the docket/filing
-     full-text index a "who filed what, naming which party" measurement
-     needs. A valid data.ferc.gov API key would not unlock eLibrary search.
+     never signs up for a key and never hardcodes one for the ORIGINAL,
+     unauthenticated probes below -- an unauthenticated GET is the only read
+     ``probe_data_ferc_gov``/``probe_elibrary``/``collect`` will ever
+     perform. (Superseded for the catalog-enumeration path added by U8c --
+     see below and ``probe_data_ferc_gov_catalog``, which reads
+     ``FERC_API_KEY`` from the environment, never hardcoded, R10.8.)
+  2. Even disregarding the key, this unit's original claim was that
+     data.ferc.gov's own dataset catalog does not include FERC eLibrary
+     documents/filings at all -- sourced from its home page
+     (``__NEXT_DATA__.props.pageProps.datasets``, fetched live 2026-08-17):
+     Active Hydropower Projects, FERC Form 556, the NEPA Schedule for
+     Pending Infrastructure Projects, and Company Registration. U8C
+     CORRECTION (2026-08-18): that was the homepage's 4-item preview, not
+     the real API catalog. An authenticated enumeration of
+     ``dataset/{id}/details/`` for id 0..25 (``probe_data_ferc_gov_catalog``,
+     live run in the PR body) found 26 real datasets -- and never hit a
+     single 404 across the whole bound, so the true catalog may extend past
+     id 25 too (this is a bounded spike, not an exhaustive inventory). None
+     of the 26 found are eLibrary/docket/filing-shaped: they are structured
+     administrative/statistical tables (Form 552 transactions, oil/electric/
+     gas annual-charge assessments, MBR authorizations, hydropower
+     administrative charges). Two (`MBR Authorizations`, `MBR Operating
+     Reserves`) cite a docket number or an Order as an identifier/legal-basis
+     field, which a naive keyword match first mis-flagged as eLibrary-
+     adjacent -- ``is_elibrary_adjacent`` was tightened after that false
+     positive was inspected by hand (see its own docstring). So the "no
+     compliant read path" conclusion below stands, now checked against the
+     real catalog rather than the homepage.
   3. The actual eLibrary document repository lives at a separate legacy
      system, ``elibrary.ferc.gov``. Its General Search is a client-rendered
      Angular application: a plain GET of a search URL (even one that Google
@@ -99,11 +117,13 @@ before trusting the printed counts.
 import argparse
 import http.client
 import json
+import os
 import re
 import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import namedtuple
 from datetime import date, datetime, timezone
@@ -130,6 +150,31 @@ ELIBRARY_SEARCH_URL = (
 
 CIP_RE = re.compile(r"CIP-\d{3}", re.IGNORECASE)
 
+# -- U8c: authenticated catalog re-verification (follow-up on U8a/#92) ------
+# ``FERC_API_KEY`` (env only, R10.8; never hardcoded, never logged) unlocks
+# the same dataset/{id}/details/ endpoint probe_data_ferc_gov proved is
+# closed anonymously. This is a bounded, polite enumeration -- NOT a
+# fetcher -- to answer whether the real catalog (as opposed to the
+# marketing homepage's 4-item preview U8a originally relied on) contains
+# anything eLibrary/docket/filing-shaped. See ``probe_data_ferc_gov_catalog``.
+FERC_API_KEY_ENV = "FERC_API_KEY"
+CATALOG_DETAIL_URL_TEMPLATE = "https://api.data.ferc.gov/v1/dataset/{id}/details/"
+CATALOG_MAX_ID = 25
+CATALOG_MAX_CONSECUTIVE_404S = 3
+# Keyword stems suggesting a dataset indexes individual regulatory
+# filings/documents (filings, eLibrary, correspondence, adjudications,
+# pleadings) rather than a structured administrative/statistical table
+# (project lists, transaction tables, registration rosters). A heuristic,
+# not a certainty -- see ``is_elibrary_adjacent``. Deliberately EXCLUDES bare
+# "docket" and "order": the real catalog (see the live run in the PR body)
+# has structured administrative datasets ("MBR Authorizations", "MBR
+# Operating Reserves") that cite a docket number as one identifier field or
+# an Order as their legal basis without indexing any filings/documents --
+# those two words alone are citation-prone, not filing-index-shaped.
+ELIBRARY_ADJACENT_KEYWORDS = (
+    "filing", "elibrary", "e-library", "correspondence", "adjudicat",
+    "pleading", "protest", "complaint", "intervention")
+
 # The minimal record shape a future compliant fetcher would need to produce
 # for analyze() to score it. Speculative -- see the module docstring: no real
 # live payload was ever reachable to verify this shape against.
@@ -137,14 +182,19 @@ FercDocument = namedtuple("FercDocument", ["party_name", "filed_date", "text"])
 
 NEGATIVE_FINDING = (
     "No free, key-less, non-JS read path to FERC eLibrary document content "
-    "exists: api.data.ferc.gov requires an API key for every request and its "
-    "dataset catalog does not include eLibrary filings anyway (hydropower "
-    "licenses, Form 556, NEPA schedule, company registration only); "
-    "elibrary.ferc.gov's General Search is a client-rendered Angular SPA "
-    "whose plain GET returns an empty <app-root> shell with no server-"
-    "rendered document rows. This confirms the NERC-docket ruling for the "
-    "FERC-eLibrary half of the source specifically -- NERC.gov Enforcement "
-    "still covers CIP notices; only its eLibrary companion is closed.")
+    "exists: api.data.ferc.gov requires an API key for every request, and "
+    "its real dataset catalog -- verified authenticated in U8c across ids "
+    "0-25, not just the marketing homepage's 4-item preview U8a originally "
+    "relied on -- still contains no eLibrary/docket/filing-shaped dataset "
+    "(structured administrative/statistical tables only: Form 552 "
+    "transactions, annual-charge assessments, MBR seller rosters, "
+    "hydropower administrative charges); elibrary.ferc.gov's General "
+    "Search is a client-rendered Angular SPA whose plain GET returns an "
+    "empty <app-root> shell with no server-rendered document rows. This "
+    "confirms "
+    "the NERC-docket ruling for the FERC-eLibrary half of the source "
+    "specifically -- NERC.gov Enforcement still covers CIP notices; only "
+    "its eLibrary companion is closed.")
 
 
 # -- parsing (no network) ---------------------------------------------------
@@ -378,6 +428,160 @@ def probe_elibrary(url=ELIBRARY_SEARCH_URL):
     return f"ok (unexpected: {len(body)} bytes without an <app-root> shell -- investigate)"
 
 
+# -- U8c: authenticated catalog re-verification ------------------------------
+
+def is_elibrary_adjacent(title, description):
+    """Heuristic keyword classification: does this dataset's title/
+    description suggest it indexes individual regulatory filings/documents
+    (filings, eLibrary, correspondence, adjudications, pleadings) rather
+    than a structured administrative/statistical table? Matches on keyword
+    stems so plurals count (``filing``/``filings``). Deliberately does NOT
+    match bare ``docket``/``order`` -- see ELIBRARY_ADJACENT_KEYWORDS."""
+    text = f"{title} {description}".lower()
+    return any(re.search(rf"\b{kw}", text) for kw in ELIBRARY_ADJACENT_KEYWORDS)
+
+
+def _ferc_api_key():
+    """The FERC data.ferc.gov key from env only (R10.8). Absent -> clear
+    error; callers (main()) catch this to skip the authenticated section
+    rather than crashing the whole CLI, since the rest of this probe is
+    still useful without a key."""
+    key = (os.environ.get(FERC_API_KEY_ENV) or "").strip()
+    if not key:
+        raise RuntimeError(
+            f"{FERC_API_KEY_ENV} is not set. Export the FERC data.ferc.gov "
+            f"API key before running the authenticated catalog check "
+            f"(secrets live outside the repo, R10.8).")
+    return key
+
+
+def _catalog_detail_request_url(dataset_id, api_key):
+    """Build the real request URL for one dataset id -- the key rides in the
+    query string the API requires, same as ``eia._page_url``. Callers must
+    NEVER log/print/return this; report
+    ``CATALOG_DETAIL_URL_TEMPLATE.format(id=dataset_id)`` (bare, no query
+    string) instead -- see ``_fetch_dataset_details``."""
+    return (CATALOG_DETAIL_URL_TEMPLATE.format(id=dataset_id) + "?" +
+            urllib.parse.urlencode([("api_key", api_key)]))
+
+
+def _fetch_dataset_details(dataset_id, api_key):
+    """One authenticated GET against one dataset id. Returns
+    ``(status, dataset_or_None)`` where status is ``"ok"``, ``"404"``, or a
+    ``"FAILED (...)"`` string. The returned dataset's ``url`` is always the
+    bare, key-less form -- the keyed request URL never leaves this
+    function."""
+    url = _catalog_detail_request_url(dataset_id, api_key)
+    req = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        with exc:
+            exc.read()
+        if exc.code == 404:
+            return "404", None
+        return f"FAILED ({exc.code} {exc.reason})", None
+    except (OSError, http.client.HTTPException) as exc:
+        return f"FAILED ({type(exc).__name__}: {exc})", None
+    try:
+        meta = (json.loads(body).get("metadata") or [{}])[0]
+    except (ValueError, AttributeError, IndexError):
+        return "FAILED (unparseable response body)", None
+    title = " ".join((meta.get("title") or "").split())
+    description = " ".join((meta.get("description") or "").split())
+    dataset = {
+        "id": meta.get("id", dataset_id),
+        "title": title,
+        "description": description,
+        "url": CATALOG_DETAIL_URL_TEMPLATE.format(id=dataset_id),
+        "elibrary_adjacent": is_elibrary_adjacent(title, description),
+    }
+    return "ok", dataset
+
+
+def probe_data_ferc_gov_catalog(api_key, max_id=CATALOG_MAX_ID,
+                                max_consecutive_404s=CATALOG_MAX_CONSECUTIVE_404S):
+    """Bounded, polite, sequential authenticated GET across dataset ids
+    ``0..max_id``, stopping early once ``max_consecutive_404s`` consecutive
+    404s are seen (any non-404 response resets the counter). One GET per id,
+    ``POLITENESS_SECONDS`` between requests, honest ``USER_AGENT``. Returns
+    ``(datasets, summary)`` -- ``datasets`` is the list of every
+    successfully-fetched dataset dict (see ``_fetch_dataset_details``);
+    ``summary`` reports how many ids were probed, how many hit, whether
+    enumeration stopped early on 404s, and the eLibrary-adjacent count."""
+    datasets = []
+    consecutive_404s = 0
+    probed = 0
+    stopped_early = False
+    for dataset_id in range(max_id + 1):
+        probed += 1
+        status, dataset = _fetch_dataset_details(dataset_id, api_key)
+        if status == "404":
+            consecutive_404s += 1
+        else:
+            consecutive_404s = 0
+            if status == "ok":
+                datasets.append(dataset)
+        if consecutive_404s >= max_consecutive_404s:
+            stopped_early = True
+            break
+        if dataset_id < max_id:
+            time.sleep(POLITENESS_SECONDS)
+    return datasets, {
+        "ids_probed": probed,
+        "hit_count": len(datasets),
+        "stopped_early": stopped_early,
+        "elibrary_adjacent_count": sum(1 for d in datasets
+                                       if d["elibrary_adjacent"]),
+    }
+
+
+def catalog_recommendation(datasets):
+    """U8c's own bands (see module docstring): 0 eLibrary-adjacent hits
+    STRENGTHENS U8a's existing STOP (the catalog was verified beyond the
+    homepage's 4 items and still has nothing eLibrary-adjacent); 1+ hits
+    means a new probe is warranted before any U8b build discussion -- never
+    an automatic green light."""
+    adjacent = [d for d in datasets if d["elibrary_adjacent"]]
+    if not adjacent:
+        return ("0 eLibrary/docket/filing-shaped datasets in the real "
+                "catalog -> STRENGTHENS U8a's existing STOP: the catalog "
+                "was verified authenticated, beyond the homepage's 4-item "
+                "preview, and still contains nothing eLibrary-adjacent.")
+    names = "; ".join(f"id={d['id']} \"{d['title']}\"" for d in adjacent)
+    return (f"{len(adjacent)} eLibrary/docket/filing-shaped dataset(s) found "
+            f"({names}) -> a NEW PROBE against that dataset is warranted "
+            "before any U8b build discussion. This is NOT an automatic "
+            "green light.")
+
+
+def format_catalog_report(datasets, summary, key_status):
+    """Plain text, pasteable into a PR body. ``key_status`` is ``"ok"`` or a
+    ``"SKIPPED (...)"``/``"FAILED (...)"`` string -- when not ``"ok"`` the
+    authenticated section did not run and no dataset list follows."""
+    out = ["", "AUTHENTICATED CATALOG ENUMERATION (U8c, R9.6, R5.5) -- "
+           "data.ferc.gov, real FERC_API_KEY, bounded sequential GET, "
+           "writes nothing", f"  key_status: {key_status}"]
+    if key_status != "ok":
+        out.append("  Authenticated section skipped -- see key_status above.")
+        return "\n".join(out)
+    out.append(f"  ids_probed={summary['ids_probed']}  "
+               f"hit_count={summary['hit_count']}  "
+               f"stopped_early={summary['stopped_early']}  "
+               f"elibrary_adjacent_count={summary['elibrary_adjacent_count']}")
+    out.append("  datasets found:")
+    for d in datasets:
+        tag = ("ELIBRARY-ADJACENT" if d["elibrary_adjacent"]
+               else "administrative/statistical")
+        out.append(f"    id={d['id']}  [{tag}]  {d['title']}")
+        out.append(f"      {d['description']}")
+        out.append(f"      {d['url']}")
+    out += ["", "  RECOMMENDATION: " + catalog_recommendation(datasets)]
+    return "\n".join(out)
+
+
 def collect():
     """Sequential, read-only GET probes against both candidate access paths.
     Always returns ``([], status)`` under current project constraints: see
@@ -406,6 +610,18 @@ def main(argv=None):
     read_only_connect(args.db).close()
     docs, status = collect()
     report(args.db, docs, source_status=status)
+
+    # U8c: the authenticated catalog check is additive and optional -- an
+    # absent FERC_API_KEY skips just this section (clearly, in the report)
+    # rather than crashing the whole CLI; the rest of the probe above still
+    # ran and reported something useful.
+    try:
+        key = _ferc_api_key()
+    except RuntimeError as exc:
+        print(format_catalog_report([], {}, f"SKIPPED ({exc})"))
+    else:
+        datasets, summary = probe_data_ferc_gov_catalog(key)
+        print(format_catalog_report(datasets, summary, "ok"))
     return 0
 
 
