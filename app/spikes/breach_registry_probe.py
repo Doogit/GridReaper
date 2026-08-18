@@ -139,6 +139,36 @@ GENERIC_TOKENS = frozenset({
     "technologies"})
 MIN_TOKEN_CHARS = 4
 
+# U19a: fixed vocabulary of US energy-utility STRUCTURE terms, for
+# utility_shaped_unmatched (see its docstring for why this is a different
+# bucket from token_overlap above). Deliberately broader/more specific than
+# GENERIC_TOKENS, which exists to suppress noise in a DIFFERENT match path
+# (a shared single word against an existing watchlist name) -- these are
+# multi-word or short, structure-specific terms matched against the resolver's
+# full `none` bucket with no watchlist entity involved at all.
+UTILITY_SHAPE_TERMS = (
+    "public utility district",
+    "public power district",
+    "PUD",
+    "municipal utility",
+    "municipal power",
+    "municipal light",
+    "rural electric cooperative",
+    "electric cooperative",
+    "electric power association",
+    "REC",
+    "power authority",
+    "power district",
+    "electric authority",
+    "electric membership corporation",
+    "light and power",
+    "utility board",
+    "utilities commission",
+)
+_UTILITY_SHAPE_PATTERNS = [
+    (term, re.compile(r"\b" + re.escape(term) + r"\b", re.IGNORECASE))
+    for term in UTILITY_SHAPE_TERMS]
+
 NEGATIVE_FINDING = (
     "CA+WA registries do not name watchlist entities at a usable rate; the "
     "other 13 publishing states were checked live (U36) and none exposes a "
@@ -365,6 +395,43 @@ def token_overlap(conn, organizations, names):
     return sorted(out, key=lambda e: (-len(e["tokens"]), e["organization"]))
 
 
+def utility_shaped_unmatched(organizations):
+    """Scan the resolver's FULL unmatched (``none``) bucket for names that
+    look like a genuine US energy utility ON THEIR OWN TERMS -- a different
+    bucket from ``token_overlap`` above, not a replacement for it.
+
+    ``token_overlap`` can only ever surface a NEAR-MISS of an entity already
+    on the watchlist: it requires a shared distinctive token with an existing
+    watchlist name or alias. An off-list utility with no on-list analog
+    ("Grant County Public Utility District No. 2" shares no token with
+    anything on a 171-row watchlist whose entire WA footprint is Avista and
+    Seattle City Light) is structurally invisible to that bucket by
+    construction, not by an accident this module can fix. This function takes
+    no ``conn`` and consults no watchlist row at all: it matches every
+    organization name against a fixed vocabulary of utility-STRUCTURE terms
+    (public utility district, municipal utility, electric cooperative, power
+    district, ...) that recur in a genuine US energy utility's legal name
+    regardless of which company it is or whether it is already on the list.
+
+    Recall over precision, on purpose, the same tolerance the review/
+    near_misses buckets already carry: a false positive here costs one human
+    a few seconds reading a name and rejecting it; a false negative means a
+    real utility like Grant County PUD never gets read at all. Matching is
+    word-bounded and case-insensitive so short terms (PUD, REC) do not fire
+    inside an unrelated word (PUDDLE, CORRECTIONAL).
+
+    Returns one entry per matching organization, in the order given (callers
+    pass ``sorted(unmatched)``, the same input token_overlap receives -- this
+    is not ranked, there is no score to rank by)."""
+    out = []
+    for org in organizations:
+        matched = [term for term, pattern in _UTILITY_SHAPE_PATTERNS
+                  if pattern.search(org)]
+        if matched:
+            out.append({"organization": org, "terms": matched})
+    return out
+
+
 def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
     """Run every in-window organization name through the EntityResolver and
     derive the pinned hit count. ``conn`` is read-only; nothing is written and
@@ -442,6 +509,12 @@ def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
 
     overlap = token_overlap(conn, sorted(unmatched), names)
     listed = {e["organization"] for e in overlap}
+    # U19a: independent of token_overlap and of `listed` -- deliberately not
+    # filtered against it, because a name can legitimately land in both
+    # buckets (it shares a token with something on the list AND looks
+    # utility-shaped on its own terms) and the two buckets answer different
+    # questions.
+    utility_shaped = utility_shaped_unmatched(sorted(unmatched))
 
     hit_list = [{"entity_id": h["entity_id"], "entity_name": h["entity_name"],
                  "states": sorted(h["states"]), "names": sorted(h["names"]),
@@ -462,6 +535,7 @@ def analyze(conn, rows, state_status=None, now=None, unmatched_sample=0):
         "near_misses": near_misses,
         "unmatched_count": len(unmatched),
         "unmatched_token_overlap": overlap,
+        "utility_shaped_unmatched": utility_shaped,
         # the REMAINDER: a name already listed above does not need listing
         # twice, and the sample exists to reach the names nothing else reaches.
         "unmatched_sample": [o for o in sorted(unmatched)
@@ -562,6 +636,22 @@ def format_report(result):
                    f"shares={','.join(e['tokens'])}  ~ {ents}")
     for org in result["unmatched_sample"]:
         out.append(f"  . \"{org}\"")
+
+    shaped = result["utility_shaped_unmatched"]
+    out += ["", f"utility-shaped unmatched organizations: {len(shaped)}",
+            "  A DIFFERENT bucket from token overlap above -- these share no "
+            "token with anything",
+            "  already on the watchlist, so token_overlap cannot see them by "
+            "construction; matched",
+            "  instead against a fixed vocabulary of utility-structure terms "
+            "(PUD, municipal utility,",
+            "  electric cooperative, power district, ...) that recur in a "
+            "genuine energy utility's",
+            "  legal name regardless of which company it is. Recall over "
+            "precision -- adjudicate,",
+            "  do not auto-add."]
+    for e in shaped:
+        out.append(f"  ? \"{e['organization']}\"  matched={','.join(e['terms'])}")
 
     others = result["other_publishing_states"]
     out += ["", f"state coverage: 2 testable (CA, WA) + {len(others)} "
