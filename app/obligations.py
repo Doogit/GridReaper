@@ -96,6 +96,7 @@ _CIP_STD_RE = re.compile(r"\bCIP-(\d{3})\b")
 SUBSECTOR_RULE_PREFIX = "subsector_in:"
 EXCLUDE_ENTITIES_RULE_PREFIX = "exclude_entities:"
 RULE_CLAUSE_SEPARATOR = "|"
+_ENTITY_ID_RE = re.compile(r"E[0-9]{4}")
 
 # trigger_id -> (agency slug that identifies the regulator in the payload,
 #                affected_scope label, applicable watchlist subsectors,
@@ -161,6 +162,81 @@ def applicability_rule(subsectors, excluded_entities):
         rule += (RULE_CLAUSE_SEPARATOR + EXCLUDE_ENTITIES_RULE_PREFIX
                  + ";".join(excluded_entities))
     return rule
+
+
+def _applicability_scope(rule):
+    """What a stored applicability predicate admits: ``(subsectors, excluded)``.
+
+    A faithful port of ``app/ui/data.py``'s ``applicability_scope()`` -- see
+    that function's docstring for the full fail-closed reasoning (an empty or
+    unrecognized exclusion clause is treated as unevaluable, not as "no
+    exclusions", because degrading it would silently widen the rule). Ported
+    rather than imported: the backend never imports ``app/ui/`` (dependency
+    direction is backend -> UI, never the reverse), so this is a second,
+    independent read of the same ``subsector_in:``/``exclude_entities:``
+    grammar this module also constructs in ``applicability_rule()``.
+    tests/test_obligations.py carries a parity test asserting this and
+    ``app/ui/data.py``'s ``applicability_scope()`` agree on identical inputs,
+    which is the only thing guarding against the two silently drifting apart.
+
+    Returns None when the rule is missing or in a form this reader does not
+    understand -- callers must treat that as "does not apply", never as
+    "applies to everyone".
+    """
+    rule = (rule or "").strip()
+    if not rule.startswith(SUBSECTOR_RULE_PREFIX):
+        return None
+    clauses = rule.split(RULE_CLAUSE_SEPARATOR)
+    if len(clauses) > 2:
+        return None
+    subsectors = {
+        s for s in clauses[0][len(SUBSECTOR_RULE_PREFIX):].split(";") if s}
+    if len(clauses) == 1:
+        return subsectors, set()
+    if not clauses[1].startswith(EXCLUDE_ENTITIES_RULE_PREFIX):
+        return None
+    excluded = {
+        e for e in clauses[1][len(EXCLUDE_ENTITIES_RULE_PREFIX):].split(";")
+        if e}
+    if not excluded:
+        return None
+    if any(not _ENTITY_ID_RE.fullmatch(e) for e in excluded):
+        return None
+    return subsectors, excluded
+
+
+def obligation_applies(conn, entity_id):
+    """True if at least one ``regulatory_obligations`` row applies to
+    entity_id's subsector (R9, KTD2: EXISTS semantics).
+
+    An entity's subsector can in principle have more than one applicable
+    obligation row; this fires on "at least one exists" and never requires or
+    assumes exactly one. Mirrors the admission logic of ``app/ui/data.py``'s
+    ``account_obligations()`` (subsector membership, minus any entity named in
+    an exclusion clause) but returns a bare bool for ``app/combos.py``'s
+    ``obligation:any`` clause, and does not consider effective/compliance
+    dates -- the combo predicate fires on "any applicable obligation, any
+    date" per the combo-engine plan's R10/R11 (KTD7 leaves obligation
+    expiry/supersession out of scope).
+    """
+    entity = conn.execute(
+        "SELECT subsector FROM watchlist_entities WHERE entity_id = ?",
+        (entity_id,)).fetchone()
+    if entity is None:
+        return False
+    subsector = (entity["subsector"] or "").strip()
+    if not subsector:
+        return False
+    rows = conn.execute(
+        "SELECT applicability_rule FROM regulatory_obligations").fetchall()
+    for row in rows:
+        scope = _applicability_scope(row["applicability_rule"])
+        if scope is None:
+            continue
+        admitted, excluded = scope
+        if subsector in admitted and entity_id not in excluded:
+            return True
+    return False
 
 
 def _utcnow():

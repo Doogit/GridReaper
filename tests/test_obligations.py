@@ -16,7 +16,9 @@ from app.classify.regulatory import PARSER_VERSION as REGULATORY_PARSER_VERSION
 from app.classify.regulatory import classify_federal_register
 from app.db.migrate import apply_migrations
 from app.obligations import (APPLICABILITY, applicability_rule,
-                             derive_obligations, rederive_applicability)
+                             derive_obligations, obligation_applies,
+                             rederive_applicability)
+from app.obligations import _applicability_scope
 from app.ui import data
 
 SEEDS = Path(__file__).resolve().parent.parent / "seeds"
@@ -680,6 +682,106 @@ class ClassifyToObligationEndToEndTest(unittest.TestCase):
         self.assertEqual(second_derive["obligations_new"], 0)
         self.assertEqual(second_derive["obligations_existing"], 1)
         self.assertEqual([tuple(r) for r in obligations(self.conn)], before)
+
+
+class ObligationAppliesParityTest(unittest.TestCase):
+    """R9/U8: app.obligations.obligation_applies() is a backend-side PORT of
+    app/ui/data.py's applicability_scope() admission logic, needed because
+    app.combos (backend, stdlib-only) can never import app/ui/ (dependency
+    direction is backend -> UI, never the reverse). This is the parity test
+    guarding the resulting THIRD implementation of the subsector_in/
+    exclude_entities grammar (construct-side: applicability_rule() above;
+    read-side: app/ui/data.py's applicability_scope(); this evaluator is the
+    third) against silently drifting from the other two."""
+
+    # Every clause shape applicability_scope() and _applicability_scope
+    # must agree on: well-formed with and without an exclusion, no prefix,
+    # an empty exclusion clause (malformed - fails closed, not "no
+    # exclusions"), a third clause (malformed), a lowercase entity id
+    # (malformed shape), an empty string, an empty subsector clause (admits
+    # nobody but still parses), a too-short excluded id, an exclude list
+    # mixing one canonical id with one malformed one (the whole clause must
+    # fail closed, not admit the well-formed half), and a second clause with
+    # the wrong prefix entirely (not "exclude_entities:").
+    RULES = (
+        "subsector_in:iou_electric;rto_iso",
+        "subsector_in:renewables|exclude_entities:E0155;E0156",
+        "not_a_valid_rule",
+        "subsector_in:midstream|exclude_entities:",
+        "subsector_in:lng|exclude_entities:E0001|extra",
+        "subsector_in:lng|exclude_entities:e0155",
+        "",
+        "subsector_in:",
+        "subsector_in:lng|exclude_entities:E015",
+        "subsector_in:lng|exclude_entities:E0001;e0155",
+        "subsector_in:lng|excluded:E0001",
+    )
+
+    def test_ported_evaluator_agrees_with_ui_reader_on_every_rule_shape(self):
+        for rule in self.RULES:
+            with self.subTest(rule=rule):
+                self.assertEqual(_applicability_scope(rule),
+                                  data.applicability_scope(rule))
+
+    def setUp(self):
+        self.conn = fixture_conn()
+        self.addCleanup(self.conn.close)
+
+    def _entity(self, entity_id, subsector):
+        self.conn.execute(
+            "INSERT INTO watchlist_entities (entity_id, name, subsector) "
+            "VALUES (?, ?, ?)", (entity_id, entity_id, subsector))
+        self.conn.commit()
+
+    def _obligation(self, obligation_id, rule):
+        self.conn.execute(
+            "INSERT INTO regulatory_obligations (obligation_id, "
+            " applicability_rule, effective_date) VALUES (?, ?, '2026-01-01')",
+            (obligation_id, rule))
+        self.conn.commit()
+
+    def test_obligation_applies_agrees_with_manual_scope_check(self):
+        self._entity("E1", "midstream")
+        self._entity("E2", "renewables")
+        self._obligation("o1", "subsector_in:midstream;lng")
+        self._obligation("o2", "subsector_in:renewables|exclude_entities:E2")
+        rules = [r["applicability_rule"] for r in self.conn.execute(
+            "SELECT applicability_rule FROM regulatory_obligations")]
+        for entity_id, subsector in (("E1", "midstream"),
+                                      ("E2", "renewables")):
+            with self.subTest(entity_id=entity_id):
+                expected = False
+                for rule in rules:
+                    scope = data.applicability_scope(rule)
+                    if (scope is not None and subsector in scope[0]
+                            and entity_id not in scope[1]):
+                        expected = True
+                        break
+                self.assertEqual(
+                    obligation_applies(self.conn, entity_id), expected)
+
+    def test_blank_subsector_returns_false_not_a_crash(self):
+        # watchlist_entities.subsector is nullable; a blank/NULL value has no
+        # rule to match, so this must return False, not raise or match
+        # everything.
+        self._entity("E1", "")
+        self._obligation("o1", "subsector_in:midstream")
+        self.assertFalse(obligation_applies(self.conn, "E1"))
+
+    def test_exists_semantics_fires_on_any_matching_row_not_all(self):
+        # E2 is excluded by o2 but a second renewables row (o3) with no
+        # exclusion clause also admits the class -- KTD2's EXISTS semantics
+        # means "at least one applicable row", so this must flip to True
+        # rather than staying False because one row excludes the account.
+        self._entity("E2", "renewables")
+        self._obligation("o2", "subsector_in:renewables|exclude_entities:E2")
+        self.assertFalse(obligation_applies(self.conn, "E2"))
+        self._obligation("o3", "subsector_in:renewables")
+        self.assertTrue(obligation_applies(self.conn, "E2"))
+
+    def test_no_watchlist_entity_returns_false_not_a_crash(self):
+        self._obligation("o1", "subsector_in:midstream")
+        self.assertFalse(obligation_applies(self.conn, "E999"))
 
 
 class PipelineWiringTest(unittest.TestCase):
