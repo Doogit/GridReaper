@@ -51,6 +51,15 @@ NOT_FOUND_MESSAGE = (
     'No account matches id "{requested_id}". It may have been removed from '
     "the watchlist. Pick an account from the selector above.")
 
+# U34: a soft-disabled (R8.7, active=0) entity is still a real, known row --
+# reachable via an ordinary parent/child relationship link on another
+# account's page (account_header/account_relationships don't filter on
+# active) -- so NOT_FOUND_MESSAGE's "may have been removed" is inaccurate for
+# it specifically. This names the entity and says what actually happened.
+DISABLED_MESSAGE = (
+    'No account matches id "{requested_id}". "{name}" was deactivated, not '
+    "removed, from the watchlist. Pick an account from the selector above.")
+
 EMPTY_WATCHLIST_MESSAGE = "No watchlist entities loaded. Run the seed loader first."
 
 # /account/body always answers HTTP 200 (stock htmx does not swap the DOM on a
@@ -59,6 +68,7 @@ EMPTY_WATCHLIST_MESSAGE = "No watchlist entities loaded. Run the seed loader fir
 # from "watchlist is empty" apart from any other load failure without parsing
 # the English message. See _empty.html.
 NOT_FOUND_STATE = "not-found"
+DISABLED_STATE = "disabled"
 EMPTY_WATCHLIST_STATE = "empty-watchlist"
 LOAD_ERROR_STATE = "load-error"
 
@@ -96,11 +106,31 @@ def _resolve(entities, entity_id):
     return entities[0]["entity_id"]
 
 
+def _disabled_entity(conn, entity_id):
+    """The requested id names a real but soft-disabled (R8.7, active=0)
+    watchlist row, reachable via a parent/child relationship link on another
+    account's page -- a distinct condition from a genuinely unknown/removed
+    id (U34)."""
+    if not entity_id:
+        return None
+    return conn.execute(
+        "SELECT entity_id, name FROM watchlist_entities "
+        "WHERE entity_id = ? AND active = 0", (entity_id,)).fetchone()
+
+
 def _account_context(conn, entity_id, requested_id=""):
     """Header view + timeline rows + signal cards for one account; an empty
     body context (account=None) when the entity cannot be loaded, or the
     not-found panel (naming ``requested_id``) when ``entity_id`` is None."""
     if entity_id is None:
+        disabled = _disabled_entity(conn, requested_id)
+        if disabled is not None:
+            return {"selected": "", "not_found": True,
+                    "requested_id": requested_id, "account": None,
+                    "timeline": [], "cards": [],
+                    "empty_message": DISABLED_MESSAGE.format(
+                        requested_id=requested_id, name=disabled["name"]),
+                    "empty_state": DISABLED_STATE}
         return {"selected": "", "not_found": True, "requested_id": requested_id,
                 "account": None, "timeline": [], "cards": [],
                 "empty_message": NOT_FOUND_MESSAGE.format(
