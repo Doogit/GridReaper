@@ -34,6 +34,9 @@ TRIGGER_SCOPES = {
     # class signal (sector, class-phrased, name-free).
     "own_incident": ["account"],
     "peer_incident": ["sector"],
+    # R7 (EPA ECHO): genuine judicial-civil consent-decree records resolve to
+    # one named defendant, always account-scoped -- no sector-level framing.
+    "audit_consent_decree": ["account"],
 }
 
 # Loaded in FK order: products + triggers precede indicator_map.

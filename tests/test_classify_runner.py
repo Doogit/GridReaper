@@ -312,7 +312,8 @@ class TestTriggerScopes(unittest.TestCase):
         self.assertEqual(
             set(TRIGGER_SCOPES),
             {"leadership_change", "nerc_enforcement", "nerc_cip_revision",
-             "tsa_security_directive", "own_incident", "peer_incident"})
+             "tsa_security_directive", "own_incident", "peer_incident",
+             "audit_consent_decree"})
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         apply_migrations(conn)
