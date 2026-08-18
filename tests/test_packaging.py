@@ -111,6 +111,8 @@ class PackagingContractTest(unittest.TestCase):
             "app/ingest/nerc_enforcement.py",
             "app/ingest/gdelt.py",
             "app/ingest/cisa_ics.py",
+            "app/ingest/epa_echo.py",
+            "app/classify/environmental_enforcement.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
 
@@ -201,6 +203,26 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             p.index("app.classify.ransomware"), p.index("app.scoring"),
             "ransomware classification must run before scoring",
+        )
+
+    def test_pipeline_runs_epa_echo_ingest_and_classifier_before_scoring(self):
+        # R7: the EPA ECHO consent-decree fetcher + classifier were merged but
+        # previously unwired here, so audit_consent_decree never fired. Pin
+        # the ingest -> classify -> score ordering so it actually does.
+        p = self._pipeline()
+        self.assertIn("app.ingest.epa_echo", p, "pipeline dropped the EPA ECHO fetcher")
+        self.assertIn(
+            "app.classify.environmental_enforcement", p,
+            "pipeline dropped the EPA ECHO classifier",
+        )
+        self.assertLess(
+            p.index("app.ingest.epa_echo"),
+            p.index("app.classify.environmental_enforcement"),
+            "EPA ECHO ingest must run before its classifier",
+        )
+        self.assertLess(
+            p.index("app.classify.environmental_enforcement"), p.index("app.scoring"),
+            "environmental enforcement classification must run before scoring",
         )
 
     def test_pipeline_runs_digest_after_scoring_and_plays(self):
