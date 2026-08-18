@@ -53,6 +53,15 @@ NOT_FOUND_MESSAGE = (
 
 EMPTY_WATCHLIST_MESSAGE = "No watchlist entities loaded. Run the seed loader first."
 
+# /account/body always answers HTTP 200 (stock htmx does not swap the DOM on a
+# non-2xx response), so its empty-state markup carries this data-state instead
+# — a caller/agent parsing the fragment can tell "account not found" apart
+# from "watchlist is empty" apart from any other load failure without parsing
+# the English message. See _empty.html.
+NOT_FOUND_STATE = "not-found"
+EMPTY_WATCHLIST_STATE = "empty-watchlist"
+LOAD_ERROR_STATE = "load-error"
+
 
 def _entities(conn):
     """(entity_id, name) for every ACTIVE watchlist entity, name-ordered — the
@@ -94,12 +103,14 @@ def _account_context(conn, entity_id, requested_id=""):
         return {"selected": "", "not_found": True, "requested_id": requested_id,
                 "account": None, "timeline": [], "cards": [],
                 "empty_message": NOT_FOUND_MESSAGE.format(
-                    requested_id=requested_id)}
+                    requested_id=requested_id),
+                "empty_state": NOT_FOUND_STATE}
     header = data.account_header(conn, entity_id)
     if header is None:
         return {"selected": entity_id, "not_found": False, "account": None,
                 "timeline": [], "cards": [], "empty_message":
-                "That account could not be loaded."}
+                "That account could not be loaded.",
+                "empty_state": LOAD_ERROR_STATE}
     signals = data.account_signals(conn, entity_id, statuses=STATUSES)
     legend = data.badge_legend(conn)
     cards = []
@@ -127,7 +138,7 @@ def _account_context(conn, entity_id, requested_id=""):
 def _empty_watchlist_context():
     return {"selected": "", "not_found": False, "requested_id": "",
             "account": None, "timeline": [], "cards": [], "empty_message":
-            EMPTY_WATCHLIST_MESSAGE}
+            EMPTY_WATCHLIST_MESSAGE, "empty_state": EMPTY_WATCHLIST_STATE}
 
 
 def _page_context(conn, entity_id):
@@ -145,10 +156,16 @@ def _page_context(conn, entity_id):
 
 @router.get("/account", response_class=HTMLResponse)
 def account(request: Request, entity_id: str = "", conn=Depends(get_db)):
+    """Full-page route: an unknown/stale/soft-disabled entity_id is a genuine
+    404 (mirroring card.py's permalink precedent) — a caller/agent can rely on
+    the status code, not just the placeholder copy. An empty watchlist is a
+    different condition (nothing seeded, not a bad lookup) and stays 200."""
     ctx = _page_context(conn, entity_id)
     ctx["nav_active"] = "account"
+    status_code = 404 if ctx.get("not_found") else 200
     return templates.TemplateResponse(
-        request=request, name="account.html", context=ctx)
+        request=request, name="account.html", context=ctx,
+        status_code=status_code)
 
 
 @router.get("/account/body", response_class=HTMLResponse)

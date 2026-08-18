@@ -176,9 +176,9 @@ class AccountTestBase(unittest.TestCase):
         except OSError:
             pass
 
-    def page(self, **params):
+    def page(self, expected_status=200, **params):
         resp = self.client.get("/account", params=params)
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, expected_status)
         return resp.text
 
     def body(self, **params):
@@ -497,10 +497,20 @@ class TestNotFound(AccountTestBase):
             "/account/body", params={"entity_id": self.UNKNOWN_ID})
         self.assertEqual(resp.status_code, 200)
 
-    def test_page_returns_200_and_selector_shows_the_placeholder(self):
+    def test_body_marks_not_found_with_a_stable_data_state(self):
+        # /account/body stays 200 (stock htmx won't swap on non-2xx), so a
+        # caller/agent must be able to tell not-found apart from other empty
+        # states without parsing prose.
+        resp = self.client.get(
+            "/account/body", params={"entity_id": self.UNKNOWN_ID})
+        self.assertIn('data-state="not-found"', resp.text)
+
+    def test_page_returns_404_and_selector_shows_the_placeholder(self):
+        # the full-page route mirrors card.py's permalink precedent: an
+        # unknown id is a genuine 404, not a 200 with placeholder copy.
         resp = self.client.get(
             "/account", params={"entity_id": self.UNKNOWN_ID})
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 404)
         dom = resp.text
         self.assertIn("E9999 — not found", dom)
         self.assertIn("disabled selected", dom)
@@ -508,7 +518,7 @@ class TestNotFound(AccountTestBase):
         self.assertNotIn('value="E_ACME" selected', dom)
 
     def test_page_body_names_the_requested_id(self):
-        dom = self.page(entity_id=self.UNKNOWN_ID)
+        dom = self.page(expected_status=404, entity_id=self.UNKNOWN_ID)
         self.assertIn('No account matches id &#34;E9999&#34;.', dom)
 
     def test_soft_disabled_entity_is_not_found_not_silently_substituted(self):
@@ -519,10 +529,51 @@ class TestNotFound(AccountTestBase):
         self.assertIn("E_SUB&amp;BR", dom)
         self.assertNotIn("Acme Energy", dom)
 
+    def test_full_page_soft_disabled_entity_is_404(self):
+        resp = self.client.get(
+            "/account", params={"entity_id": "E_SUB&BR"})
+        self.assertEqual(resp.status_code, 404)
+
     def test_bare_route_with_no_id_still_renders_the_deterministic_default(self):
         dom = self.page()
         self.assertIn("Acme Energy", dom)
         self.assertNotIn("not found", dom)
+
+
+class TestEmptyWatchlist(unittest.TestCase):
+    """R6.6/R8.3: no watchlist entities loaded at all is a distinct condition
+    from a bad entity_id — nothing to look up, not a failed lookup — so it
+    stays 200 on both routes (there is no "id" to have failed to find) but
+    must carry its own data-state, distinguishable from not-found."""
+
+    def setUp(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA foreign_keys=ON")
+        apply_migrations(conn)
+        conn.commit()
+        conn.close()
+        self.path = path
+        os.environ["GRIDSIGNALS_DB"] = self.path
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        os.environ.pop("GRIDSIGNALS_DB", None)
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+    def test_page_returns_200_with_empty_watchlist_state(self):
+        resp = self.client.get("/account")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('data-state="empty-watchlist"', resp.text)
+
+    def test_body_returns_200_with_empty_watchlist_state(self):
+        resp = self.client.get("/account/body")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('data-state="empty-watchlist"', resp.text)
 
 
 class TestAccountPlayRowsBadging(unittest.TestCase):
