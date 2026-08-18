@@ -474,9 +474,10 @@ class TestBodySwap(AccountTestBase):
 
 
 class TestNotFound(AccountTestBase):
-    """R6.6/R8.3: an unknown, stale, or soft-disabled id must render an honest
-    not-found panel naming the id that was requested — never a silent HTTP 200
-    substitution of a different (e.g. the first) company."""
+    """R6.6/R8.3: an unknown or stale id must render an honest not-found panel
+    naming the id that was requested — never a silent HTTP 200 substitution of
+    a different (e.g. the first) company. A soft-disabled id is its own state
+    (still on file, not removed) — see TestDeactivated."""
 
     UNKNOWN_ID = "E9999"
 
@@ -521,23 +522,53 @@ class TestNotFound(AccountTestBase):
         dom = self.page(expected_status=404, entity_id=self.UNKNOWN_ID)
         self.assertIn('No account matches id &#34;E9999&#34;.', dom)
 
-    def test_soft_disabled_entity_is_not_found_not_silently_substituted(self):
-        # E_SUB&BR is active=0 (soft-disabled, R8.7): it drops out of the
-        # selector's pool entirely, so it must resolve as not-found too.
-        dom = self.body(entity_id="E_SUB&BR")
-        self.assertIn("No account matches id", dom)
-        self.assertIn("E_SUB&amp;BR", dom)
-        self.assertNotIn("Acme Energy", dom)
-
-    def test_full_page_soft_disabled_entity_is_404(self):
-        resp = self.client.get(
-            "/account", params={"entity_id": "E_SUB&BR"})
-        self.assertEqual(resp.status_code, 404)
-
     def test_bare_route_with_no_id_still_renders_the_deterministic_default(self):
         dom = self.page()
         self.assertIn("Acme Energy", dom)
         self.assertNotIn("not found", dom)
+
+
+class TestDeactivated(AccountTestBase):
+    """U34: E_SUB&BR is active=0 (soft-disabled, R8.7) but still ON FILE, and
+    still linked from its active parent E_ACME's own Entity Graph tab
+    (account_header/account_relationships deliberately do not filter on
+    active — dropping the edge would silently hide relationship information
+    the operator currently sees, per the operator's ruling). Following that
+    ordinary relationship link must not land on not-found's "may have been
+    removed" copy: the account was deactivated, not removed."""
+
+    DEACTIVATED_ID = "E_SUB&BR"
+
+    def test_reachable_via_relationship_link_from_an_active_account(self):
+        # the link must actually exist on the parent's rendered page (this is
+        # ordinary navigation, not a crafted URL) before it is followed.
+        parent_dom = self.page(entity_id="E_ACME")
+        self.assertIn('href="/account?entity_id=E_SUB%26BR"', parent_dom)
+        dom = self.page(expected_status=404, entity_id=self.DEACTIVATED_ID)
+        self.assertIn("deactivated", dom)
+        self.assertNotIn("removed from the watchlist", dom)
+
+    def test_names_the_requested_id_and_no_company_name_leaks(self):
+        dom = self.body(entity_id=self.DEACTIVATED_ID)
+        self.assertIn("E_SUB&amp;BR", dom)
+        self.assertIn("deactivated", dom)
+        self.assertNotIn("removed from the watchlist", dom)
+        self.assertNotIn("Acme Energy", dom)
+
+    def test_body_marks_deactivated_with_its_own_data_state(self):
+        # /account/body stays 200 (stock htmx won't swap on non-2xx), so a
+        # caller/agent must be able to tell deactivated apart from not-found
+        # and the other empty states without parsing prose.
+        resp = self.client.get(
+            "/account/body", params={"entity_id": self.DEACTIVATED_ID})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('data-state="deactivated"', resp.text)
+
+    def test_full_page_is_404(self):
+        # mirrors not-found's status code: still not a valid page to land on.
+        resp = self.client.get(
+            "/account", params={"entity_id": self.DEACTIVATED_ID})
+        self.assertEqual(resp.status_code, 404)
 
 
 class TestEmptyWatchlist(unittest.TestCase):
