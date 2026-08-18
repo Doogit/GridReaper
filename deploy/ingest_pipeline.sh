@@ -25,6 +25,7 @@ python -m app.ingest.presswire --source prnewswire    || echo "WARN: prnewswire 
 python -m app.ingest.presswire --source globenewswire || echo "WARN: globenewswire ingest failed, continuing"
 python -m app.ingest.nerc_pages        || echo "WARN: nerc_pages ingest failed, continuing"
 python -m app.ingest.cisa_kev          || echo "WARN: cisa_kev ingest failed, continuing"
+python -m app.ingest.cisa_ics          || echo "WARN: cisa_ics ingest failed, continuing"
 python -m app.ingest.ransomware        || echo "WARN: ransomware ingest failed, continuing"
 python -m app.ingest.security_rss --source therecord        || echo "WARN: the_record ingest failed, continuing"
 python -m app.ingest.security_rss --source bleepingcomputer || echo "WARN: bleepingcomputer ingest failed, continuing"
