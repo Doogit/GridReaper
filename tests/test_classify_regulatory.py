@@ -224,6 +224,43 @@ class TestFederalRegister(unittest.TestCase):
         self.assertEqual(s["signals_new"], 0)
         self.assertEqual(self.signals(), [])
 
+    def test_tsa_rail_security_directive_no_signal(self):
+        # R8/U7: TSA_TERMS alone matches this (it names "rail security" and
+        # "cybersecurity requirements"), but it names no pipeline/LNG
+        # facility. app/obligations.py's APPLICABILITY maps EVERY
+        # tsa_security_directive signal unconditionally to lng/midstream, so
+        # emitting a signal here would derive a phantom pipeline/LNG
+        # obligation for a rail-only rule (R4.1 subsector mismatch) -
+        # app/classify/tsa_sd.py's pipeline/LNG gate must drop it.
+        add_fr_event(self.conn, 1, fr_doc(
+            type="Rule", agencies=[TSA_AGENCY, DOE_AGENCY],
+            title="Enhancing Rail Cyber Risk Management",
+            abstract=("TSA is codifying security directive requirements "
+                      "for rail owner/operators. Owner/operators must "
+                      "establish cybersecurity requirements and report "
+                      "incidents."),
+            effective_on="2026-10-01"))
+        s = self.run_fr()
+        self.assertEqual((s["events_processed"], s["signals_new"]), (1, 0))
+        self.assertEqual(self.signals(), [])
+
+    def test_tsa_lng_security_directive_is_sector(self):
+        # Same shape as the rail case above, but names an LNG facility
+        # instead of "pipeline" - proves the gate accepts either
+        # PIPELINE_LNG_TERMS member, not just "pipeline".
+        add_fr_event(self.conn, 1, fr_doc(
+            type="Proposed Rule", agencies=[TSA_AGENCY, DOE_AGENCY],
+            title="LNG Facility Cybersecurity Requirements",
+            abstract=("TSA proposes security directive requirements for "
+                      "LNG facility owner/operators, including continuous "
+                      "monitoring and incident reporting."),
+            comments_close_on="2026-11-01"))
+        s = self.run_fr()
+        self.assertEqual(s["signals_new"], 1)
+        sig = self.signals()[0]
+        self.assertEqual(sig["trigger_id"], "tsa_security_directive")
+        self.assertEqual(sig["signal_scope"], "regulatory_calendar")
+
     def test_malformed_payload_yields_nothing(self):
         self.assertEqual(classify_federal_register(
             self.conn, {"payload": "not json", "event_date": ""}), [])
