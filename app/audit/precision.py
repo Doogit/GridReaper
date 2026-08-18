@@ -111,9 +111,18 @@ G1_MIN_RATED = 20
 # so ``g1_status`` never falls back to the computed state on its own.
 G1_WAIVER_ACTIVE = True
 G1_WAIVER_DATE = "2026-08-16"
-G1_WAIVER_REASON = (
-    f"Overall: WAIVED by operator ruling {G1_WAIVER_DATE} — not passed. The "
-    "gate's own conditions below are unmet and are shown unchanged.")
+
+# The waiver-fact half only (U16, PR #78 finding #2): WHETHER a waiver is in
+# force and WHEN it was ruled never changes on its own, so this stays a frozen
+# constant. What it deliberately does NOT say anymore is whether the gate's
+# own conditions are unmet — that is a live fact, not a ruling, and freezing
+# it here meant the banner would still say "unmet" even after a primary
+# trigger crossed the gate. ``g1_status`` below carries that half live, as its
+# ``conditions_still_unmet`` key, so the UI layer (``app.ui_web.render``)
+# reads it off the dict it already gets through ``app.ui.data`` instead of
+# importing this module directly (R10.9 UI/backend boundary).
+G1_WAIVER_FACT = (
+    f"Overall: WAIVED by operator ruling {G1_WAIVER_DATE} — not passed.")
 
 
 def _g1_waiver_lift_condition(min_rated):
@@ -753,9 +762,17 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
           "blocked_reasons": [...],
           "state": "waived" | "eligible" | "blocked",
           "waiver": {"date", "reason", "lift_condition"} | None,
+          "conditions_still_unmet": bool,
         }
 
     ``eligible`` is True only when every primary trigger ``meets``.
+    ``conditions_still_unmet`` is just ``not eligible`` (U16, PR #78 finding
+    #2) — carried under its own name because it is what the waiver banner
+    asks ("are the gate's conditions still unmet") rather than a fact readers
+    have to re-derive. It stays live no matter ``state``: if a primary
+    trigger ever crosses the gate while the operator's waiver is still
+    active, this flips to False and the banner's wording flips with it,
+    instead of repeating a frozen claim.
 
     THE WAIVER (KTD1). ``waiver_active`` defaults to ``None``, resolved in the
     body to the recorded ``G1_WAIVER_ACTIVE`` ruling — read at CALL time, the
@@ -857,7 +874,7 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
         state = "waived"
         waiver = {
             "date": G1_WAIVER_DATE,
-            "reason": G1_WAIVER_REASON,
+            "reason": G1_WAIVER_FACT,
             "lift_condition": _g1_waiver_lift_condition(min_rated),
         }
     else:
@@ -874,6 +891,7 @@ def g1_status(feedback_rows, audit_rows, primary_triggers=None, now=None,
         "blocked_reasons": blocked_reasons,
         "state": state,
         "waiver": waiver,
+        "conditions_still_unmet": not eligible,
     }
 
 

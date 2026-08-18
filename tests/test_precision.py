@@ -353,15 +353,41 @@ class G1WaiverTests(unittest.TestCase):
         self.assertEqual(out["state"], "waived")
         self.assertEqual(out["waiver"]["date"], p.G1_WAIVER_DATE)
         self.assertEqual(out["waiver"]["date"], "2026-08-16")
-        # The most trust-loaded string on the most trust-loaded page — pinned
-        # verbatim so it can never drift into sounding like a pass.
+        # The waiver-FACT half only (U16) — WHETHER/WHEN the operator waived
+        # it never changes on its own, so it stays pinned verbatim. It no
+        # longer claims the gate's conditions are unmet; that half is live
+        # (see test_g1_conditions_still_unmet_* below).
         self.assertEqual(out["waiver"]["reason"], (
-            "Overall: WAIVED by operator ruling 2026-08-16 — not passed. The "
-            "gate's own conditions below are unmet and are shown unchanged."))
+            "Overall: WAIVED by operator ruling 2026-08-16 — not passed."))
+        self.assertEqual(out["waiver"]["reason"], p.G1_WAIVER_FACT)
         # Never coerced to a pass: the computed gate is still not eligible,
         # and the state stays inside its closed three-value vocabulary.
         self.assertIn(out["state"], ("waived", "eligible", "blocked"))
         self.assertFalse(out["eligible"])
+
+    def test_conditions_still_unmet_true_when_gate_not_met(self):
+        # Live counterpart to the (now-dropped) frozen "unmet" claim: with no
+        # rated cards the gate's own conditions are genuinely still unmet.
+        out = p.g1_status([], [], primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True)
+        self.assertFalse(out["eligible"])
+        self.assertTrue(out["conditions_still_unmet"])
+
+    def test_conditions_still_unmet_flips_false_when_a_trigger_crosses_the_gate(self):
+        # The bug this unit fixes: the old text was a frozen claim that would
+        # never flip even if a primary trigger crossed G1_MIN_RATED/
+        # G1_MIN_DAYS and the rate thresholds. _rated()+_judged() over NOW
+        # (~59 days later) gives leadership_change 80% useful-rate over
+        # n=25>=20 and 90% auto-accuracy over 10 scored — every G1 condition
+        # met — while the waiver itself stays active (recorded, not
+        # enforced).
+        out = p.g1_status(self._rated(), self._judged(),
+                          primary_triggers=("leadership_change",),
+                          now=self.NOW, waiver_active=True)
+        self.assertEqual(out["state"], "waived")
+        self.assertTrue(out["triggers"]["leadership_change"]["meets"])
+        self.assertTrue(out["eligible"])
+        self.assertFalse(out["conditions_still_unmet"])
 
     def test_shipped_default_waives_without_an_explicit_argument(self):
         # Every other test in this class passes waiver_active explicitly, so
@@ -464,8 +490,9 @@ class G1WaiverTests(unittest.TestCase):
 
     def test_inactive_waiver_is_byte_identical_to_prior_behavior(self):
         # Characterization test: with the waiver inactive the whole returned
-        # structure equals the pre-waiver output, plus the two additive keys
-        # reporting the un-waived computed state.
+        # structure equals the pre-waiver output, plus the three additive
+        # keys reporting the un-waived computed state (U16 added
+        # conditions_still_unmet alongside state/waiver).
         out = p.g1_status([], [], primary_triggers=("leadership_change",),
                           now=self.NOW, waiver_active=False)
         self.assertEqual(out, {
@@ -496,6 +523,7 @@ class G1WaiverTests(unittest.TestCase):
             ],
             "state": "blocked",
             "waiver": None,
+            "conditions_still_unmet": True,
         })
 
     def test_waived_state_unreachable_by_computation(self):
