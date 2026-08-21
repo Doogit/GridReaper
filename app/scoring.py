@@ -223,6 +223,11 @@ def rescore(conn, now=None):
         try:
             _parsed = _parse_combo(_r["logic_expr"])
             _mult = float(_r["multiplier"])
+            # Defense-in-depth: load-side validate_combo_rules already rejects a
+            # non-positive multiplier, but a value that bypassed the load gate
+            # (direct DB edit, fixture) must be skipped here too, never applied.
+            if _mult <= 0:
+                raise ValueError(f"non-positive multiplier {_mult!r}")
         except (ComboExprError, TypeError, ValueError) as _exc:
             logger.warning("combo rule %r skipped — %s: %s",
                            _r["rule_id"], type(_exc).__name__, _exc)
