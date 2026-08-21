@@ -1,6 +1,7 @@
 """Signal scoring engine (R7.3, R7.5).
 
 score = base_strength * 0.5^(age_days / half_life) * account_fit * scope_fit
+        [* combo_multiplier when a combo fires — R12]
 
 base_strength and decay_half_life_days come from the signal's trigger row;
 combo_multiplier is fixed at 1.0 for the MVP. All fit factors are operator
@@ -37,12 +38,12 @@ age 0 rather than silently decaying) to an injectable clock:
 rescore(conn, now=None) defaults to current UTC; tests inject a fixed now
 for determinism - same DB + same now -> identical scores.
 
-Score explainability (R8.1): compute_score returns the four multiplicative
-components (base_strength, decay, account_fit, scope_fit) alongside the score,
-and rescore() persists them to signals.score_base / score_decay /
-score_account_fit / score_scope_fit plus scored_at (the injected-clock time,
-UTC ISO-8601). The components always multiply to the stored score, so the card
-can render "2.34 = 5 x 0.85 x 1.00 x 0.55". Only status='active' rows are
+Score explainability (R8.1, R12): compute_score returns up to five multiplicative
+components alongside the score and persists them to signals.score_base /
+score_decay / score_account_fit / score_scope_fit / score_combo plus scored_at.
+When no combo fires, score_combo is NULL and the four factors multiply to the
+stored score exactly as before. When a combo fires, score_combo carries the
+multiplier and all five factors multiply to the stored score. Only status='active' rows are
 rescored; superseded/decayed/dismissed rows keep their frozen score and
 components.
 
@@ -62,6 +63,8 @@ from collections import namedtuple
 from datetime import date, datetime, timezone
 from hashlib import sha256
 
+from app.combos import ComboExprError
+from app.combos import evaluate as _evaluate_combo
 from app.db.connection import get_connection
 
 DECAY_THRESHOLD = 1.0
@@ -71,9 +74,12 @@ NEUTRAL_WEIGHT = 1.0
 # width the UI's id helpers use and is collision-safe for a tuning history.
 CONFIG_VERSION_LEN = 16
 
-# The four multiplicative factors behind a score (R8.1 explainability):
-# score == base * decay * account_fit * scope_fit.
-Score = namedtuple("Score", "score base decay account_fit scope_fit")
+# The multiplicative factors behind a score (R8.1, R12 explainability):
+# score == base * decay * account_fit * scope_fit [* score_combo when not NULL].
+# score_combo carries the combo multiplier (product of all firing rules) or None
+# when no combo was in force; a NULL score_combo means the four factors multiply
+# to the stored score exactly.
+Score = namedtuple("Score", "score base decay account_fit scope_fit score_combo")
 
 
 def load_weights(conn):
@@ -96,14 +102,15 @@ def _num(value):
 def scoring_config_version(conn):
     """Digest of the operator tuning currently in force (R3.7).
 
-    Covers BOTH tables compute_score reads:
+    Covers all three tables rescore() reads for tuning:
       * scoring_weights(weight_kind, key, weight) - account_fit and scope_fit
       * triggers(trigger_id, base_strength, decay_half_life_days) - the base
         strength and the decay divisor
-    Hashing scoring_weights alone would not move when an operator changes a
-    half-life or a base strength through Admin (data.update_half_life /
-    update_tuning), and a score that silently changed under an unmoving version
-    token is exactly the R3.7 failure this closes.
+      * combo_rules(rule_id, logic_expr, multiplier, enabled_stage) - the combo
+        multiplier layer added in R12/0014. All rows (enabled and disabled) are
+        covered so the token moves when a rule is toggled or its multiplier
+        changes. An empty combo_rules table hashes to the same prefix string it
+        always did, keeping scores byte-identical before any rules exist.
 
     Rows are sorted by primary key and numbers canonicalised, so the token is a
     pure function of the tuning - same tuning, same token, on any machine.
@@ -118,6 +125,11 @@ def scoring_config_version(conn):
             "FROM triggers ORDER BY trigger_id"):
         lines.append(f"trigger|{r['trigger_id']}|{_num(r['base_strength'])}"
                      f"|{_num(r['decay_half_life_days'])}")
+    for r in conn.execute(
+            "SELECT rule_id, logic_expr, multiplier, enabled_stage "
+            "FROM combo_rules ORDER BY rule_id"):
+        lines.append(f"combo|{r['rule_id']}|{r['logic_expr'] or ''}"
+                     f"|{_num(r['multiplier'])}|{_num(r['enabled_stage'])}")
     return sha256("\n".join(lines).encode("utf-8")).hexdigest()[:CONFIG_VERSION_LEN]
 
 
@@ -155,10 +167,15 @@ def account_fit(weights, scope, entity_id, subsector, richness, coverage_flag):
             * _weight(weights, "coverage", coverage_flag))
 
 
-def compute_score(weights, row, now):
+def compute_score(weights, row, now, combo_multiplier=None):
     """Score one signal row (joined with its trigger and entity columns).
-    Returns a Score namedtuple carrying the score and its four components
-    (base, decay, account_fit, scope_fit) - they multiply to the score."""
+
+    Returns a Score namedtuple. When combo_multiplier is None (no combo fired),
+    score_combo is None and the four factors (base, decay, account_fit,
+    scope_fit) multiply exactly to the stored score. When combo_multiplier is
+    provided, score_combo carries the multiplier and all five factors multiply
+    to the stored score.
+    """
     age = _age_days(row["event_date"], now)
     half_life = row["decay_half_life_days"] or 1
     decay = 0.5 ** (age / half_life)
@@ -166,20 +183,34 @@ def compute_score(weights, row, now):
                       row["subsector"], row["richness"], row["coverage_flag"])
     scope_fit = _weight(weights, "scope", row["signal_scope"])
     base = row["base_strength"]
-    return Score(base * decay * fit * scope_fit, base, decay, fit, scope_fit)
+    score = base * decay * fit * scope_fit
+    if combo_multiplier is not None:
+        score *= combo_multiplier
+    return Score(score, base, decay, fit, scope_fit, combo_multiplier)
 
 
 def rescore(conn, now=None):
     """Recompute score for every status='active' signal; flip to 'decayed'
     below DECAY_THRESHOLD. Dismissed/decayed rows are untouched. Stamps
     scoring_config_version alongside the components so each stored score names
-    the tuning that produced it (R3.7). Returns {'scored': n, 'decayed': n}."""
+    the tuning that produced it (R3.7, R12). Returns {'scored': n, 'decayed': n}.
+
+    Combo evaluation (R12): enabled combo_rules are evaluated once per
+    entity_id and cached for the pass. The combo multiplier is the product of
+    the multipliers of all rules that fire; score_combo is NULL when no rule
+    fires, entity_id is NULL, or no enabled rules exist — in which case the
+    score is byte-identical to a pre-combo rescore.
+    """
     if now is None:
         now = datetime.now(timezone.utc)
     scored_at = now.astimezone(timezone.utc).isoformat() if now.tzinfo \
         else now.replace(tzinfo=timezone.utc).isoformat()
     config_version = scoring_config_version(conn)
     weights = load_weights(conn)
+    # Load enabled combo rules once per rescore pass.
+    enabled_rules = conn.execute(
+        "SELECT rule_id, logic_expr, multiplier FROM combo_rules "
+        "WHERE enabled_stage IS NOT NULL").fetchall()
     rows = conn.execute(
         "SELECT s.signal_id, s.signal_scope, s.entity_id, s.event_date, "
         " t.base_strength, t.decay_half_life_days, "
@@ -188,16 +219,37 @@ def rescore(conn, now=None):
         "JOIN triggers t ON t.trigger_id = s.trigger_id "
         "LEFT JOIN watchlist_entities e ON e.entity_id = s.entity_id "
         "WHERE s.status = 'active'").fetchall()
+    # Cache combo evaluation per entity_id: many signals share an entity.
+    combo_cache = {}  # entity_id -> Optional[float]
     scored = decayed = 0
     for row in rows:
-        sc = compute_score(weights, row, now)
+        entity_id = row["entity_id"]
+        # Determine combo multiplier for this signal's entity.
+        if entity_id is not None and enabled_rules:
+            if entity_id not in combo_cache:
+                product = 1.0
+                any_fired = False
+                for rule in enabled_rules:
+                    try:
+                        if _evaluate_combo(conn, entity_id, rule["logic_expr"]):
+                            product *= float(rule["multiplier"])
+                            any_fired = True
+                    except ComboExprError:
+                        pass
+                combo_cache[entity_id] = product if any_fired else None
+            combo_multiplier = combo_cache[entity_id]
+        else:
+            combo_multiplier = None
+        sc = compute_score(weights, row, now, combo_multiplier=combo_multiplier)
         status = "decayed" if sc.score < DECAY_THRESHOLD else "active"
         conn.execute(
             "UPDATE signals SET score = ?, status = ?, score_base = ?, "
             " score_decay = ?, score_account_fit = ?, score_scope_fit = ?, "
-            " scored_at = ?, scoring_config_version = ? WHERE signal_id = ?",
+            " score_combo = ?, scored_at = ?, scoring_config_version = ? "
+            "WHERE signal_id = ?",
             (sc.score, status, sc.base, sc.decay, sc.account_fit,
-             sc.scope_fit, scored_at, config_version, row["signal_id"]))
+             sc.scope_fit, sc.score_combo, scored_at, config_version,
+             row["signal_id"]))
         scored += 1
         if status == "decayed":
             decayed += 1

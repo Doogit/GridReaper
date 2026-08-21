@@ -117,7 +117,13 @@ def safe_source_url(url):
 
 def decay_ceiling(signal):
     """Fresh (undecayed) score ceiling for the decay bar: base_strength x
-    account_fit x scope_fit, using persisted fit components when present."""
+    account_fit x scope_fit [x combo_multiplier when a combo applies].
+
+    score_combo is multiplied in when present so the decay bar ceiling matches
+    the actual score ceiling; omitting it while applying it to the score would
+    make the fill fraction exceed 100%, contradicting the bar's semantics.
+    When score_combo is NULL the ceiling is the unchanged three-term product.
+    """
     base = signal["base_strength"]
     if base is None:
         return None
@@ -128,19 +134,36 @@ def decay_ceiling(signal):
         ceiling *= float(acct)
     if scope is not None:
         ceiling *= float(scope)
+    combo = signal["score_combo"]
+    if combo is not None:
+        ceiling *= float(combo)
     return ceiling if ceiling > 0 else None
 
 
 def score_breakdown(signal):
-    """R7.3 explainability line 'score 2.34 = 5 x 0.85 x 1.00 x 0.55'
-    (base x decay x account-fit x scope-fit). None until rescored."""
+    """R7.3/R12 explainability line.
+
+    When score_combo is NULL (signal was scored before combo scoring or no combo
+    fired): four-factor format plus ' · pre-combo (scored before combo scoring
+    existed)' suffix so the operator knows no combo was evaluated — never a
+    fabricated '× 1.00' fifth factor.
+
+    When score_combo is present: five-factor format where all five multiply to
+    the displayed score.
+
+    Returns None until the signal has been rescored (any component is None).
+    """
     comps = (signal["score_base"], signal["score_decay"],
              signal["score_account_fit"], signal["score_scope_fit"])
     if signal["score"] is None or any(c is None for c in comps):
         return None
     base, decay, acct, scope = (float(c) for c in comps)
-    return (f"score {fmt_score(signal['score'])} = {fmt_score(base)} "
+    combo = signal["score_combo"]
+    four = (f"score {fmt_score(signal['score'])} = {fmt_score(base)} "
             f"× {decay:.2f} × {acct:.2f} × {scope:.2f}")
+    if combo is None:
+        return four + " · pre-combo (scored before combo scoring existed)"
+    return four + f" × {float(combo):.2f}"
 
 
 def gov_caution_line(display_text):

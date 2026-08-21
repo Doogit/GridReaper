@@ -13,7 +13,7 @@ from app.ui_web import render
 def signal(**over):
     base = {"score": None, "base_strength": None, "score_base": None,
             "score_decay": None, "score_account_fit": None,
-            "score_scope_fit": None}
+            "score_scope_fit": None, "score_combo": None}
     base.update(over)
     return base
 
@@ -70,11 +70,18 @@ class TestDecayAndBreakdown(unittest.TestCase):
     def test_breakdown_none_until_rescored(self):
         self.assertIsNone(render.score_breakdown(signal(score=3.0)))
 
-    def test_breakdown_formats_components(self):
+    def test_breakdown_formats_components_pre_combo(self):
+        """score_combo=NULL (default) -> four-factor format + pre-combo suffix.
+        Never a fabricated '× 1.00' fifth factor."""
         s = signal(score=2.34, score_base=5, score_decay=0.85,
                    score_account_fit=0.55, score_scope_fit=1.0)
-        self.assertEqual(render.score_breakdown(s),
-                         "score 2.34 = 5 × 0.85 × 0.55 × 1.00")
+        result = render.score_breakdown(s)
+        self.assertEqual(result,
+                         "score 2.34 = 5 × 0.85 × 0.55 × 1.00"
+                         " · pre-combo (scored before combo scoring existed)")
+        # Must not contain a fabricated fifth factor
+        self.assertNotIn("× 1.00 ×", result)
+        self.assertNotIn("× 1.0 ×", result)
 
 
 class TestExtraction(unittest.TestCase):
@@ -328,6 +335,74 @@ class TestReviewPendingView(unittest.TestCase):
             snippet_truncated=True, snippet_omitted_fields=3))["snippet_note"]
         self.assertIn("1 of 4 fields", both)
         self.assertIn("cut at 200 characters", both)
+
+
+class TestComboRender(unittest.TestCase):
+    """R12: combo-aware decay_ceiling and score_breakdown rendering."""
+
+    def test_breakdown_five_factors_when_combo_present(self):
+        """score_combo present -> five factors; all five multiply to the score."""
+        # base 4 * decay 1.0 * acct 1.1 * scope 1.0 * combo 1.5 = 6.6
+        s = signal(score=6.6, score_base=4, score_decay=1.0,
+                   score_account_fit=1.1, score_scope_fit=1.0,
+                   score_combo=1.5)
+        result = render.score_breakdown(s)
+        self.assertEqual(result,
+                         "score 6.6 = 4 × 1.00 × 1.10 × 1.00 × 1.50")
+        # Verify the suffix is absent (this is the full five-factor format)
+        self.assertNotIn("pre-combo", result)
+
+    def test_breakdown_pre_combo_suffix_when_null(self):
+        """score_combo=NULL -> exact four-factor string + pre-combo suffix."""
+        s = signal(score=2.34, score_base=5, score_decay=0.85,
+                   score_account_fit=0.55, score_scope_fit=1.0)
+        result = render.score_breakdown(s)
+        self.assertIn("pre-combo (scored before combo scoring existed)", result)
+        # The four-factor base is intact
+        self.assertIn("score 2.34 = 5 × 0.85 × 0.55 × 1.00", result)
+
+    def test_decay_ceiling_includes_combo_when_present(self):
+        """With score_combo, ceiling = base * acct * scope * combo."""
+        s = signal(base_strength=4, score_account_fit=1.1,
+                   score_scope_fit=1.0, score_combo=1.5)
+        # 4 * 1.1 * 1.0 * 1.5 = 6.6
+        self.assertAlmostEqual(render.decay_ceiling(s), 6.6)
+
+    def test_decay_ceiling_without_combo_unchanged(self):
+        """score_combo=NULL -> ceiling stays the three-term product."""
+        s = signal(base_strength=5, score_account_fit=0.8, score_scope_fit=0.5)
+        # 5 * 0.8 * 0.5 = 2.0 — identical to pre-combo behaviour
+        self.assertAlmostEqual(render.decay_ceiling(s), 2.0)
+
+    def test_decay_bar_fill_stays_below_100_with_combo(self):
+        """When combo enters the ceiling, score / ceiling < 1.0 for a score
+        that is boosted but not above the full-strength ceiling."""
+        # score_combo = 1.5, score = 4 * 1.1 * 1.5 = 6.6 (age 0)
+        # ceiling = 4 * 1.1 * 1.0 * 1.5 = 6.6 -> fill = 100% (age 0, full)
+        # At half-life (decay=0.5): score = 3.3, ceiling = 6.6 -> fill 50%
+        s = signal(score=3.3, base_strength=4, score_account_fit=1.1,
+                   score_scope_fit=1.0, score_combo=1.5)
+        ceiling = render.decay_ceiling(s)
+        self.assertAlmostEqual(ceiling, 6.6)
+        fill = s["score"] / ceiling * 100
+        # fill is strictly between 0 and 100
+        self.assertGreater(fill, 0)
+        self.assertLess(fill, 100)
+
+    def test_template_tooltip_does_not_contain_exact_old_string(self):
+        """The exact four-factor tooltip string must appear in NO template after
+        the U9 update — both templates now carry the (× combo when applies) form."""
+        import os
+        old_tooltip = "base strength × time decay × account fit × scope fit\""
+        templates_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "app", "ui_web", "templates")
+        for fname in ("_card.html", "digest.html"):
+            path = os.path.join(templates_dir, fname)
+            with open(path, encoding="utf-8") as fh:
+                content = fh.read()
+            self.assertNotIn(old_tooltip, content,
+                             msg=f"{fname} still has the old four-factor tooltip")
 
 
 if __name__ == "__main__":

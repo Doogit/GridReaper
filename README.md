@@ -259,7 +259,7 @@ The MVP classifies regulatory actions, leadership changes, and precision-first c
 | NERC enforcement-docket fetcher (NP-series notices of penalty) + NERC events calendar | Implemented — both ingested, neither classified yet; measured ceiling is 2 watchlist entities over 18 months, so this is no longer the account-scope lever it was scoped as (see [Coverage](#coverage)) |
 | Typed `raw_events` → `facility_assets` projection (EIA plant records → owner-matched, geo-located facilities) | **Not built** — the Explore watchlist map and its ≥0.85 owner-confidence gate are implemented and read this table, so the map has nothing to plot until the projection exists |
 
-Later stages add combo scoring, GDELT-based classification, and a hiring/macro-trend layer.
+Later stages add GDELT-based classification and a hiring/macro-trend layer. Combo scoring plumbing is wired (measured-inert until U10/U11 seed `combo_rules`).
 
 ## Notes
 
