@@ -259,7 +259,9 @@ The MVP classifies regulatory actions, leadership changes, and precision-first c
 | NERC enforcement-docket fetcher (NP-series notices of penalty) + NERC events calendar | Implemented — both ingested, neither classified yet; measured ceiling is 2 watchlist entities over 18 months, so this is no longer the account-scope lever it was scoped as (see [Coverage](#coverage)) |
 | Typed `raw_events` → `facility_assets` projection (EIA plant records → owner-matched, geo-located facilities) | **Not built** — the Explore watchlist map and its ≥0.85 owner-confidence gate are implemented and read this table, so the map has nothing to plot until the projection exists |
 
-Later stages add GDELT-based classification and a hiring/macro-trend layer. Combo scoring plumbing is wired (measured-inert until U10/U11 seed `combo_rules`).
+Later stages add GDELT-based classification and a hiring/macro-trend layer.
+
+Combo scoring is **implemented and enabled**: two combo rules ship in `seeds/combo_rules.csv` — an incident-and-regulatory-pressure combo (an `own_incident` or `pipeline_enforcement_action` trigger plus an applicable regulatory obligation) and a capital-project + regulatory combo (a `capital_project` award naming no OT-security tooling, plus an applicable obligation) — and apply a score multiplier to a card when they fire. Live today it is score-inert: **0 of 172 watchlist entities** currently satisfy either combo, because no account-scoped signal has fired yet — every active signal is sector- or regulatory-scoped, so none of the combos' account triggers is present — and every card scores exactly as it did before combos landed.
 
 ## Notes
 
