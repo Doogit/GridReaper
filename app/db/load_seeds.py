@@ -37,6 +37,9 @@ TRIGGER_SCOPES = {
     # R7 (EPA ECHO): genuine judicial-civil consent-decree records resolve to
     # one named defendant, always account-scoped -- no sector-level framing.
     "audit_consent_decree": ["account"],
+    # R5 (USAspending.gov): a DOE/CISA/DHS grant or cooperative-agreement
+    # award resolves to one named recipient, always account-scoped.
+    "capital_project": ["account"],
 }
 
 # Loaded in FK order: products + triggers precede indicator_map.

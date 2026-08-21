@@ -113,6 +113,8 @@ class PackagingContractTest(unittest.TestCase):
             "app/ingest/cisa_ics.py",
             "app/ingest/epa_echo.py",
             "app/classify/environmental_enforcement.py",
+            "app/ingest/usaspending.py",
+            "app/classify/capital_project.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
 
@@ -223,6 +225,26 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             p.index("app.classify.environmental_enforcement"), p.index("app.scoring"),
             "environmental enforcement classification must run before scoring",
+        )
+
+    def test_pipeline_runs_usaspending_ingest_and_classifier_before_scoring(self):
+        # R5: the USAspending.gov fetcher + classifier wire the previously
+        # unused capital_project trigger. Pin the ingest -> classify -> score
+        # ordering so it actually fires.
+        p = self._pipeline()
+        self.assertIn("app.ingest.usaspending", p, "pipeline dropped the USAspending.gov fetcher")
+        self.assertIn(
+            "app.classify.capital_project", p,
+            "pipeline dropped the USAspending.gov classifier",
+        )
+        self.assertLess(
+            p.index("app.ingest.usaspending"),
+            p.index("app.classify.capital_project"),
+            "USAspending ingest must run before its classifier",
+        )
+        self.assertLess(
+            p.index("app.classify.capital_project"), p.index("app.scoring"),
+            "capital_project classification must run before scoring",
         )
 
     def test_pipeline_runs_digest_after_scoring_and_plays(self):

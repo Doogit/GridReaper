@@ -47,7 +47,7 @@ SOURCE_RANKS = {EDGAR: 1, PRN: 2, RANSOM: 3, FR: 1, NERC: 1,
 TRIGGER_QUALITY = {"leadership_change": "PC", "nerc_enforcement": "IR",
                    "nerc_cip_revision": "IR", "tsa_security_directive": "IR",
                    "own_incident": "PC", "peer_incident": "PC",
-                   "audit_consent_decree": "PC"}
+                   "audit_consent_decree": "PC", "capital_project": "PC"}
 
 # The R4.1 carry contract, as stored on `signals`.
 R41_FIELDS = ("source_url", "headline", "evidence_snippet", "signal_scope",
