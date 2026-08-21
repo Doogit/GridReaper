@@ -1,0 +1,3 @@
+rule_id,logic_expr,multiplier,product_ids,enabled_stage
+combo_incident_regulatory,"trigger_any:own_incident,pipeline_enforcement_action AND obligation:any",1.5,,2
+combo_no_ot_tooling,"trigger_any:capital_project AND obligation:any AND not_keyword:cybersecurity,cyber security,OT security,ICS security,SCADA security,intrusion detection,SIEM,security operations center,industrial control system security",1.25,,2
