@@ -11,8 +11,8 @@ import sqlite3
 import unittest
 
 from app.combos import (ComboExpr, ComboExprError, NotKeywordClause,
-                        ObligationAnyClause, TriggerAnyClause, evaluate,
-                        parse)
+                        ObligationAnyClause, TriggerAnyClause, _terms_absent,
+                        evaluate, parse)
 from app.db.migrate import apply_migrations
 
 R11_KEYWORDS = ("cybersecurity", "cyber security", "OT security",
@@ -284,6 +284,40 @@ class EvaluateTest(unittest.TestCase):
         expr = ("trigger_any:capital_project AND obligation:any AND "
                "not_keyword:" + ",".join(R11_KEYWORDS))
         self.assertTrue(evaluate(self.conn, "E1", expr))
+
+
+class TermsAbsentTest(unittest.TestCase):
+    """Unit tests for _terms_absent word-boundary matching (Finding 1 fix).
+
+    Verifies that "SIEM" does not match "Siemens" and "OT security" does not
+    match "IoT security" -- the two known false-positive classes from the
+    original substring implementation.
+    """
+
+    def test_siemens_does_not_match_siem_keyword(self):
+        # Regression guard: a Siemens capital project must NOT be suppressed by
+        # the "SIEM" keyword in Combo 2's not_keyword clause.
+        self.assertTrue(
+            _terms_absent("Siemens gas turbine and compressor station upgrade",
+                          ("SIEM", "OT security")))
+
+    def test_standalone_siem_is_caught(self):
+        self.assertFalse(
+            _terms_absent("SIEM platform deployment for the grid",
+                          ("SIEM", "OT security")))
+
+    def test_iot_security_does_not_match_ot_security_keyword(self):
+        # "OT security" must not match inside "IoT security".
+        self.assertTrue(
+            _terms_absent("IoT security monitoring upgrade", ("OT security",)))
+
+    def test_case_insensitive_match_still_fires(self):
+        self.assertFalse(
+            _terms_absent("scada SECURITY retrofit planned.", ("SCADA security",)))
+
+    def test_empty_text_returns_true(self):
+        self.assertTrue(_terms_absent("", ("SIEM",)))
+        self.assertTrue(_terms_absent(None, ("SIEM",)))
 
 
 if __name__ == "__main__":

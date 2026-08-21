@@ -22,7 +22,7 @@ more than one applicable row; the clause fires on "at least one", never
 "exactly one" -- see ``app.obligations.obligation_applies``).
 ``not_keyword:`` is a keyword-ABSENCE modifier: it fires (True) when NONE of
 its terms appear in the payload text of the active signal(s) that satisfied
-the expression's ``trigger_any`` clause (case-insensitive substring match
+the expression's ``trigger_any`` clause (case-insensitive word-boundary match
 against ``headline`` + ``evidence_snippet`` +
 ``raw_events.payload[PAYLOAD_TEXT_FIELD]``). Because a ``not_keyword`` clause
 has no text to check without one, and because a second ``trigger_any`` clause
@@ -213,8 +213,16 @@ def _matched_signal_texts(conn, entity_id, trigger_ids):
 
 
 def _terms_absent(text, terms):
-    lowered = (text or "").lower()
-    return not any(term.lower() in lowered for term in terms)
+    """True when NONE of terms appear as whole words in text (word-boundary match).
+
+    Uses ``re.search`` with ``\\b`` boundaries so "SIEM" does not match
+    "Siemens" and "OT security" does not match "IoT security".
+    """
+    t = text or ""
+    return not any(
+        re.search(r"\b" + re.escape(term) + r"\b", t, re.IGNORECASE)
+        for term in terms
+    )
 
 
 def evaluate(conn, entity_id, expr):

@@ -20,6 +20,7 @@ from unittest import mock
 from app.db import load_seeds
 from app.db.load_seeds import load
 from app.db.connection import get_connection
+from app.db.migrate import apply_migrations
 from app.ui import data
 
 
@@ -283,6 +284,77 @@ class TestMissingSeedFileFailsLoudly(unittest.TestCase):
             self.assertEqual(
                 conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0,
                 f"{table} was committed despite a missing seed file (R4.5)")
+        conn.close()
+
+
+class TestValidateComboRulesMultiplier(unittest.TestCase):
+    """R4.5: validate_combo_rules rejects NULL/non-numeric/zero/negative multiplier.
+
+    Hermetic: in-memory SQLite with real migrations, FK enforcement on, no network.
+    Exercises the multiplier validation added in the Finding 2 fix.
+    """
+
+    def _make_conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
+        apply_migrations(conn)
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, name, base_strength, "
+            " decay_half_life_days, mvp_flag, evidence_quality) "
+            "VALUES ('own_incident', 'Own Incident', 5, 270, 1, 'PC')")
+        conn.commit()
+        return conn
+
+    def _insert_combo(self, conn, multiplier):
+        conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('test_combo', "
+            " 'trigger_any:own_incident AND obligation:any', ?, 1)",
+            (multiplier,))
+        conn.commit()
+
+    def test_null_multiplier_raises_naming_rule_id(self):
+        conn = self._make_conn()
+        self._insert_combo(conn, None)
+        with self.assertRaises(ValueError) as ctx:
+            load_seeds.validate_combo_rules(conn)
+        self.assertIn("test_combo", str(ctx.exception))
+        conn.close()
+
+    def test_non_numeric_multiplier_raises_naming_rule_id(self):
+        conn = self._make_conn()
+        # SQLite REAL affinity: insert as TEXT to force a non-numeric value
+        conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('test_combo', "
+            " 'trigger_any:own_incident AND obligation:any', 'bad_value', 1)")
+        conn.commit()
+        with self.assertRaises(ValueError) as ctx:
+            load_seeds.validate_combo_rules(conn)
+        self.assertIn("test_combo", str(ctx.exception))
+        conn.close()
+
+    def test_zero_multiplier_raises_naming_rule_id(self):
+        conn = self._make_conn()
+        self._insert_combo(conn, 0)
+        with self.assertRaises(ValueError) as ctx:
+            load_seeds.validate_combo_rules(conn)
+        self.assertIn("test_combo", str(ctx.exception))
+        conn.close()
+
+    def test_negative_multiplier_raises_naming_rule_id(self):
+        conn = self._make_conn()
+        self._insert_combo(conn, -1.5)
+        with self.assertRaises(ValueError) as ctx:
+            load_seeds.validate_combo_rules(conn)
+        self.assertIn("test_combo", str(ctx.exception))
+        conn.close()
+
+    def test_valid_positive_multiplier_passes(self):
+        conn = self._make_conn()
+        self._insert_combo(conn, 1.5)
+        load_seeds.validate_combo_rules(conn)  # must not raise
         conn.close()
 
 

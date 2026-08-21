@@ -122,6 +122,8 @@ TABLES = [
     # Combo engine rules (R9/R10/R11): plain upsert on rule_id. No FKs into
     # other seed tables; validated post-load by validate_combo_rules (R4.5).
     # enabled_stage is an integer column; multiplier uses SQLite REAL affinity.
+    # NOTE: enabled_stage is NOT a stage gate — the scoring WHERE clause is
+    # "WHERE enabled_stage IS NOT NULL", so any non-NULL value means enabled.
     {"table": "combo_rules", "csv": "combo_rules.csv",
      "pk": ["rule_id"], "int_cols": ["enabled_stage"]},
 ]
@@ -246,8 +248,10 @@ def validate_combo_rules(conn):
     """R4.5: Validate all combo_rules rows after upsert.
 
     For each row: parses logic_expr (raises ValueError naming rule_id on
-    ComboExprError) and checks every TriggerAnyClause trigger_id exists in
-    the triggers table (raises ValueError naming rule_id + missing trigger_id).
+    ComboExprError), checks every TriggerAnyClause trigger_id exists in
+    the triggers table (raises ValueError naming rule_id + missing trigger_id),
+    and asserts multiplier is a positive float (raises ValueError naming rule_id
+    + bad value).
     Called inside the load() transaction so a bad rule causes a full rollback --
     the loud-fail contract from R4.5 extended to combo rule integrity (R9/R10/R11).
 
@@ -259,7 +263,7 @@ def validate_combo_rules(conn):
     from app.combos import parse as parse_expr               # noqa: PLC0415
 
     rows = conn.execute(
-        "SELECT rule_id, logic_expr FROM combo_rules").fetchall()
+        "SELECT rule_id, logic_expr, multiplier FROM combo_rules").fetchall()
     for row in rows:
         rule_id = row["rule_id"]
         logic_expr = row["logic_expr"]
@@ -279,6 +283,18 @@ def validate_combo_rules(conn):
                         raise ValueError(
                             f"combo_rules row {rule_id!r} references unknown "
                             f"trigger_id {trigger_id!r}")
+        raw = row["multiplier"]
+        if raw is None:
+            raise ValueError(
+                f"combo_rules row {rule_id!r} has NULL multiplier")
+        try:
+            m = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"combo_rules row {rule_id!r} has non-numeric multiplier {raw!r}")
+        if m <= 0:
+            raise ValueError(
+                f"combo_rules row {rule_id!r} has non-positive multiplier {raw!r}")
 
 
 def load(db_path=None):
