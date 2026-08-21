@@ -70,15 +70,15 @@ class TestDecayAndBreakdown(unittest.TestCase):
     def test_breakdown_none_until_rescored(self):
         self.assertIsNone(render.score_breakdown(signal(score=3.0)))
 
-    def test_breakdown_formats_components_pre_combo(self):
-        """score_combo=NULL (default) -> four-factor format + pre-combo suffix.
+    def test_breakdown_formats_components_no_combo(self):
+        """score_combo=NULL (default) -> four-factor format + no-combo suffix.
         Never a fabricated '× 1.00' fifth factor."""
         s = signal(score=2.34, score_base=5, score_decay=0.85,
                    score_account_fit=0.55, score_scope_fit=1.0)
         result = render.score_breakdown(s)
         self.assertEqual(result,
                          "score 2.34 = 5 × 0.85 × 0.55 × 1.00"
-                         " · pre-combo (scored before combo scoring existed)")
+                         " · no combo applied")
         # Must not contain a fabricated fifth factor
         self.assertNotIn("× 1.00 ×", result)
         self.assertNotIn("× 1.0 ×", result)
@@ -349,15 +349,15 @@ class TestComboRender(unittest.TestCase):
         result = render.score_breakdown(s)
         self.assertEqual(result,
                          "score 6.6 = 4 × 1.00 × 1.10 × 1.00 × 1.50")
-        # Verify the suffix is absent (this is the full five-factor format)
-        self.assertNotIn("pre-combo", result)
+        # Verify the no-combo suffix is absent (this is the full five-factor format)
+        self.assertNotIn("no combo applied", result)
 
-    def test_breakdown_pre_combo_suffix_when_null(self):
-        """score_combo=NULL -> exact four-factor string + pre-combo suffix."""
+    def test_breakdown_no_combo_suffix_when_null(self):
+        """score_combo=NULL -> exact four-factor string + no-combo suffix."""
         s = signal(score=2.34, score_base=5, score_decay=0.85,
                    score_account_fit=0.55, score_scope_fit=1.0)
         result = render.score_breakdown(s)
-        self.assertIn("pre-combo (scored before combo scoring existed)", result)
+        self.assertIn("no combo applied", result)
         # The four-factor base is intact
         self.assertIn("score 2.34 = 5 × 0.85 × 0.55 × 1.00", result)
 

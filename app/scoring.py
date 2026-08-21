@@ -60,6 +60,7 @@ belongs to that frozen tuning, and re-stamping it would be a false claim.
 CLI: python -m app.scoring - takes the single-writer ingestion lock (R3.2),
 rescores data/gridsignals.db, prints a one-line summary.
 """
+import logging
 import sys
 from collections import namedtuple
 from datetime import date, datetime, timezone
@@ -67,7 +68,10 @@ from hashlib import sha256
 
 from app.combos import ComboExprError
 from app.combos import evaluate as _evaluate_combo
+from app.combos import parse as _parse_combo
 from app.db.connection import get_connection
+
+logger = logging.getLogger(__name__)
 
 DECAY_THRESHOLD = 1.0
 NEUTRAL_WEIGHT = 1.0
@@ -209,10 +213,21 @@ def rescore(conn, now=None):
         else now.replace(tzinfo=timezone.utc).isoformat()
     config_version = scoring_config_version(conn)
     weights = load_weights(conn)
-    # Load enabled combo rules once per rescore pass.
-    enabled_rules = conn.execute(
+    # Load enabled combo rules; pre-parse and validate multipliers once per
+    # pass so a bad rule is skipped (logged) rather than crashing the pass (R12).
+    _raw_rules = conn.execute(
         "SELECT rule_id, logic_expr, multiplier FROM combo_rules "
         "WHERE enabled_stage IS NOT NULL").fetchall()
+    valid_rules = []  # (parsed_expr, multiplier_float)
+    for _r in _raw_rules:
+        try:
+            _parsed = _parse_combo(_r["logic_expr"])
+            _mult = float(_r["multiplier"])
+        except (ComboExprError, TypeError, ValueError) as _exc:
+            logger.warning("combo rule %r skipped — %s: %s",
+                           _r["rule_id"], type(_exc).__name__, _exc)
+            continue
+        valid_rules.append((_parsed, _mult))
     rows = conn.execute(
         "SELECT s.signal_id, s.signal_scope, s.entity_id, s.event_date, "
         " t.base_strength, t.decay_half_life_days, "
@@ -227,14 +242,14 @@ def rescore(conn, now=None):
     for row in rows:
         entity_id = row["entity_id"]
         # Determine combo multiplier for this signal's entity.
-        if entity_id is not None and enabled_rules:
+        if entity_id is not None and valid_rules:
             if entity_id not in combo_cache:
                 product = 1.0
                 any_fired = False
-                for rule in enabled_rules:
+                for _parsed, _mult in valid_rules:
                     try:
-                        if _evaluate_combo(conn, entity_id, rule["logic_expr"]):
-                            product *= float(rule["multiplier"])
+                        if _evaluate_combo(conn, entity_id, _parsed):
+                            product *= _mult
                             any_fired = True
                     except ComboExprError:
                         pass

@@ -143,10 +143,9 @@ def decay_ceiling(signal):
 def score_breakdown(signal):
     """R7.3/R12 explainability line.
 
-    When score_combo is NULL (signal was scored before combo scoring or no combo
-    fired): four-factor format plus ' · pre-combo (scored before combo scoring
-    existed)' suffix so the operator knows no combo was evaluated — never a
-    fabricated '× 1.00' fifth factor.
+    When score_combo is NULL (no combo rule fired or none enabled): four-factor
+    format plus ' · no combo applied' suffix — the four factors multiply to the
+    exact stored score. Never a fabricated '× 1.00' fifth factor.
 
     When score_combo is present: five-factor format where all five multiply to
     the displayed score.
@@ -162,7 +161,7 @@ def score_breakdown(signal):
     four = (f"score {fmt_score(signal['score'])} = {fmt_score(base)} "
             f"× {decay:.2f} × {acct:.2f} × {scope:.2f}")
     if combo is None:
-        return four + " · pre-combo (scored before combo scoring existed)"
+        return four + " · no combo applied"
     return four + f" × {float(combo):.2f}"
 
 

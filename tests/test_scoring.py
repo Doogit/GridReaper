@@ -555,6 +555,21 @@ class TestComboScoringMultiplier(unittest.TestCase):
         self.assertAlmostEqual(r1["score_combo"], 1.5)
         self.assertAlmostEqual(r2["score_combo"], 1.5)
 
+    def test_null_multiplier_rule_is_skipped(self):
+        """An enabled rule with NULL multiplier is skipped; rescore completes
+        without crashing and the remaining valid rule still fires (R12
+        defense-in-depth guard for load-side validation failures)."""
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('bad', 'trigger_any:t_lead', NULL, 1)")
+        self.conn.commit()
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        result = rescore(self.conn, now=NOW)  # must not raise
+        self.assertEqual(result["scored"], 1)
+        row = self._row("s1")
+        # 'bad' rule skipped; 'r1' (multiplier 1.5) still fires.
+        self.assertAlmostEqual(row["score_combo"], 1.5)
+
     def test_only_active_rows_get_score_combo(self):
         """Dismissed and decayed rows are not rescored; score_combo stays NULL."""
         add_signal(self.conn, "gone", "t_lead", "account", "E_IOU",
