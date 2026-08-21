@@ -40,6 +40,9 @@ TRIGGER_SCOPES = {
     # R5 (USAspending.gov): a DOE/CISA/DHS grant or cooperative-agreement
     # award resolves to one named recipient, always account-scoped.
     "capital_project": ["account"],
+    # R6 (PHMSA): enforcement cases resolve to one named midstream/LNG
+    # operator, always account-scoped -- no sector-level analog defined.
+    "pipeline_enforcement_action": ["account"],
 }
 
 # Loaded in FK order: products + triggers precede indicator_map.

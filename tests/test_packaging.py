@@ -115,6 +115,8 @@ class PackagingContractTest(unittest.TestCase):
             "app/classify/environmental_enforcement.py",
             "app/ingest/usaspending.py",
             "app/classify/capital_project.py",
+            "app/ingest/phmsa.py",
+            "app/classify/phmsa_enforcement.py",
         ):
             self.assertTrue((REPO / rel).exists(), f"module {rel} the build invokes is missing")
 
@@ -245,6 +247,27 @@ class PackagingContractTest(unittest.TestCase):
         self.assertLess(
             p.index("app.classify.capital_project"), p.index("app.scoring"),
             "capital_project classification must run before scoring",
+        )
+
+    def test_pipeline_runs_phmsa_ingest_and_classifier_before_scoring(self):
+        # R6: the PHMSA enforcement fetcher + classifier wire the new
+        # pipeline_enforcement_action trigger. Pin the ingest -> classify ->
+        # score ordering so a qualifying midstream/LNG enforcement case
+        # actually fires (same shape as the EPA ECHO pinning above).
+        p = self._pipeline()
+        self.assertIn("app.ingest.phmsa", p, "pipeline dropped the PHMSA fetcher")
+        self.assertIn(
+            "app.classify.phmsa_enforcement", p,
+            "pipeline dropped the PHMSA classifier",
+        )
+        self.assertLess(
+            p.index("app.ingest.phmsa"),
+            p.index("app.classify.phmsa_enforcement"),
+            "PHMSA ingest must run before its classifier",
+        )
+        self.assertLess(
+            p.index("app.classify.phmsa_enforcement"), p.index("app.scoring"),
+            "PHMSA classification must run before scoring",
         )
 
     def test_pipeline_runs_digest_after_scoring_and_plays(self):

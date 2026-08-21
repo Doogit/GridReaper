@@ -313,7 +313,8 @@ class TestTriggerScopes(unittest.TestCase):
             set(TRIGGER_SCOPES),
             {"leadership_change", "nerc_enforcement", "nerc_cip_revision",
              "tsa_security_directive", "own_incident", "peer_incident",
-             "audit_consent_decree", "capital_project"})
+             "audit_consent_decree", "capital_project",
+             "pipeline_enforcement_action"})
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         apply_migrations(conn)
