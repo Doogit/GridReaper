@@ -20,3 +20,4 @@ ics_cve_kev,ICS-specific CVE / KEV addition,New exploited vuln in a product the 
 rate_case_capex,Rate case / grid-modernization capex,Approved rate case funding grid/OT modernization,3,540,0,PC,"FERC;state PUC dockets;earnings"
 license_upsell_window,Copilot/M365 E5->E7 upsell window,Existing M365 estate plus AI push creates E7/Agent 365 candidacy,3,270,0,VM,"job posts;press;license data"
 exec_ai_advocacy,Executive AI advocacy,CEO/CIO publicly touts AI/agent usage,2,135,0,VM,"earnings;press"
+pipeline_enforcement_action,PHMSA pipeline enforcement action,PHMSA Corrective Action Order/Notice of Probable Violation/Warning Letter against a midstream or LNG pipeline operator,5,365,0,IR,"PHMSA.gov;PHMSA Enforcement Data (primis.phmsa.dot.gov)"

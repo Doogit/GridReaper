@@ -33,6 +33,7 @@ python -m app.ingest.nerc_calendar     || echo "WARN: nerc_calendar ingest faile
 python -m app.ingest.nerc_enforcement  || echo "WARN: nerc_enforcement ingest failed, continuing"
 python -m app.ingest.epa_echo          || echo "WARN: epa_echo ingest failed, continuing"
 python -m app.ingest.usaspending       || echo "WARN: usaspending ingest failed, continuing"
+python -m app.ingest.phmsa             || echo "WARN: phmsa ingest failed, continuing"
 # GDELT is store-only (R9.6): grows the corpus for the classify/gdelt.py
 # silent-trial --report re-entry check, but is not itself classified here.
 # Do not wire the GDELT classifier into this pipeline — see that module's
@@ -53,6 +54,7 @@ python -m app.classify.ransomware
 python -m app.classify.security_rss
 python -m app.classify.environmental_enforcement
 python -m app.classify.capital_project
+python -m app.classify.phmsa_enforcement
 # Obligations (R8.3) derive from classified regulatory signals, not from
 # scores — so they run after the classifiers and before scoring.
 python -m app.obligations
