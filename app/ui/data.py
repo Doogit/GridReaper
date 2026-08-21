@@ -76,6 +76,7 @@ _SIGNAL_COLUMNS = """
   s.evidence_quality, s.incident_evidence_level, s.customer_facing_allowed,
   s.score, s.status,
   s.score_base, s.score_decay, s.score_account_fit, s.score_scope_fit,
+  s.score_combo,
   s.scored_at, s.scoring_config_version,
   t.name AS trigger_name, t.base_strength, t.decay_half_life_days,
   e.name AS entity_name, e.subsector, e.richness, e.coverage_flag,

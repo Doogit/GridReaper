@@ -424,5 +424,235 @@ class TestScoringConfigVersion(unittest.TestCase):
         self.assertNotEqual(before, self.stored()["scoring_config_version"])
 
 
+class TestComboScoringAntiRegression(unittest.TestCase):
+    """R12 anti-regression: empty combo_rules -> byte-identical scores, score_combo NULL.
+
+    This is the FIRST test to write per spec: measured-inert before any rules exist.
+    """
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _row(self, signal_id):
+        return self.conn.execute(
+            "SELECT score, score_base, score_decay, score_account_fit, "
+            " score_scope_fit, score_combo FROM signals WHERE signal_id = ?",
+            (signal_id,)).fetchone()
+
+    def test_no_combo_rules_score_is_byte_identical(self):
+        """With zero combo_rules, rescore produces the exact same score as before
+        combo scoring existed, and score_combo is NULL."""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        summary = rescore(self.conn, now=NOW)
+        self.assertEqual(summary, {"scored": 1, "decayed": 0})
+        row = self._row("s1")
+        # Score unchanged: 4 * 1.0 * (1.1 * 1.0 * 1.0) * 1.0 = 4.4
+        self.assertAlmostEqual(row["score"], 4.4)
+        # Four factors still multiply to the score
+        product = (row["score_base"] * row["score_decay"]
+                   * row["score_account_fit"] * row["score_scope_fit"])
+        self.assertAlmostEqual(product, row["score"])
+        # score_combo is NULL when no rules exist
+        self.assertIsNone(row["score_combo"])
+
+    def test_disabled_combo_rule_is_inert(self):
+        """A combo_rules row with enabled_stage IS NULL is disabled and must not
+        affect the score or set score_combo."""
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r_off', 'trigger_any:t_lead', 2.0, NULL)")
+        self.conn.commit()
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        row = self._row("s1")
+        self.assertAlmostEqual(row["score"], 4.4)
+        self.assertIsNone(row["score_combo"])
+
+    def test_entity_less_signal_score_combo_is_null(self):
+        """entity_id IS NULL -> combo evaluation is skipped; score_combo = NULL."""
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r1', 'trigger_any:t_reg', 1.5, 1)")
+        self.conn.commit()
+        add_signal(self.conn, "s1", "t_reg", "sector", None, days_ago(0))
+        rescore(self.conn, now=NOW)
+        row = self._row("s1")
+        # Score unchanged: 5 * 1.0 * 1.0 * 0.55 = 2.75 (entity-less sector)
+        self.assertAlmostEqual(row["score"], 2.75)
+        self.assertIsNone(row["score_combo"])
+
+
+class TestComboScoringMultiplier(unittest.TestCase):
+    """R12: with an enabled rule that fires, the multiplier applies once and
+    the five factors multiply to the stored score."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+        # Insert one enabled combo rule for t_lead signals.
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r1', 'trigger_any:t_lead', 1.5, 1)")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _row(self, signal_id):
+        return self.conn.execute(
+            "SELECT score, score_base, score_decay, score_account_fit, "
+            " score_scope_fit, score_combo FROM signals WHERE signal_id = ?",
+            (signal_id,)).fetchone()
+
+    def test_combo_multiplier_applies_when_rule_fires(self):
+        """base 4 * decay 1 * fit 1.1 * scope 1.0 * combo 1.5 = 6.6"""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        row = self._row("s1")
+        self.assertAlmostEqual(row["score"], 6.6)
+        self.assertAlmostEqual(row["score_combo"], 1.5)
+        # All five factors multiply to the stored score.
+        five = (row["score_base"] * row["score_decay"]
+                * row["score_account_fit"] * row["score_scope_fit"]
+                * row["score_combo"])
+        self.assertAlmostEqual(five, row["score"])
+
+    def test_combo_does_not_fire_for_non_matching_trigger(self):
+        """Rule fires on t_lead; a t_reg signal for E_IOU does not match."""
+        add_signal(self.conn, "s1", "t_reg", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        row = self._row("s1")
+        self.assertIsNone(row["score_combo"])
+        # Score unchanged: 5 * 1.0 * (1.1 * 0.9 * 1.0) * 1.0 = 4.95
+        self.assertAlmostEqual(
+            row["score_base"] * row["score_decay"]
+            * row["score_account_fit"] * row["score_scope_fit"],
+            row["score"])
+
+    def test_product_of_two_firing_rules(self):
+        """Two enabled rules both fire -> multiplier is their product."""
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r2', 'trigger_any:t_lead', 1.2, 1)")
+        self.conn.commit()
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        rescore(self.conn, now=NOW)
+        row = self._row("s1")
+        # r1=1.5, r2=1.2 -> product 1.8; score = 4.4 * 1.8 = 7.92
+        self.assertAlmostEqual(row["score_combo"], 1.8)
+        self.assertAlmostEqual(row["score"], 4.4 * 1.8)
+
+    def test_entity_cache_shared_across_signals(self):
+        """Two signals for the same entity share the cached evaluation."""
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        add_signal(self.conn, "s2", "t_lead", "account", "E_IOU", days_ago(30))
+        rescore(self.conn, now=NOW)
+        r1 = self._row("s1")
+        r2 = self._row("s2")
+        # Both should have score_combo = 1.5
+        self.assertAlmostEqual(r1["score_combo"], 1.5)
+        self.assertAlmostEqual(r2["score_combo"], 1.5)
+
+    def test_null_multiplier_rule_is_skipped(self):
+        """An enabled rule with NULL multiplier is skipped; rescore completes
+        without crashing and the remaining valid rule still fires (R12
+        defense-in-depth guard for load-side validation failures)."""
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('bad', 'trigger_any:t_lead', NULL, 1)")
+        self.conn.commit()
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        result = rescore(self.conn, now=NOW)  # must not raise
+        self.assertEqual(result["scored"], 1)
+        row = self._row("s1")
+        # 'bad' rule skipped; 'r1' (multiplier 1.5) still fires.
+        self.assertAlmostEqual(row["score_combo"], 1.5)
+
+    def test_non_positive_multiplier_rule_is_skipped(self):
+        """An enabled rule with a non-positive multiplier (bypassing load-side
+        validation) is skipped rather than driving the score to <=0; the
+        remaining valid rule still fires (R12 defense-in-depth)."""
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('bad', 'trigger_any:t_lead', -2.0, 1)")
+        self.conn.commit()
+        add_signal(self.conn, "s1", "t_lead", "account", "E_IOU", days_ago(0))
+        result = rescore(self.conn, now=NOW)  # must not raise
+        self.assertEqual(result["scored"], 1)
+        row = self._row("s1")
+        # 'bad' rule skipped; 'r1' (multiplier 1.5) still fires.
+        self.assertAlmostEqual(row["score_combo"], 1.5)
+
+    def test_only_active_rows_get_score_combo(self):
+        """Dismissed and decayed rows are not rescored; score_combo stays NULL."""
+        add_signal(self.conn, "gone", "t_lead", "account", "E_IOU",
+                   days_ago(0), status="dismissed", score=3.3)
+        add_signal(self.conn, "dead", "t_lead", "account", "E_IOU",
+                   days_ago(0), status="decayed", score=0.42)
+        rescore(self.conn, now=NOW)
+        self.assertIsNone(self._row("gone")["score_combo"])
+        self.assertIsNone(self._row("dead")["score_combo"])
+
+
+class TestComboConfigVersion(unittest.TestCase):
+    """R12: scoring_config_version moves when combo_rules content changes."""
+
+    def setUp(self):
+        self.conn = fixture_conn()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def version(self):
+        return scoring_config_version(self.conn)
+
+    def test_empty_combo_rules_leaves_token_stable(self):
+        """No combo_rules rows -> token is identical to pre-combo behaviour
+        (same hash input, same output)."""
+        before = self.version()
+        self.assertEqual(before, self.version())
+
+    def test_adding_combo_rule_moves_token(self):
+        before = self.version()
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r1', 'trigger_any:t_lead', 1.5, 1)")
+        self.conn.commit()
+        self.assertNotEqual(before, self.version())
+
+    def test_changing_combo_multiplier_moves_token(self):
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r1', 'trigger_any:t_lead', 1.5, 1)")
+        self.conn.commit()
+        before = self.version()
+        self.conn.execute(
+            "UPDATE combo_rules SET multiplier = 2.0 WHERE rule_id = 'r1'")
+        self.conn.commit()
+        self.assertNotEqual(before, self.version())
+
+    def test_toggling_enabled_stage_moves_token(self):
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r1', 'trigger_any:t_lead', 1.5, NULL)")
+        self.conn.commit()
+        before = self.version()
+        self.conn.execute(
+            "UPDATE combo_rules SET enabled_stage = 1 WHERE rule_id = 'r1'")
+        self.conn.commit()
+        self.assertNotEqual(before, self.version())
+
+    def test_unchanged_combo_rules_leaves_token_stable(self):
+        self.conn.execute(
+            "INSERT INTO combo_rules (rule_id, logic_expr, multiplier, "
+            " enabled_stage) VALUES ('r1', 'trigger_any:t_lead', 1.5, 1)")
+        self.conn.commit()
+        v1 = self.version()
+        v2 = self.version()
+        self.assertEqual(v1, v2)
+
+
 if __name__ == "__main__":
     unittest.main()

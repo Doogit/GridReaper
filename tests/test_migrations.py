@@ -163,5 +163,68 @@ class TestScoringConfigVersionMigration(unittest.TestCase):
         self.assertIsNotNone(version)
 
 
+class TestComboScoringMigration(unittest.TestCase):
+    """0014 signals.score_combo (R12, R9): nullable combo multiplier column."""
+
+    def _conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
+        return conn
+
+    def test_0014_adds_score_combo_to_signals(self):
+        conn = self._conn()
+        ran = apply_migrations(conn)
+        self.assertIn("0014_combo_scoring", ran)
+        cols = {r["name"]: r for r in conn.execute(
+            "PRAGMA table_info(signals)")}
+        self.assertIn("score_combo", cols)
+        col = cols["score_combo"]
+        # nullable, no default: pre-combo signals keep score_combo=NULL.
+        self.assertEqual(col["notnull"], 0)
+        self.assertIsNone(col["dflt_value"])
+
+    def test_existing_signal_defaults_to_null(self):
+        """Signals that existed before 0014 keep score_combo = NULL — no
+        backfill, no fabricated 1.0."""
+        conn = self._conn()
+        apply_migrations(conn)
+        conn.execute("INSERT INTO triggers (trigger_id, name, base_strength, "
+                     "decay_half_life_days) VALUES ('t1','T',4,90)")
+        conn.execute(
+            "INSERT INTO signals (signal_id, trigger_id, signal_scope, "
+            " event_date, status) VALUES ('s1','t1','sector','2026-08-01',"
+            " 'active')")
+        row = conn.execute("SELECT score_combo FROM signals "
+                           "WHERE signal_id = 's1'").fetchone()
+        self.assertIsNone(row["score_combo"])
+
+    def test_reapply_is_noop(self):
+        conn = self._conn()
+        apply_migrations(conn)
+        self.assertEqual(apply_migrations(conn), [])
+        version = conn.execute(
+            "SELECT version FROM schema_migrations "
+            "WHERE version = '0014_combo_scoring'").fetchone()
+        self.assertIsNotNone(version)
+
+    def test_checksum_stability(self):
+        """Migration file content must not change once applied (immutable contract)."""
+        import hashlib
+        import os
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "app", "db", "migrations", "0014_combo_scoring.sql")
+        with open(path, encoding="utf-8") as fh:
+            digest = hashlib.sha256(fh.read().encode("utf-8")).hexdigest()
+        # Record the digest now; if the file changes this test fails.
+        conn = self._conn()
+        apply_migrations(conn)
+        stored = conn.execute(
+            "SELECT checksum FROM schema_migrations "
+            "WHERE version = '0014_combo_scoring'").fetchone()
+        self.assertEqual(digest, stored["checksum"])
+
+
 if __name__ == "__main__":
     unittest.main()

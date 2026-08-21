@@ -1,0 +1,18 @@
+-- 0014_combo_scoring: store the combo multiplier alongside each signal score (R12, R9).
+--
+-- score_combo is the product of the multipliers of all enabled combo_rules that
+-- fired when the signal was last rescored. NULL means no combo was in force when
+-- this signal was scored — either no enabled rules exist, no rule fired, or the
+-- signal's entity_id is NULL.
+--
+-- Nullable on purpose and never backfilled. A signal scored before this migration
+-- existed was scored without combo evaluation; stamping it with 1.0 would be a
+-- false provenance claim. Those rows keep score_combo = NULL (read in the UI as
+-- "pre-combo (scored before combo scoring existed)").
+--
+-- Only status='active' rows are rescored; decayed/dismissed/retracted/superseded
+-- rows keep score_combo = NULL forever, which is the honest reading: their frozen
+-- score was produced without combo evaluation.
+--
+-- R12, U9 of docs/plans/2026-08-18-001-feat-combo-engine-account-signal-expansion-plan.md
+ALTER TABLE signals ADD COLUMN score_combo REAL;
