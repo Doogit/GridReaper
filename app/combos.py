@@ -59,12 +59,29 @@ NOT_KEYWORD_PREFIX = "not_keyword:"
 _TRIGGER_ID_RE = re.compile(r"^[a-z0-9_]+$")
 
 # The raw_events.payload JSON key a not_keyword clause reads for the text of
-# the signal that satisfied the preceding trigger_any clause. U4's planned
-# USAspending capital_project fetcher (docs/plans/2026-08-18-001-...) is
-# expected to preserve the full award description under this key; a signal
-# whose payload lacks it simply contributes no extra text beyond headline/
-# evidence_snippet.
+# the signal that satisfied the preceding trigger_any clause.
+#
+# U11 trap: U4's capital_project classifier (app/classify/capital_project.py)
+# stores award records with USAspending's CAPITALIZED keys ("Description",
+# "Award ID", etc.). evidence[0]["text"] is "Award {Award ID}: {Description}",
+# and runner.py writes that to signals.evidence_snippet -- so the award
+# Description text lands in evidence_snippet, NOT in payload["description"]
+# (payload.get("description") is None live because the key is "Description").
+# The not_keyword check for Combo 2 therefore reads the award text through
+# evidence_snippet; this payload key is a secondary/best-effort text source
+# only for signals that DO store a lowercase "description" key.
 PAYLOAD_TEXT_FIELD = "description"
+
+# KTD4: Combo 1's incident-class trigger allowlist. A hand-maintained set
+# (this project's convention, like TRIGGER_SCOPES). own_incident is the
+# filer's own 8-K 1.05 disclosure; pipeline_enforcement_action is U5's PHMSA
+# enforcement trigger (PR #112, merged) -- both are account-scoped
+# incident/enforcement signals that, co-occurring with an applicable
+# regulatory obligation, define Combo 1. Extend this set and
+# seeds/combo_rules.csv's combo_incident_regulatory logic_expr together: a
+# new id here MUST also join that trigger_any clause. The test in
+# tests/test_combos_incident_regulatory.py binds the two so they cannot drift.
+INCIDENT_TRIGGER_IDS = ("own_incident", "pipeline_enforcement_action")
 
 TriggerAnyClause = namedtuple("TriggerAnyClause", ["trigger_ids"])
 ObligationAnyClause = namedtuple("ObligationAnyClause", [])
