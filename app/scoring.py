@@ -4,7 +4,9 @@ score = base_strength * 0.5^(age_days / half_life) * account_fit * scope_fit
         [* combo_multiplier when a combo fires — R12]
 
 base_strength and decay_half_life_days come from the signal's trigger row;
-combo_multiplier is fixed at 1.0 for the MVP. All fit factors are operator
+combo_multiplier is the product of the multipliers of the enabled combo_rules
+that fire for the signal's entity (R12), or absent (score_combo NULL) when none
+fire — see rescore(). All fit factors are operator
 tunables in scoring_weights (seeded from seeds/scoring_weights.csv, Admin
 sliders later per R8.7); any unknown/missing key falls back to a neutral 1.0
 so scoring never KeyErrors on new subsectors or blank entity fields.
