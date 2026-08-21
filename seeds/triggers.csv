@@ -7,7 +7,7 @@ own_incident,Own disclosed incident,Company's own breach/ransomware publicly dis
 peer_incident,Peer/sector incident,Comparable company in same subsector breached,3,135,0,PC,"ransomware.live;RansomLook;security RSS;GDELT"
 leadership_change,Leadership change (CISO/CIO/CTO),"Security leader hired; reviews stack in first ~90 days. Note: most CISO hires never hit an 8-K (Section-16 only) - press wires are primary channel",4,90,1,PC,"press-wire RSS;SEC 8-K 5.02;DEF 14A"
 ma_divestiture,M&A / divestiture,Acquisition or divestiture triggers security due diligence and integration,4,300,0,PC,"SEC 8-K/S-4;press wires;GDELT"
-capital_project,Capital project / new facility,New plant LNG terminal or datacenter creates new OT and attack surface,3,540,0,PC,"earnings calls;10-K;EIA;press"
+capital_project,Capital project / new facility,New plant LNG terminal or datacenter creates new OT and attack surface,3,540,1,PC,"earnings calls;10-K;EIA;press"
 cloud_ai_adoption,Cloud/AI adoption announcement,Public cloud migration or AI/agent rollout,3,270,0,VM,"earnings;press;10-K;job posts"
 risk_factor_change,10-K/10-Q risk-factor change,New or expanded cyber risk-factor wording vs prior year,3,365,0,PC,"SEC EDGAR full-text diff"
 cyber_insurance_event,Cyber insurance event,Premium hike coverage denial or control requirement,3,270,0,VM,"news;earnings commentary"
